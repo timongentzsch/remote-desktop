@@ -14,6 +14,7 @@
     --part-encode: #9CC3FF; --part-send: #6AA5FF; --part-network: #3F7FE0; --part-decode: #737B87;
     --sans: Inter, system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, monospace;
     --control: 44px; --radius: 10px; --gap: 12px;
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23A3A9B3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
     color-scheme: dark;
   }
   html, body { height: 100%; margin: 0; overflow: hidden; background: var(--ground); color: var(--text); font: 14px/1.5 var(--sans); }
@@ -52,6 +53,11 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
   .slow .dot { background: var(--warn); }
   .pill svg { transition: rotate .15s; }
+  /* The pill waits below the bottom edge and slides in when asked for; it lingers a moment before leaving. */
+  .pill { translate: 0 calc(100% + 2 * var(--gap)); transition: translate .25s ease .4s; }
+  .pill-shown .pill, .panel-open .pill, .pill:focus-visible { translate: none; transition-delay: 0s; }
+  @media (hover: none) { .pill { translate: none; } }
+  @media (prefers-reduced-motion: reduce) { .pill { transition-duration: 0s; } }
   .panel-open .pill svg { rotate: 180deg; }
 
   .panel { width: 100%; max-width: 760px; box-sizing: border-box; padding: 20px; display: flex; flex-direction: column; gap: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
@@ -63,15 +69,20 @@
   .stat output { font: 500 20px var(--mono); white-space: nowrap; }
   .delay { display: flex; flex-direction: column; gap: 10px; }
   .bar { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; }
-  .bar i { flex: var(--weight, 1) 1 0; background: var(--part); }
+  .bar i { flex: var(--weight, 1) 1 0; background: var(--part); transition: flex-grow .8s ease; }
+  @media (prefers-reduced-motion: reduce) { .bar i { transition: none; } }
   .legend { gap: 6px 18px; font-size: 12px; color: var(--muted); }
   .legend span { display: flex; align-items: center; gap: 6px; }
   .legend i { width: 8px; height: 8px; border-radius: 2px; background: var(--part); }
   .legend output { font-family: var(--mono); color: var(--text); }
   .encode { --part: var(--part-encode); } .send { --part: var(--part-send); } .network { --part: var(--part-network); } .decode { --part: var(--part-decode); }
   .slow .network, .slow .send { --part: var(--warn); }
-  .setting { flex: 1 1 120px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-  .setting select, .actions button { height: var(--control); padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raised); color: var(--text); font-size: 14px; }
+  .settings { display: grid; grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 480px) { .settings { grid-template-columns: repeat(2, 1fr); } }
+  .setting { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .setting select, .actions button { height: var(--control); padding: 0 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raised); color: var(--text); font-size: 14px; }
+  /* The browser's own arrow sits flush against the edge and cannot be moved, so the select draws one. */
+  .setting select { appearance: none; padding-right: 40px; background: var(--raised) var(--chevron) no-repeat right 14px center / 14px; text-overflow: ellipsis; }
   .actions button { padding: 0 16px; font-weight: 500; }
   .actions .spacer { flex: 1 1 0; }
   .actions .leave { border-color: var(--warn-line); background: transparent; color: var(--warn-text); }
@@ -155,9 +166,14 @@
           <option value="yes">Drawn remotely</option>
         </select>
       </label>
+      <label class="setting">Sound
+        <select name="sound">
+          <option value="on">On</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
     </div>
     <div class="actions">
-      <button type="button" id="attention">Send Ctrl + Alt + Del</button>
       <button type="button" id="fullscreen">Full screen</button>
       <span class="spacer"></span>
       <button type="button" class="leave" id="leave">Disconnect</button>
@@ -174,7 +190,7 @@
 const $ = id => document.getElementById(id);
 const canvas = document.querySelector('canvas'), login = $('login'), settings = $('settings');
 const context = canvas.getContext('2d', { alpha: false, desynchronized: true });  // skip compositor queueing where supported
-const SAVED = ['bitrate', 'fps', 'size', 'chroma', 'cursor'];
+const SAVED = ['bitrate', 'fps', 'size', 'chroma', 'cursor', 'sound'];
 // Auto bitrate, in kbit/s. The stream is checked every TICK ms: after LAG_TICKS checks in a row in which the host
 // took longer than SEND_LIMIT ms to get a frame out, or the round trip exceeded LAG_LIMIT ms, the rate is cut to
 // what the link actually delivered; after `patience` calm seconds it is raised again.
@@ -182,7 +198,7 @@ const TICK = 250, LAG_LIMIT = 250, SEND_LIMIT = 80, LAG_TICKS = 3, MIN_RATE = 50
 let rate = 20000, streak = 0, patience = 10, climbed = false, used = 0;
 try { rate = +localStorage.rate || rate; } catch {}
 const BUTTONS = [0x110, 0x112, 0x111, 0x113, 0x114];  // DOM button index -> evdev BTN_*
-const CONTROL = 29, ALT = 56, DELETE = 111;
+const CONTROL = 29;
 // KeyboardEvent.code -> evdev key code; the list is in evdev order starting at 1, "-" marks gaps.
 const KEYS = { MetaLeft: 125, MetaRight: 126, ContextMenu: 127 };
 ('Escape Digit1 Digit2 Digit3 Digit4 Digit5 Digit6 Digit7 Digit8 Digit9 Digit0 Minus Equal Backspace Tab ' +
@@ -195,7 +211,10 @@ const KEYS = { MetaLeft: 125, MetaRight: 126, ContextMenu: 127 };
  'Home ArrowUp PageUp ArrowLeft ArrowRight End ArrowDown PageDown Insert Delete'
 ).split(' ').forEach((code, i) => KEYS[code] = i + 1);
 
-let socket, stop;
+// Sound is scheduled CUSHION seconds ahead to ride out uneven arrival. Packets that would play more than
+// MAX_AHEAD seconds from now are dropped, so the sound cannot fall behind the picture after a stall.
+const CUSHION = 0.05, MAX_AHEAD = 0.15, PACKET_MICROS = 20000;
+let socket, stop, speaker, playAt = 0;
 const held = new Set();
 const connected = () => document.body.classList.contains('connected');
 const send = (...message) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(message));
@@ -221,8 +240,26 @@ function key(code, down) {
 }
 const releaseAll = () => held.forEach(code => key(code, false));
 
+// The pill slides in while the pointer is at the middle of the bottom edge (or on the pill itself), and for
+// PEEK ms after connecting so that it is known to be there.
+const EDGE = 16, PEEK = 3000;
+let atEdge = false, peeking = 0;
+const showPill = () => document.body.classList.toggle('pill-shown', atEdge || !!peeking);
+addEventListener('pointermove', event => {
+  if (event.buttons) return;  // a drag in the remote picture is not a request for the pill
+  const box = $('pill').getBoundingClientRect();  // below the window while hidden
+  atEdge = event.clientX > box.left - EDGE && event.clientX < box.right + EDGE && event.clientY > Math.min(box.top, innerHeight) - EDGE;
+  showPill();
+});
+document.documentElement.addEventListener('pointerleave', () => showPill(atEdge = false));
+
 function setConnected(on, problem = '') {
   document.body.classList.toggle('connected', on);
+  if (on) {
+    clearTimeout(peeking);
+    peeking = setTimeout(() => showPill(peeking = 0), PEEK);
+    showPill();
+  }
   if (!on) {
     document.body.classList.remove('slow', 'panel-open');
     settings.hidden = true;
@@ -275,6 +312,32 @@ function connect() {
     },
     error: () => ws.close(),
   });
+
+  // Sound arrives as 20 ms Opus packets, each in a message of its own that starts with the byte 8.
+  let packets = 0;
+  const sound = settings.sound.value === 'on' && window.AudioDecoder && new AudioDecoder({
+    output(data) {
+      const buffer = speaker.createBuffer(data.numberOfChannels, data.numberOfFrames, data.sampleRate);
+      for (let channel = 0; channel < data.numberOfChannels; channel++) {
+        data.copyTo(buffer.getChannelData(channel), { planeIndex: channel, format: 'f32-planar' });
+      }
+      data.close();
+      if (playAt > speaker.currentTime + MAX_AHEAD) return;
+      if (playAt < speaker.currentTime) playAt = speaker.currentTime + CUSHION;  // the first packet, or after a pause
+      const source = speaker.createBufferSource();
+      source.buffer = buffer;
+      source.connect(speaker.destination);
+      source.start(playAt);
+      playAt += buffer.duration;
+    },
+    error: () => {},
+  });
+  if (sound) {
+    // Browsers only let a page play sound once the user has acted on it; connecting is such an act.
+    speaker ??= new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+    speaker.resume();
+    sound.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
+  }
 
   // The stream is FLV: a 13-byte header, then tags of [type, size:3, time:3+1, stream:3, data, back-pointer:4].
   // Video tag data is [frame type | codec, packet type, composition time:3, payload].
@@ -353,6 +416,10 @@ function connect() {
       else if (kind === 'clipboard') navigator.clipboard.writeText(clipboard = first).catch(() => {});
       return;
     }
+    if (new Uint8Array(event.data, 0, 1)[0] === 8) {
+      if (sound?.state === 'configured') sound.decode(new EncodedAudioChunk({ type: 'key', timestamp: packets++ * PACKET_MICROS, data: new Uint8Array(event.data, 1) }));
+      return;
+    }
     if (!started) {
       setConnected(true);
       // Kept in this browser so the next visit only needs a click. Anyone using this browser profile can read it.
@@ -368,6 +435,7 @@ function connect() {
     ws.onmessage = null;
     ws.close();
     if (decoder.state !== 'closed') decoder.close();
+    if (sound && sound.state !== 'closed') sound.close();
   };
   ws.onclose = () => {
     end();
@@ -405,15 +473,13 @@ login.password.required = !document.documentElement.classList.contains('open');
 $('host').textContent = location.hostname.replace(/\.local$/, '') || 'Remote Desktop';
 setConnected(false);
 
-$('pill').onclick = () => {
-  settings.hidden = !settings.hidden;
-  document.body.classList.toggle('panel-open', !settings.hidden);
-};
+function showPanel(open) {
+  settings.hidden = !open;
+  document.body.classList.toggle('panel-open', open);
+}
+$('pill').onclick = () => showPanel(settings.hidden);
 $('leave').onclick = () => socket.close();
 $('fullscreen').onclick = () => document.fullscreenElement ? document.exitFullscreen() : enterFullscreen();
-$('attention').onclick = () => {
-  for (const down of [1, 0]) for (const code of [CONTROL, ALT, DELETE]) send('key', code, down);
-};
 
 function onKey(event) {
   const code = KEYS[event.code];
@@ -438,7 +504,10 @@ canvas.addEventListener('onpointerrawupdate' in canvas ? 'pointerrawupdate' : 'p
   send('move', normalise(event.clientX, canvas.clientWidth, canvas.width),
                normalise(event.clientY, canvas.clientHeight, canvas.height));
 });
-canvas.onmousedown = event => key(BUTTONS[event.button], true);
+canvas.onmousedown = event => {
+  showPanel(false);  // working in the remote picture again puts the panel away
+  key(BUTTONS[event.button], true);
+};
 addEventListener('mouseup', event => held.has(BUTTONS[event.button]) && key(BUTTONS[event.button], false));
 canvas.oncontextmenu = event => event.preventDefault();
 canvas.addEventListener('wheel', event => {

@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::capture::{self, Settings, Shared};
 use crate::input::{Input, KEY_LEFTSHIFT};
 use crate::tls::{self, Connection};
-use crate::{clipboard, fail, install, ws};
+use crate::{audio, clipboard, fail, install, ws};
 
 /// The client, compiled into the binary: path, content type, body.
 const PAGES: [(&str, &str, &[u8]); 3] = [
@@ -100,7 +100,8 @@ fn serve(socket: TcpStream, host: &Host) -> io::Result<()> {
 }
 
 /// What is waiting to be sent to one client. It holds at most one piece of video, so a slow link makes the
-/// capture skip frames instead of queueing them, while control messages are never stuck behind video.
+/// capture skip frames instead of queueing them, while control messages and sound are never stuck behind video.
+/// Sound that cannot leave in time is dropped: late sound is worse than a gap.
 #[derive(Default)]
 struct Outbox {
     pending: Mutex<Pending>,
@@ -111,6 +112,7 @@ struct Outbox {
 struct Pending {
     /// The piece and when it was queued.
     video: Option<(Vec<u8>, Instant)>,
+    audio: VecDeque<Vec<u8>>,
     control: VecDeque<Vec<u8>>,
     closed: bool,
 }
@@ -124,19 +126,31 @@ impl Outbox {
         !pending.closed
     }
 
+    /// Queues a packet of sound, dropping the oldest when more than a fifth of a second is waiting.
+    fn push_audio(&self, packet: Vec<u8>) {
+        let mut pending = self.pending.lock().unwrap();
+        if pending.audio.len() >= 10 {
+            pending.audio.pop_front();
+        }
+        pending.audio.push_back(packet);
+        self.changed.notify_all();
+    }
+
     fn push_control(&self, message: Vec<u8>) {
         self.pending.lock().unwrap().control.push_back(message);
         self.changed.notify_all();
     }
 
-    /// The next thing to send, control messages first, and for video when it was queued. None once the
-    /// session is over.
+    /// The next thing to send: control messages first, then sound, then video (with the time it was queued).
+    /// None once the session is over.
     fn next(&self) -> Option<(Vec<u8>, Option<Instant>)> {
-        let mut pending = self.changed.wait_while(self.pending.lock().unwrap(), |pending| pending.video.is_none() && pending.control.is_empty() && !pending.closed).unwrap();
+        let idle = |pending: &mut Pending| pending.video.is_none() && pending.audio.is_empty() && pending.control.is_empty() && !pending.closed;
+        let mut pending = self.changed.wait_while(self.pending.lock().unwrap(), idle).unwrap();
         if pending.closed {
             return None;
         }
-        let next = match pending.control.pop_front() {
+        let pending = &mut *pending;
+        let next = match pending.control.pop_front().or_else(|| pending.audio.pop_front()) {
             Some(message) => (message, None),
             None => pending.video.take().map(|(piece, queued)| (piece, Some(queued)))?,
         };
@@ -170,6 +184,7 @@ fn session(connection: &Arc<Connection>, host: &Host) {
         full_chroma: choice("chroma") == "444",
         half_size: choice("size") == "half",
     };
+    let sound = choice("sound") == "on";
     wake_displays(&host.input);
 
     let outbox = Arc::new(Outbox::default());
@@ -230,6 +245,17 @@ fn session(connection: &Arc<Connection>, host: &Host) {
         })
     });
 
+    // Sound is its own kind of binary message: it starts with 8, where video starts with 9 or the stream header.
+    let listening = sound.then(|| {
+        let (outbox, shared) = (outbox.clone(), shared.clone());
+        thread::spawn(move || {
+            let packet = Box::new(move |packet: &[u8]| outbox.push_audio(ws::frame(ws::BINARY, &[&[8], packet].concat())));
+            if let Err(reason) = audio::run(shared, packet) {
+                eprintln!("remote-desktop: no sound: {reason}");
+            }
+        })
+    });
+
     let mut held = HashSet::new();
     while let Ok(Some(message)) = ws::read(&mut &**connection) {
         if connection.take_reply_pending() {
@@ -258,7 +284,7 @@ fn session(connection: &Arc<Connection>, host: &Host) {
     }
     shared.stop.store(true, Ordering::Relaxed);
     outbox.close();
-    let _ = (capture.join(), writer.join(), sharing.map(thread::JoinHandle::join));
+    let _ = (capture.join(), writer.join(), sharing.map(thread::JoinHandle::join), listening.map(thread::JoinHandle::join));
     for code in held {
         host.input.key(code, false);
     }

@@ -1,8 +1,9 @@
 # Remote desktop
 
 A Linux remote-desktop host in one binary with a browser client. It serves the client page over HTTPS,
-streams the screen as H.264 and injects keyboard and pointer input. Capture currently needs a Wayland
-compositor that offers `ext-image-copy-capture-v1` (Hyprland, Sway and other wlroots compositors).
+streams the screen as H.264 and the desktop's sound as Opus, shares the clipboard and injects keyboard and
+pointer input. Capture currently needs a Wayland compositor that offers `ext-image-copy-capture-v1`
+(Hyprland, Sway and other wlroots compositors). Sound needs PipeWire or PulseAudio.
 
 ## Install on the machine to control
 

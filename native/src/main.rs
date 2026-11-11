@@ -11,6 +11,7 @@
 //! certificate is self-signed by default, which each client has to trust once (`install` prints how). With
 //! `--tailscale` it comes from Tailscale instead and needs no trusting, for devices on the same tailnet.
 
+mod audio;
 mod capture;
 mod clipboard;
 mod convert;
