@@ -140,6 +140,16 @@ struct screen *screen_open(uint32_t node, int fps)
     return screen;
 }
 
+/* Whether a buffer holds a whole picture in the agreed format. One without pixels only reports something else,
+   such as a pointer movement; one that claims more than its memory holds is not to be read. */
+static int holds_picture(const struct screen *screen, const struct pw_buffer *buffer)
+{
+    const struct spa_data *data = &buffer->buffer->datas[0];
+    if (!data->data || !data->chunk->size || data->chunk->stride < (int)screen->format.size.width * 4)
+        return 0;
+    return data->chunk->offset + (uint64_t)data->chunk->stride * screen->format.size.height <= data->maxsize;
+}
+
 static int64_t now_ms(void)
 {
     struct timespec now;
@@ -161,9 +171,7 @@ int screen_next(struct screen *screen, int timeout_ms, const uint8_t **pixels, i
     for (;;) {
         struct pw_buffer *buffer;
         while ((buffer = pw.pw_stream_dequeue_buffer(screen->stream))) {
-            struct spa_data *data = &buffer->buffer->datas[0];
-            /* A buffer without pixels only reports something else, such as a pointer movement. */
-            struct pw_buffer *unused = data->data && data->chunk->size ? screen->held : buffer;
+            struct pw_buffer *unused = holds_picture(screen, buffer) ? screen->held : buffer;
             if (unused != buffer)
                 screen->held = buffer;
             if (unused)

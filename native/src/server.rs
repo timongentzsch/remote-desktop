@@ -5,7 +5,7 @@ use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustls::ServerConfig;
 
@@ -19,6 +19,10 @@ const PAGES: [(&str, &str, &[u8]); 3] = [
     ("/manifest.json", "application/manifest+json", include_bytes!("../../manifest.json")),
     ("/icon.svg", "image/svg+xml", include_bytes!("../../icon.svg")),
 ];
+
+/// How long a client may take over each step before it has logged in. Without a limit, connections that say
+/// nothing would each keep a thread waiting for good.
+const LOGIN_PATIENCE: Duration = Duration::from_secs(10);
 
 /// What all connections share.
 pub struct Host {
@@ -62,23 +66,31 @@ pub fn run(address: &str) -> ! {
 
 fn serve(socket: TcpStream, host: &Host) -> io::Result<()> {
     let configuration = host.tls.lock().unwrap().clone();
-    let connection = Arc::new(Connection::accept(&configuration, socket)?);
-    let mut head = Vec::new();
+    let connection = Arc::new(Connection::accept(&configuration, socket, LOGIN_PATIENCE)?);
+    let (mut head, began) = (Vec::new(), Instant::now());
     while !head.ends_with(b"\r\n\r\n") {
         let mut byte = [0];
         (&*connection).read_exact(&mut byte)?;
         head.push(byte[0]);
-        if head.len() > 8192 {
+        if head.len() > 8192 || began.elapsed() > LOGIN_PATIENCE {
             return Ok(());
         }
     }
     let request = String::from_utf8_lossy(&head);
     let path = request.split(' ').nth(1).unwrap_or("");
-    let key = request.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("sec-websocket-key").then(|| value.trim())
-    });
-    if let (true, Some(key)) = (path == "/ws", key) {
+    let header = |wanted: &str| {
+        request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case(wanted).then(|| value.trim())
+        })
+    };
+    if let (true, Some(key)) = (path == "/ws", header("sec-websocket-key")) {
+        // Browsers let any page open a WebSocket to any server and say in Origin which page is asking. Only
+        // this server's own page may: another site must not reach the desktop through a visitor's browser.
+        let own = format!("https://{}", header("host").unwrap_or(""));
+        if header("origin").is_some_and(|origin| origin != own) {
+            return connection.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        }
         let accept = ws::accept_key(key);
         connection.write(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").as_bytes())?;
         session::run(&connection, host);

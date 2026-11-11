@@ -3,8 +3,8 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,12 @@ use crate::server::Host;
 use crate::tls::Connection;
 use crate::{audio, clipboard, ws};
 
+/// How long a logged-in client may stay silent. Its page measures the round trip several times a second, and
+/// still once a minute while the browser has put a hidden tab to sleep, so longer means the client has gone.
+const SILENCE_LIMIT: Duration = Duration::from_secs(180);
+/// How long after a wrong password no login is accepted, which limits guessing to this pace overall.
+const GUESS_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Checks the client's login, then streams to it and injects its input until it leaves.
 pub fn run(connection: &Arc<Connection>, host: &Host) {
     let login: Value = ws::read(&mut &**connection)
@@ -24,10 +30,10 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
         .flatten()
         .and_then(|message| serde_json::from_slice(&message).ok())
         .unwrap_or_default();
-    if !host.password.is_empty() && !same(login["password"].as_str().unwrap_or("").as_bytes(), &host.password) {
-        thread::sleep(Duration::from_secs(1)); // slow down guessing
+    if !admitted(login["password"].as_str().unwrap_or("").as_bytes(), &host.password) {
         return;
     }
+    connection.set_patience(SILENCE_LIMIT);
     wake_displays(&host.input);
 
     let outbox = Arc::new(Outbox::default());
@@ -69,7 +75,8 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
     if login["sound"] == "on" {
         let (outbox, shared) = (outbox.clone(), shared.clone());
         threads.push(thread::spawn(move || {
-            // Sound is its own kind of binary message: it starts with 8, where video starts with 9 or the stream header.
+            // Sound is its own kind of binary message: it starts with 8, where video starts with 9 or the
+            // stream's header.
             let packet =
                 Box::new(move |packet: &[u8]| outbox.push_audio(ws::frame(ws::BINARY, &[&[8], packet].concat())));
             if let Err(reason) = audio::run(shared, packet) {
@@ -110,6 +117,7 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
     }
     shared.stop.store(true, Ordering::Relaxed);
     outbox.close();
+    connection.close(); // frees the writer if it is stuck sending to a client that no longer listens
     for thread in threads {
         let _ = thread.join();
     }
@@ -166,6 +174,24 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared) {
     connection.close(); // makes the session's read loop finish
 }
 
+/// Whether a login with this password is let in. After a wrong one, every login is turned away for a moment,
+/// the right password included, so that many connections guessing at once gain nothing.
+fn admitted(offered: &[u8], password: &[u8]) -> bool {
+    static LAST_WRONG: Mutex<Option<Instant>> = Mutex::new(None);
+    if password.is_empty() {
+        return true;
+    }
+    let mut last_wrong = LAST_WRONG.lock().unwrap();
+    if last_wrong.is_some_and(|at| at.elapsed() < GUESS_INTERVAL) {
+        return false;
+    }
+    let right = same(offered, password);
+    if !right {
+        *last_wrong = Some(Instant::now());
+    }
+    right
+}
+
 /// Compares without stopping at the first difference, so timing does not reveal how much matched.
 fn same(offered: &[u8], password: &[u8]) -> bool {
     offered.len() == password.len()
@@ -195,6 +221,16 @@ fn wake_displays(input: &Input) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wrong_password_closes_the_door_for_a_moment() {
+        assert!(admitted(b"", b""), "no password set: everyone is let in");
+        assert!(admitted(b"secret", b"secret"));
+        assert!(!admitted(b"guess", b"secret"));
+        assert!(!admitted(b"secret", b"secret"), "right after a wrong guess even the right password waits");
+        thread::sleep(GUESS_INTERVAL);
+        assert!(admitted(b"secret", b"secret"));
+    }
 
     #[test]
     fn password_comparison() {

@@ -3,8 +3,9 @@
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rustls::{ServerConfig, ServerConnection};
 
@@ -19,11 +20,15 @@ pub struct Connection {
     socket: TcpStream,
     /// Set when reading produced a TLS-level reply that the writer still has to send.
     reply_pending: AtomicBool,
+    /// How many milliseconds `read` waits for the client to send something before it gives up.
+    patience: AtomicI32,
 }
 
 impl Connection {
-    pub fn accept(configuration: &Arc<ServerConfig>, mut socket: TcpStream) -> io::Result<Self> {
+    /// Does the TLS handshake. The client gets `patience` for it, and then for each wait in `read`.
+    pub fn accept(configuration: &Arc<ServerConfig>, mut socket: TcpStream, patience: Duration) -> io::Result<Self> {
         socket.set_nodelay(true)?;
+        socket.set_read_timeout(Some(patience))?;
         let limit = UNSENT_LIMIT;
         unsafe {
             libc::setsockopt(
@@ -42,7 +47,16 @@ impl Connection {
         while tls.wants_write() {
             tls.write_tls(&mut socket)?;
         }
-        Ok(Self { tls: Mutex::new(tls), socket, reply_pending: AtomicBool::new(false) })
+        socket.set_read_timeout(None)?; // from here on `read` does the waiting
+        let connection =
+            Self { tls: Mutex::new(tls), socket, reply_pending: AtomicBool::new(false), patience: AtomicI32::new(0) };
+        connection.set_patience(patience);
+        Ok(connection)
+    }
+
+    /// Changes how long `read` waits for the client to send something.
+    pub fn set_patience(&self, patience: Duration) {
+        self.patience.store(patience.as_millis() as i32, Ordering::Relaxed);
     }
 
     /// Encrypts and sends `bytes`. Only one thread may write at a time; an empty slice just sends pending replies.
@@ -77,7 +91,9 @@ impl Read for &Connection {
             }
             // Nothing decrypted is left: wait for the network without holding the lock the writer needs.
             let mut poll = libc::pollfd { fd: self.socket.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            unsafe { libc::poll(&mut poll, 1, -1) };
+            if unsafe { libc::poll(&mut poll, 1, self.patience.load(Ordering::Relaxed)) } == 0 {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
             let mut tls = self.tls.lock().unwrap();
             if tls.read_tls(&mut &self.socket)? == 0 {
                 return Ok(0);

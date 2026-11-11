@@ -28,7 +28,8 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// Reads the client's next message. `None` when it closes or sends more than this server ever expects.
+/// Reads the client's next message. `None` when it closes or sends what this server never expects: more than
+/// 64 kB at once, or a frame that is not masked as every client's must be.
 pub fn read(stream: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     let mut head = [0; 2];
     stream.read_exact(&mut head)?;
@@ -38,7 +39,7 @@ pub fn read(stream: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
         stream.read_exact(&mut extended)?;
         length = u16::from_be_bytes(extended) as usize;
     }
-    if head[0] & 15 == CLOSE || length == 127 {
+    if head[0] & 15 == CLOSE || length == 127 || head[1] & 0x80 == 0 {
         return Ok(None);
     }
     let mut mask = [0; 4];
@@ -86,6 +87,8 @@ mod tests {
         assert_eq!(read(&mut &frame[..]).unwrap().as_deref(), Some(&b"Hello"[..]));
         let close = [0x88, 0x80, 0, 0, 0, 0];
         assert_eq!(read(&mut &close[..]).unwrap(), None);
+        let unmasked = [0x81, 0x05, b'H', b'e', b'l', b'l', b'o'];
+        assert_eq!(read(&mut &unmasked[..]).unwrap(), None);
     }
 
     #[test]
