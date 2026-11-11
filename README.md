@@ -14,7 +14,8 @@ H.264 and the sound as Opus, shares the clipboard, and injects keyboard and poin
 
 Any Linux distribution, with any desktop, on Wayland or X11. The exceptions:
 
-- Distributions without glibc 2.28 or newer, such as Alpine with musl.
+- Distributions without glibc 2.28 or newer, such as Alpine with musl, and NixOS and Guix, which run no
+  binaries built for other distributions as they are.
 - Wayland compositors other than GNOME, KDE, Hyprland and those built on wlroots, such as Sway. (It needs
   the `ext-image-copy-capture-v1` or the `wlr-screencopy` protocol.)
 - Without PipeWire or PulseAudio there is no sound.
@@ -39,6 +40,10 @@ In a terminal of the desktop session you want to control:
 
 and prints the address to open. `remote-desktop uninstall` undoes all of it except the password and the
 certificate.
+
+The host runs inside the desktop session, so it is not there while the machine shows its login screen. For
+a machine to be reachable after a restart, let its display manager log the user in automatically and lock
+the session at once; the lock screen can be opened remotely.
 
     remote-desktop password                  change the login password
     remote-desktop password --none           allow access without a password
