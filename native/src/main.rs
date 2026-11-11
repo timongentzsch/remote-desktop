@@ -2,6 +2,7 @@
 //! client's keyboard and pointer input.
 //!
 //!     remote-desktop install [--tailscale]      install system-wide and run as a service of the desktop session
+//!     remote-desktop uninstall                  remove what install set up
 //!     remote-desktop password [--none]          set the login password, or allow access without one
 //!     remote-desktop certificate [--tailscale]  make a new certificate, or switch where it comes from
 //!     remote-desktop [--listen ADDRESS]         run the host (default 0.0.0.0:8765)
@@ -38,9 +39,10 @@ fn main() {
         (None, _) => server::run(&format!("0.0.0.0:{PORT}")),
         (Some("--listen"), Some(address)) => server::run(&address),
         (Some("install"), option) if is_tailscale(&option) => install::install(option.is_some()),
+        (Some("uninstall"), None) => install::uninstall(),
         (Some("password"), None) => install::set_password(),
         (Some("password"), Some(option)) if option == "--none" => install::remove_password(),
         (Some("certificate"), option) if is_tailscale(&option) => install::renew_certificate(option.is_some()),
-        _ => fail("usage: remote-desktop [install [--tailscale] | password [--none] | certificate [--tailscale] | --listen ADDRESS]"),
+        _ => fail("usage: remote-desktop [install [--tailscale] | uninstall | password [--none] | certificate [--tailscale] | --listen ADDRESS]"),
     }
 }

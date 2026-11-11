@@ -9,6 +9,7 @@ use std::process::Command;
 use crate::{fail, tls};
 
 const BINARY: &str = "/usr/local/bin/remote-desktop";
+const UDEV_RULE_PATH: &str = "/etc/udev/rules.d/70-remote-desktop.rules";
 /// Lets whoever is logged in at the seat create input devices. The number must stay below 73.
 const UDEV_RULE: &str = r#"KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput""#;
 /// A user service, because capture and input belong to the logged-in desktop session.
@@ -44,9 +45,9 @@ pub fn install(tailscale: bool) {
     }
     let this = std::env::current_exe().unwrap_or_else(|error| fail(&format!("cannot locate this program: {error}")));
     run("sudo", &["install", "-Dm755", &this.to_string_lossy(), BINARY]);
-    let rule = format!("printf '%s\\n' '{UDEV_RULE}' > /etc/udev/rules.d/70-remote-desktop.rules");
+    let rule = format!("printf '%s\\n' '{UDEV_RULE}' > {UDEV_RULE_PATH}");
     run("sudo", &["sh", "-c", &format!("{rule} && modprobe uinput && udevadm control --reload && udevadm trigger --name-match=uinput")]);
-    open_firewall();
+    firewall(true);
     if tailscale {
         use_tailscale();
     } else if !tls::certificate_path().exists() {
@@ -64,20 +65,37 @@ pub fn install(tailscale: bool) {
     show_certificate();
 }
 
-/// Lets clients reach the service where a firewall this knows how to configure is active.
-fn open_firewall() {
+/// Opens or closes the service's port where a firewall this knows how to configure is active.
+fn firewall(open: bool) {
     let port = format!("{}/tcp", crate::PORT);
     let active = |program: &str, arguments: &[&str], marker: &str| {
         Command::new("sudo").arg(program).args(arguments).output().is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(marker))
     };
+    let done = if open { "Opened" } else { "Closed" };
     if active("ufw", &["status"], "Status: active") {
-        run("sudo", &["ufw", "allow", &port]);
-        println!("Opened port {port} in the firewall (ufw).");
+        let rule: &[&str] = if open { &["ufw", "allow"] } else { &["ufw", "delete", "allow"] };
+        run("sudo", &[rule, &[&port]].concat());
+        println!("{done} port {port} in the firewall (ufw).");
     } else if active("firewall-cmd", &["--state"], "running") {
-        run("sudo", &["firewall-cmd", "--quiet", "--permanent", &format!("--add-port={port}")]);
+        let change = format!("--{}-port={port}", if open { "add" } else { "remove" });
+        run("sudo", &["firewall-cmd", "--quiet", "--permanent", &change]);
         run("sudo", &["firewall-cmd", "--quiet", "--reload"]);
-        println!("Opened port {port} in the firewall (firewalld).");
+        println!("{done} port {port} in the firewall (firewalld).");
     }
+}
+
+/// `remote-desktop uninstall`: undoes `install`. The password and certificate stay, so installing again keeps
+/// the address clients already trust.
+pub fn uninstall() {
+    // The service may already be gone, which is fine.
+    let _ = Command::new("systemctl").args(["--user", "--quiet", "disable", "--now", "remote-desktop.service"]).status();
+    let _ = fs::remove_file(config_directory().join("systemd/user/remote-desktop.service"));
+    run("systemctl", &["--user", "daemon-reload"]);
+    firewall(false);
+    run("sudo", &["rm", "-f", BINARY, UDEV_RULE_PATH]);
+    run("sudo", &["udevadm", "control", "--reload"]);
+    let kept = config_directory().join("remote-desktop");
+    println!("Removed the service, {BINARY} and the input rule. The password and certificate remain in {}.", kept.display());
 }
 
 /// `remote-desktop certificate [--tailscale]`: makes a fresh self-signed certificate, for when the machine's

@@ -87,7 +87,7 @@ pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), St
         awake: power.is_none(),
         refinements_left: 0,
         fine_frames: 0,
-        frames_sent: 0,
+        encoded: now,
         frame_pending: false,
         started: now,
         requested: now - Duration::from_secs(1),
@@ -107,9 +107,9 @@ pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), St
                 guard.read().map_err(lost)?;
             }
         }
-        let sent = capture.frames_sent;
         events.dispatch_pending(&mut capture).map_err(|error| format!("lost the Wayland connection: {error}"))?;
-        if capture.frames_sent == sent && capture.refinements_left > 0 {
+        // Refining is for a screen that stands still: only once a whole frame's time passed without a new one.
+        if capture.refinements_left > 0 && capture.encoded.elapsed() >= Duration::from_secs(1) / capture.settings.fps {
             capture.refinements_left -= 1;
             capture.encode_picture(Instant::now());
         }
@@ -185,7 +185,8 @@ struct Capture {
     /// frame would ever improve it, so the same picture is encoded again until the encoder has nothing to add.
     refinements_left: u32,
     fine_frames: u32,
-    frames_sent: u64,
+    /// When the latest frame, new or refined, was encoded.
+    encoded: Instant,
     frame_pending: bool,
     started: Instant,
     requested: Instant,
@@ -266,7 +267,7 @@ impl Capture {
             if self.fine_frames >= SETTLED_FRAMES {
                 self.refinements_left = 0;
             }
-            self.frames_sent += 1;
+            self.encoded = Instant::now();
             self.send_tag(keyframe, 1, &unit);
         }
     }
