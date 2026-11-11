@@ -9,10 +9,10 @@ compositor that offers `ext-image-copy-capture-v1` (Hyprland, Sway and other wlr
 Run this in a terminal of the desktop session you want to control. It downloads the binary for the
 machine's architecture (x86_64 or aarch64) and sets everything up:
 
-    curl -fLo remote-desktop <RELEASE-URL>/remote-desktop-$(uname -m) && chmod +x remote-desktop && ./remote-desktop install
+    curl -fLo remote-desktop https://github.com/timongentzsch/remote-desktop/releases/latest/download/remote-desktop-$(uname -m) && chmod +x remote-desktop && ./remote-desktop install
 
-`<RELEASE-URL>` is where the release binaries are published; until they are, build them as described
-below and run `./remote-desktop install` on the result.
+The binaries are built by `.github/workflows/build.yml` and published when a version tag is pushed
+(`git tag v0.1.0 && git push --tags`).
 
 `install` asks for a login password and for sudo, then:
 
