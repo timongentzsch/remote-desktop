@@ -60,14 +60,14 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
             }
         }),
     ];
-    // Clipboard text goes both ways where the compositor allows it; the session works without.
+    // Clipboard text goes both ways where the desktop allows it; the session works without.
     if let Some(inbox) = inbox.clone() {
         let (outbox, shared) = (outbox.clone(), shared.clone());
         threads.push(thread::spawn(move || {
             let copied = Box::new(move |text: String| {
                 outbox.push_control(ws::frame(ws::TEXT, serde_json::json!(["clipboard", text]).to_string().as_bytes()));
             });
-            if let Err(reason) = clipboard::run(inbox, shared, copied) {
+            if let Err(reason) = clipboard::run(&inbox, &shared, copied) {
                 eprintln!("remote-desktop: the clipboard is not shared: {reason}");
             }
         }));

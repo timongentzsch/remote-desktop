@@ -1,9 +1,12 @@
-//! Screen capture. Desktops hand out the screen's picture in different ways; the one that applies feeds a `Stream`.
+//! Screen capture. Desktops hand out the screen's picture in different ways. Each way is a module here with one
+//! function, `run`, which feeds pictures to a `Stream` for as long as the stream wants them.
 
 mod kwin;
+mod memory;
 mod mutter;
 mod pipewire;
 mod wayland;
+mod x11;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32};
@@ -35,9 +38,12 @@ pub struct Shared {
 /// Receives each piece of the stream; returns false once nobody is listening any more.
 pub type Sink = Box<dyn FnMut(&[u8]) -> bool + Send>;
 
-/// Captures the first output until `shared.stop` is set, the sink declines a piece, or the desktop ends it.
+/// Captures the first screen until `shared.stop` is set, the sink declines a piece, or the desktop ends it.
 pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), String> {
     let stream = Stream::new(settings, shared, sink);
+    if !compositor::available() {
+        return x11::run(stream);
+    }
     let offered = compositor::protocols()?;
     let offers = |protocol: &str| offered.iter().any(|name| name == protocol);
     if offers(wayland::PROTOCOL) {

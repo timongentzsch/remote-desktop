@@ -2,10 +2,17 @@
 //! offers, and one wording for what can go wrong.
 
 use std::fmt::Display;
+use std::os::fd::{AsRawFd, RawFd};
+use std::time::Duration;
 
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
+
+/// Whether the session has a Wayland compositor. If not, it may be an X11 session.
+pub fn available() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some()
+}
 
 /// Connects to the session's compositor and asks what it offers.
 pub fn connect<State>() -> Result<(Connection, GlobalList, EventQueue<State>), String>
@@ -28,6 +35,27 @@ where
 
 pub fn lost(error: impl Display) -> String {
     format!("lost the Wayland connection: {error}")
+}
+
+/// One turn of talking to the compositor: sends what is pending, waits up to `limit` for it to say something
+/// or for `other` to become readable, and lets `state` handle what it said.
+pub fn turn<State>(
+    events: &mut EventQueue<State>,
+    state: &mut State,
+    other: Option<RawFd>,
+    limit: Duration,
+) -> Result<(), String> {
+    events.flush().map_err(lost)?;
+    if let Some(guard) = events.prepare_read() {
+        let wait = |fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut polled = [wait(guard.connection_fd().as_raw_fd()), wait(other.unwrap_or(-1))]; // a negative one is skipped
+        unsafe { libc::poll(polled.as_mut_ptr(), 2, limit.as_millis() as i32) };
+        if polled[0].revents != 0 {
+            guard.read().map_err(lost)?;
+        }
+    }
+    events.dispatch_pending(state).map_err(lost)?;
+    Ok(())
 }
 
 /// The names of the protocols the compositor offers.

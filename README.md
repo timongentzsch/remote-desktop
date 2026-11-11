@@ -16,15 +16,13 @@ viewer at a time; if a second one connects meanwhile, that session is encoded wi
 
 ## What it runs on
 
-| Desktop | How the screen is captured | Clipboard | Tested on |
-|---|---|---|---|
-| Hyprland | `ext-image-copy-capture-v1` | yes | a real session (Hyprland 0.56) |
-| Sway and other wlroots compositors | `ext-image-copy-capture-v1` | yes | headless Sway 1.12 |
-| GNOME | Mutter's screen cast, through PipeWire | no | headless Mutter 51 only |
-| KDE Plasma 6 | KWin's screen cast, through PipeWire | yes | headless KWin 6.8 only |
+Any Linux distribution on x86_64 or aarch64, with any desktop, on Wayland or X11. The exceptions:
 
-X11 sessions are not supported. Sound needs PipeWire or PulseAudio. The clipboard needs the compositor's
-`ext-data-control-v1` protocol, which GNOME does not offer.
+- Distributions without glibc 2.28 or newer, such as Alpine with musl.
+- Wayland compositors that are neither GNOME nor KDE and lack the `ext-image-copy-capture-v1` protocol, as
+  older releases of Sway, Hyprland and other wlroots compositors do.
+- On GNOME under Wayland the clipboard is not shared, because GNOME offers programs no way to do that.
+- Without PipeWire or PulseAudio there is no sound.
 
 The client is developed and tested with Chrome. It needs WebCodecs, and Keyboard Lock for sending system
 shortcuts such as Alt+Tab to the remote side, which works in full screen.
@@ -103,8 +101,11 @@ which `install` makes your user Tailscale's operator on this machine.
 - "Sharp" colour (4:4:4) is decoded in software by Chrome, which costs processor time on the client.
 - After a slow connection the automatic bitrate climbs back only while the picture is moving, so a still
   screen can keep saying that the link is slow for a while.
-- GNOME and KDE were only run headless, as the table above says: their login and lock screens, and input on
-  them, are untried. The GPU encoder was run on one card (RTX 4090), and capture on aarch64 not at all.
+- It was developed on a real Hyprland session. Sway, GNOME (Mutter 51), KDE (KWin 6.8) and X11 were only run
+  headless in test environments: their login and lock screens, and input on them, are untried.
+- On X11, clipboard texts so long that their owner sends them in instalments (some hundred kilobytes) are
+  not passed on, and the service needs `DISPLAY` in the environment of the user's systemd, which desktop
+  sessions set up and a bare `startx` does not. The GPU encoder was run on one card (RTX 4090), and capture on aarch64 not at all.
 - The client is made for a keyboard and a mouse or trackpad, not for touch.
 
 ## Build
@@ -140,14 +141,15 @@ Release binaries that run on any distribution with glibc 2.28 or newer need `zig
       outbox.rs                what waits to be sent to a client, and in which order
       tls.rs, certificate.rs   the encrypted connection; the certificate behind it
       ws.rs                    WebSocket framing
-      capture/                 the screen's picture: mod.rs picks wayland.rs, kwin.rs or mutter.rs;
-                               the last two read from PipeWire (pipewire.rs, pipewire_stream.c)
+      capture/                 the screen's picture: mod.rs picks wayland.rs, kwin.rs, mutter.rs or
+                               x11.rs; KDE and GNOME deliver through PipeWire (pipewire.rs,
+                               pipewire_stream.c)
       stream/                  pictures to video: mod.rs paces and frames, convert.rs makes YUV,
                                encode.rs drives the encoders (encoder.c, x264.c, nvenc.c)
       audio.rs                 the desktop's sound as Opus
-      clipboard.rs             clipboard text in both directions
+      clipboard/               clipboard text in both directions, on Wayland and on X11
       input.rs                 keyboard and pointer through uinput
-      compositor.rs            the Wayland connection the above share
+      compositor.rs            the Wayland connection that capture and clipboard share
 
 ## Licence
 

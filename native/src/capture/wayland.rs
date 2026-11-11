@@ -3,7 +3,7 @@
 //!
 //! The compositor hands over a frame only when the screen changed, so a still screen costs nothing.
 
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
 use wayland_client::globals::GlobalListContents;
@@ -29,7 +29,8 @@ use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_powe
     self as power, ZwlrOutputPowerV1,
 };
 
-use crate::compositor::{self, bind, lost};
+use super::memory::Memory;
+use crate::compositor::{self, bind};
 use crate::stream::Stream;
 
 /// The protocol's name, by which a compositor announces it.
@@ -64,27 +65,19 @@ pub fn run(stream: Stream) -> Result<(), String> {
         requested: Instant::now() - Duration::from_secs(1),
     };
     while capture.stream.wanted() {
-        events.flush().map_err(lost)?;
-        if let Some(guard) = events.prepare_read() {
-            let mut poll = libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            if unsafe { libc::poll(&mut poll, 1, capture.stream.patience().as_millis() as i32) } > 0 {
-                guard.read().map_err(lost)?;
-            }
-        }
-        events.dispatch_pending(&mut capture).map_err(lost)?;
+        let patience = capture.stream.patience();
+        compositor::turn(&mut events, &mut capture, None, patience)?;
         capture.stream.refine();
     }
     capture.stream.ended.take().unwrap_or(Ok(()))
 }
 
-/// A shared-memory buffer the compositor copies the screen into.
+/// A buffer the compositor copies the screen into.
 struct Pixels {
     buffer: WlBuffer,
-    map: *const u8,
-    length: usize,
+    memory: Memory,
     width: usize,
     height: usize,
-    _memory: OwnedFd,
 }
 
 impl Pixels {
@@ -96,37 +89,17 @@ impl Pixels {
         format: wl_shm::Format,
     ) -> Result<Self, String> {
         let length = width * height * 4;
-        let (memory, map) = unsafe {
-            let fd = libc::memfd_create(c"remote-desktop".as_ptr(), libc::MFD_CLOEXEC);
-            if fd < 0 {
-                return Err("could not allocate the capture buffer".into());
-            }
-            let memory = OwnedFd::from_raw_fd(fd);
-            if libc::ftruncate(fd, length as libc::off_t) < 0 {
-                return Err("could not size the capture buffer".into());
-            }
-            let map = libc::mmap(std::ptr::null_mut(), length, libc::PROT_READ, libc::MAP_SHARED, fd, 0);
-            if map == libc::MAP_FAILED {
-                return Err("could not map the capture buffer".into());
-            }
-            (memory, map as *const u8)
-        };
-        let pool = shm.create_pool(memory.as_fd(), length as i32, queue, ());
+        let memory = Memory::new(length)?;
+        let pool = shm.create_pool(memory.file.as_fd(), length as i32, queue, ());
         let buffer = pool.create_buffer(0, width as i32, height as i32, width as i32 * 4, format, queue, ());
         pool.destroy();
-        Ok(Self { buffer, map, length, width, height, _memory: memory })
-    }
-
-    fn bytes(&self) -> &[u8] {
-        // The compositor only writes between a frame's capture request and its ready event; we read after ready.
-        unsafe { std::slice::from_raw_parts(self.map, self.length) }
+        Ok(Self { buffer, memory, width, height })
     }
 }
 
 impl Drop for Pixels {
     fn drop(&mut self) {
         self.buffer.destroy();
-        unsafe { libc::munmap(self.map as *mut libc::c_void, self.length) };
     }
 }
 
@@ -212,8 +185,8 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Capture {
     ) {
         match event {
             frame::Event::Ready => {
-                if let Some(pixels) = &state.pixels {
-                    state.stream.picture(pixels.bytes(), pixels.width * 4, pixels.width, pixels.height);
+                if let Some(pixels) = &mut state.pixels {
+                    state.stream.picture(pixels.memory.bytes(), pixels.width * 4, pixels.width, pixels.height);
                 }
             }
             // The buffer no longer fits; the session announces the new size and `configure` replaces it.

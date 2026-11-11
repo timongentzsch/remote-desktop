@@ -6,10 +6,6 @@
 //!     remote-desktop password [--none]          set the login password, or allow access without one
 //!     remote-desktop certificate [--tailscale]  make a new certificate, or switch where it comes from
 //!     remote-desktop [--listen ADDRESS]         run the host (default 0.0.0.0:8765)
-//!
-//! It serves HTTPS, because browsers expose video decoding and keyboard capture only on secure origins. The
-//! certificate is self-signed by default, which each client has to trust once (`install` prints how). With
-//! `--tailscale` it comes from Tailscale instead and needs no trusting, for devices on the same tailnet.
 
 mod audio;
 mod capture;
@@ -24,6 +20,7 @@ mod session;
 mod stream;
 mod tls;
 mod ws;
+mod xserver;
 
 const PORT: u16 = 8765;
 
