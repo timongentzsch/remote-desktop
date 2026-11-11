@@ -211,6 +211,7 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
             ceiling: told.ceiling.load(Ordering::Relaxed),
         });
         shared.kbps.store(verdict.kbps, Ordering::Relaxed);
+        shared.climbing.store(verdict.climbing, Ordering::Relaxed);
         patience = if verdict.probing { PROBE_LOOK } else { LOOK };
         if reported.elapsed() >= Duration::from_secs(1) {
             let encode = shared.encode_micros.load(Ordering::Relaxed) as f64 / 1000.0;

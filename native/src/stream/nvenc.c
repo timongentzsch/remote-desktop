@@ -327,8 +327,9 @@ static int length_prefixed(struct nvenc *encoder, const uint8_t *bytes, int size
     return written;
 }
 
-static int nvenc_encode(struct encoder *base, uint8_t **data, int *keyframe)
+static int nvenc_encode(struct encoder *base, uint8_t **data, int *keyframe, int *coarse)
 {
+    (void)coarse; /* stays unset: this encoder does not say */
     struct nvenc *encoder = (struct nvenc *)base;
     int size = -1;
     enter();

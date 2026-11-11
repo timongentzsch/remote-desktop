@@ -11,7 +11,7 @@ mod encode;
 pub use encode::{PROBE, probe};
 
 use crate::capture::{Settings, Shared, Sink};
-use encode::Encoder;
+use encode::{EFFORTS, Encoder};
 
 /// How many times a second a still picture is encoded again to bring it up to the quality target. Far fewer
 /// than the frame rate, so that each of these frames may take a correspondingly larger share of the bitrate cap:
@@ -23,6 +23,34 @@ const REFINE_SECONDS: u32 = 20;
 pub const SETTLED_FRAMES: u32 = 3;
 const REFINE_INTERVAL: Duration = Duration::from_millis(1000 / REFINE_FPS as u64);
 
+/// The software encoder can put more work into a frame, which makes it look better at the same size. It is
+/// asked to where that shows and fits: when the bitrate cap, not the quality target, decided how good most
+/// of the last `EFFORT_FRAMES` new frames were, and a frame would still be done in half the time until the
+/// next if it took `STEP_COST` times as long. Frames made while the bitrate is still climbing do not count:
+/// they are coarse on any link. When frames take longer than that half, it goes a step back and does not try
+/// again.
+const EFFORT_FRAMES: u32 = 60;
+const STEP_COST: u32 = 2;
+
+/// What the new frames since the encoder's effort was last looked at added up to.
+#[derive(Default)]
+struct Weighed {
+    frames: u32,
+    coarse: u32,
+    time: Duration,
+}
+
+/// The effort to go on with, and the most that may be tried from then on.
+fn next_effort(effort: u32, most: u32, average: Duration, budget: Duration, mostly_coarse: bool) -> (u32, u32) {
+    if average > budget && effort > 0 {
+        (effort - 1, effort - 1)
+    } else if mostly_coarse && effort < most && average * STEP_COST < budget {
+        (effort + 1, most)
+    } else {
+        (effort, most)
+    }
+}
+
 pub struct Stream {
     pub settings: Settings,
     shared: Arc<Shared>,
@@ -32,6 +60,10 @@ pub struct Stream {
     /// The half-size copy of the screen, when the picture is scaled down.
     scaled: Vec<u8>,
     encoder: Option<Encoder>,
+    /// How much work the software encoder puts into a frame and the most it may (see `EFFORT_FRAMES`).
+    effort: u32,
+    most_effort: u32,
+    weighed: Weighed,
     /// The bitrate cap in kbit/s and the frames a second the encoder was last told.
     rate: (u32, u32),
     /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
@@ -56,6 +88,9 @@ impl Stream {
             screen: (0, 0),
             scaled: Vec::new(),
             encoder: None,
+            effort: 0,
+            most_effort: EFFORTS - 1,
+            weighed: Weighed::default(),
             rate: (0, 0),
             refinements_left: 0,
             fine_frames: 0,
@@ -106,7 +141,32 @@ impl Stream {
         let full_chroma = encoder.full_chroma;
         convert::bgrx_to_yuv(source, stride, encoder.width, encoder.height, encoder.planes(), full_chroma);
         self.refinements_left = REFINE_SECONDS * REFINE_FPS;
-        self.encode(started, self.settings.fps);
+        if let Some((took, coarse)) = self.encode(started, self.settings.fps)
+            && !self.shared.climbing.load(Ordering::Relaxed)
+        {
+            self.weigh_effort(took, coarse);
+        }
+    }
+
+    /// Counts a new frame and, every `EFFORT_FRAMES` of them, reconsiders the software encoder's effort.
+    fn weigh_effort(&mut self, took: Duration, coarse: bool) {
+        self.weighed.frames += 1;
+        self.weighed.coarse += coarse as u32;
+        self.weighed.time += took;
+        if self.weighed.frames < EFFORT_FRAMES {
+            return;
+        }
+        let weighed = std::mem::take(&mut self.weighed);
+        if self.encoder.as_ref().is_none_or(|encoder| encoder.gpu) {
+            return;
+        }
+        let (average, budget) = (weighed.time / weighed.frames, self.frame_interval() / 2);
+        let (effort, most) =
+            next_effort(self.effort, self.most_effort, average, budget, weighed.coarse * 2 > weighed.frames);
+        if effort != self.effort {
+            self.encoder = None; // the next picture opens another, which begins with a keyframe
+        }
+        (self.effort, self.most_effort) = (effort, most);
     }
 
     /// Encodes the latest picture once more if the screen has stood still long enough and the picture is not
@@ -124,11 +184,16 @@ impl Stream {
         let scale = if self.settings.half_size { 2 } else { 1 };
         // 4:2:0 needs even dimensions; an odd last row or column is dropped.
         let (width, height) = ((width / scale) & !1, (height / scale) & !1);
+        let (fps, kbps, full_chroma) = (self.settings.fps, self.settings.kbps, self.settings.full_chroma);
         let mut encoder =
-            Encoder::open(width, height, self.settings.fps, self.settings.kbps, self.settings.full_chroma)
-                .ok_or("could not open the encoder")?;
-        self.rate = (self.settings.kbps, self.settings.fps);
-        eprintln!("remote-desktop: encoding {width}x{height} {}", if encoder.gpu { "on the GPU" } else { "with x264" });
+            Encoder::open(width, height, fps, kbps, full_chroma, self.effort).ok_or("could not open the encoder")?;
+        self.rate = (kbps, fps);
+        let how = match (encoder.gpu, self.effort) {
+            (true, _) => "on the GPU".to_owned(),
+            (false, 0) => "with x264".to_owned(),
+            (false, effort) => format!("with x264, effort {effort} of {}", EFFORTS - 1),
+        };
+        eprintln!("remote-desktop: encoding {width}x{height} {how}");
         if !self.wrote_header {
             self.send(b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00");
             self.wrote_header = true;
@@ -140,8 +205,9 @@ impl Stream {
     }
 
     /// Encodes the picture currently in the encoder's planes, as one of `fps` frames a second, and sends it.
-    fn encode(&mut self, started: Instant, fps: u32) {
-        let Some(encoder) = &mut self.encoder else { return };
+    /// Says how long that took since `started`, sending apart, and whether the frame came out coarse.
+    fn encode(&mut self, started: Instant, fps: u32) -> Option<(Duration, bool)> {
+        let encoder = self.encoder.as_mut()?;
         // The session may allow another bitrate by now, and refining goes at another pace than the screen.
         let wanted = match self.shared.kbps.load(Ordering::Relaxed) {
             0 => self.settings.kbps,
@@ -151,16 +217,18 @@ impl Stream {
             self.rate = (wanted, fps);
             self.settings.kbps = wanted;
         }
-        if let Some(encoded) = encoder.encode() {
-            let (unit, keyframe, settled) = (encoded.unit.to_vec(), encoded.keyframe, encoded.settled);
-            self.shared.encode_micros.store(started.elapsed().as_micros() as u32, Ordering::Relaxed);
-            self.fine_frames = if settled { self.fine_frames + 1 } else { 0 };
-            if self.fine_frames >= SETTLED_FRAMES {
-                self.refinements_left = 0;
-            }
-            self.encoded = Instant::now();
-            self.send_tag(keyframe, 1, &unit);
+        let encoded = encoder.encode()?;
+        let (unit, keyframe, settled, coarse) =
+            (encoded.unit.to_vec(), encoded.keyframe, encoded.settled, encoded.coarse);
+        let took = started.elapsed();
+        self.shared.encode_micros.store(took.as_micros() as u32, Ordering::Relaxed);
+        self.fine_frames = if settled { self.fine_frames + 1 } else { 0 };
+        if self.fine_frames >= SETTLED_FRAMES {
+            self.refinements_left = 0;
         }
+        self.encoded = Instant::now();
+        self.send_tag(keyframe, 1, &unit);
+        Some((took, coarse))
     }
 
     /// Sends one FLV video tag. Packet type 0 carries the decoder configuration, 1 an access unit.
@@ -181,5 +249,22 @@ impl Stream {
         if !(self.sink)(bytes) {
             self.ended.get_or_insert(Ok(()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effort_goes_up_where_it_shows_and_fits_and_down_for_good() {
+        let (budget, quick, slow) = (Duration::from_millis(8), Duration::from_millis(3), Duration::from_millis(9));
+        assert_eq!(next_effort(0, 2, quick, budget, true), (1, 2), "coarse frames and time to spare");
+        assert_eq!(next_effort(0, 2, quick, budget, false), (0, 2), "good frames need no more work");
+        assert_eq!(next_effort(0, 2, Duration::from_millis(5), budget, true), (0, 2), "twice as long would not fit");
+        assert_eq!(next_effort(2, 2, quick, budget, true), (2, 2), "there is no more");
+        assert_eq!(next_effort(1, 2, slow, budget, true), (0, 0), "too slow: back, and not tried again");
+        assert_eq!(next_effort(0, 0, quick, budget, true), (0, 0));
+        assert_eq!(next_effort(0, 2, slow, budget, true), (0, 2), "nothing below the least");
     }
 }

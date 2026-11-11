@@ -12,7 +12,15 @@ struct Raw {
 }
 
 unsafe extern "C" {
-    fn encoder_open(width: c_int, height: c_int, fps: c_int, kbps: c_int, full_chroma: c_int, gpu: c_int) -> *mut Raw;
+    fn encoder_open(
+        width: c_int,
+        height: c_int,
+        fps: c_int,
+        kbps: c_int,
+        full_chroma: c_int,
+        gpu: c_int,
+        effort: c_int,
+    ) -> *mut Raw;
     fn encoder_plane(encoder: *mut Raw, index: c_int, stride: *mut c_int) -> *mut u8;
     fn encoder_headers(
         encoder: *mut Raw,
@@ -21,7 +29,7 @@ unsafe extern "C" {
         pps: *mut *mut u8,
         pps_size: *mut c_int,
     ) -> c_int;
-    fn encoder_encode(encoder: *mut Raw, data: *mut *mut u8, keyframe: *mut c_int) -> c_int;
+    fn encoder_encode(encoder: *mut Raw, data: *mut *mut u8, keyframe: *mut c_int, coarse: *mut c_int) -> c_int;
     fn encoder_set_rate(encoder: *mut Raw, kbps: c_int, fps: c_int) -> c_int;
     fn encoder_close(encoder: *mut Raw);
 }
@@ -38,7 +46,12 @@ pub struct Encoded<'a> {
     pub keyframe: bool,
     /// The frame is so small that it says little more than "nothing changed".
     pub settled: bool,
+    /// The bitrate cap, not the quality target, decided how good the frame is. Only x264 says so.
+    pub coarse: bool,
 }
+
+/// How many levels of effort the software encoder has, as in encoder.h: 0 is the least work for a frame.
+pub const EFFORTS: u32 = 3;
 
 /// The command-line argument that makes this program report, by its exit status, whether the GPU can encode.
 pub const PROBE: &str = "probe-gpu";
@@ -56,7 +69,7 @@ fn gpu_can_encode() -> bool {
 
 /// What the `PROBE` command answers: whether a small ordinary picture can be encoded on the GPU.
 pub fn probe() -> bool {
-    Encoder::open_on(true, 256, 256, 30, 1000, false).is_some()
+    Encoder::open_on(true, 256, 256, 30, 1000, false, 0).is_some()
 }
 
 pub struct Encoder {
@@ -69,13 +82,22 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    /// Opens the GPU's encoder where there is one that takes this picture, and x264 otherwise.
-    pub fn open(width: usize, height: usize, fps: u32, kbps: u32, full_chroma: bool) -> Option<Self> {
-        let on_gpu = if gpu_can_encode() { Self::open_on(true, width, height, fps, kbps, full_chroma) } else { None };
-        on_gpu.or_else(|| Self::open_on(false, width, height, fps, kbps, full_chroma))
+    /// Opens the GPU's encoder where there is one that takes this picture, and x264 at this effort otherwise.
+    pub fn open(width: usize, height: usize, fps: u32, kbps: u32, full_chroma: bool, effort: u32) -> Option<Self> {
+        let on_gpu =
+            if gpu_can_encode() { Self::open_on(true, width, height, fps, kbps, full_chroma, 0) } else { None };
+        on_gpu.or_else(|| Self::open_on(false, width, height, fps, kbps, full_chroma, effort))
     }
 
-    fn open_on(gpu: bool, width: usize, height: usize, fps: u32, kbps: u32, full_chroma: bool) -> Option<Self> {
+    fn open_on(
+        gpu: bool,
+        width: usize,
+        height: usize,
+        fps: u32,
+        kbps: u32,
+        full_chroma: bool,
+        effort: u32,
+    ) -> Option<Self> {
         let raw = unsafe {
             encoder_open(
                 width as c_int,
@@ -84,6 +106,7 @@ impl Encoder {
                 kbps as c_int,
                 full_chroma as c_int,
                 gpu as c_int,
+                effort as c_int,
             )
         };
         // Built only on success: dropping an `Encoder` closes the pointer it holds.
@@ -138,8 +161,8 @@ impl Encoder {
 
     /// Encodes the picture in `planes`.
     pub fn encode(&mut self) -> Option<Encoded<'_>> {
-        let (mut data, mut keyframe) = (ptr::null_mut(), 0);
-        let size = unsafe { encoder_encode(self.raw, &mut data, &mut keyframe) };
+        let (mut data, mut keyframe, mut coarse) = (ptr::null_mut(), 0, 0);
+        let size = unsafe { encoder_encode(self.raw, &mut data, &mut keyframe, &mut coarse) };
         // The access unit stays valid until the next call into the encoder, which needs `&mut self`.
         // "Nothing changed" still costs a header of some twenty bytes for each slice the encoder cuts the frame
         // into, and x264 makes up to one slice for every four rows of 16-pixel blocks. Anything bigger carried
@@ -149,6 +172,7 @@ impl Encoder {
             unit: unsafe { slice::from_raw_parts(data, size as usize) },
             keyframe: keyframe != 0,
             settled,
+            coarse: coarse != 0,
         })
     }
 }
@@ -169,15 +193,26 @@ mod tests {
     /// Held by a test while it uses the GPU's encoder, which only one can have at a time.
     static GPU: Mutex<()> = Mutex::new(());
 
-    /// The encoders to test: x264 always, and the GPU's if this machine has one.
+    /// The encoders to test: x264 at each effort, and the GPU's if this machine has one.
     fn encoders(width: usize, height: usize, kbps: u32, full_chroma: bool) -> Vec<Encoder> {
-        let software = Encoder::open_on(false, width, height, 60, kbps, full_chroma).expect("x264 opens");
-        let hardware = Encoder::open_on(true, width, height, 60, kbps, full_chroma);
+        let software = (0..EFFORTS)
+            .map(|effort| Encoder::open_on(false, width, height, 60, kbps, full_chroma, effort).expect("x264 opens"));
+        let hardware = Encoder::open_on(true, width, height, 60, kbps, full_chroma, 0);
         println!(
             "full_chroma={full_chroma}: {}",
             if hardware.is_some() { "testing x264 and the GPU" } else { "testing x264 only (no GPU encoder here)" }
         );
-        std::iter::once(software).chain(hardware).collect()
+        software.chain(hardware).collect()
+    }
+
+    /// Fills the encoder's planes with a picture full of fine detail.
+    fn draw_detail(encoder: &mut Encoder) {
+        for (index, plane) in encoder.planes().into_iter().enumerate() {
+            for (i, byte) in plane.bytes.iter_mut().enumerate() {
+                let (x, y) = (i % plane.stride, i / plane.stride);
+                *byte = ((x * 7) ^ (y * 13) ^ (index * 90)) as u8;
+            }
+        }
     }
 
     /// Every frame must come out of the encoder at once: capture only delivers a frame when the screen changes,
@@ -190,12 +225,13 @@ mod tests {
             for mut encoder in encoders(256, 256, 1000, full_chroma) {
                 let configuration = encoder.configuration();
                 assert_eq!(configuration[0], 1, "an avcC record");
-                let profile = match (full_chroma, encoder.gpu) {
-                    (true, _) => 244,
-                    (false, true) => 100,
-                    (false, false) => 66,
+                // x264 uses the baseline profile at its least effort and the high one above.
+                let profiles: &[u8] = match (full_chroma, encoder.gpu) {
+                    (true, _) => &[244],
+                    (false, true) => &[100],
+                    (false, false) => &[66, 100],
                 };
-                assert_eq!(configuration[1], profile, "the stream's profile");
+                assert!(profiles.contains(&configuration[1]), "the stream's profile");
                 for (frame, expect_keyframe) in [(0, true), (1, false)] {
                     for plane in encoder.planes() {
                         plane.bytes.fill(100 + frame * 50);
@@ -216,7 +252,7 @@ mod tests {
     #[test]
     fn the_gpu_encodes_for_one_session_at_a_time() {
         let _alone = GPU.lock();
-        let open = || Encoder::open_on(true, 640, 480, 60, 2000, false);
+        let open = || Encoder::open_on(true, 640, 480, 60, 2000, false, 0);
         let Some(first) = open() else { return }; // this machine's GPU cannot encode
         assert!(open().is_none(), "a second encoder while the first is open");
         drop(first);
@@ -226,18 +262,28 @@ mod tests {
     /// A bitrate cap forces a detailed picture out coarse at first. Encoding it again at the pace of refinement
     /// must improve it and then come to rest, or a still screen would either stay blurry or be re-sent forever.
     #[test]
+    fn x264_says_when_the_cap_costs_quality() {
+        for effort in 0..EFFORTS {
+            // Whether the last of this many encodings of one detailed picture came out coarse.
+            let coarse_after = |frames, kbps| {
+                let mut encoder = Encoder::open_on(false, 640, 480, 60, kbps, false, effort).expect("x264 opens");
+                draw_detail(&mut encoder);
+                (0..frames).map(|_| encoder.encode().expect("a frame in gives a frame out").coarse).last().unwrap()
+            };
+            assert!(coarse_after(3, 200), "under a low cap the picture stays coarse (effort {effort})");
+            // A first frame is held to a part of what the cap allows at once, so it may be coarse even here.
+            assert!(!coarse_after(3, 50000), "under a high one it soon is not (effort {effort})");
+        }
+    }
+
+    #[test]
     fn a_still_picture_is_refined_and_then_settles() {
         let _alone = GPU.lock();
         let (width, height, kbps) = (640, 480, 2000);
         for mut encoder in [false, true].into_iter().flat_map(|full_chroma| encoders(width, height, kbps, full_chroma))
         {
             let (full_chroma, gpu) = (encoder.full_chroma, encoder.gpu);
-            for (index, plane) in encoder.planes().into_iter().enumerate() {
-                for (i, byte) in plane.bytes.iter_mut().enumerate() {
-                    let (x, y) = (i % plane.stride, i / plane.stride);
-                    *byte = ((x * 7) ^ (y * 13) ^ (index * 90)) as u8;
-                }
-            }
+            draw_detail(&mut encoder);
             let first = encoder.encode().expect("a frame in gives a frame out").unit.len();
             assert!(encoder.set_rate(kbps, REFINE_FPS));
             let (mut sizes, mut settled_in_a_row) = (Vec::new(), 0);

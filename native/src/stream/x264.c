@@ -12,16 +12,22 @@ struct software {
 
 static const struct encoder_ops software_ops;
 
+/* x264's presets by effort. On text scrolling by at 3 Mbit/s each step up was worth 3 to 6 dB, for about half
+   as much time again per frame. */
+static const char *const PRESETS[EFFORTS] = { "ultrafast", "veryfast", "faster" };
+/* A frame counts as coarse when the cap made it this much worse than the target, in quantiser steps. */
+#define COARSE_MARGIN 1
+
 static void set_rate(x264_param_t *param, int kbps, int buffer_kbits)
 {
     param->rc.i_vbv_max_bitrate = kbps;
     param->rc.i_vbv_buffer_size = buffer_kbits;
 }
 
-struct encoder *software_open(int width, int height, int fps, int kbps, int full_chroma)
+struct encoder *software_open(int width, int height, int fps, int kbps, int full_chroma, int effort)
 {
     x264_param_t param;
-    if (x264_param_default_preset(&param, "ultrafast", "zerolatency") < 0)
+    if (x264_param_default_preset(&param, PRESETS[effort], "zerolatency") < 0)
         return NULL;
     param.i_csp = full_chroma ? X264_CSP_I444 : X264_CSP_I420;
     param.i_width = width;
@@ -88,7 +94,7 @@ static int software_headers(struct encoder *base, uint8_t **sps, int *sps_size, 
     return 0;
 }
 
-static int software_encode(struct encoder *base, uint8_t **data, int *keyframe)
+static int software_encode(struct encoder *base, uint8_t **data, int *keyframe, int *coarse)
 {
     struct software *encoder = (struct software *)base;
     x264_nal_t *nal;
@@ -99,6 +105,7 @@ static int software_encode(struct encoder *base, uint8_t **data, int *keyframe)
     if (size > 0) {
         *data = nal[0].p_payload;
         *keyframe = out.b_keyframe;
+        *coarse = out.prop.f_crf_avg > QUALITY + COARSE_MARGIN; /* the rate factor the cap left it with */
     }
     return size;
 }

@@ -31,6 +31,8 @@ pub struct Shared {
     pub stop: AtomicBool,
     /// The bitrate in kbit/s the session now allows; 0 until it sets one.
     pub kbps: AtomicU32,
+    /// Set while that bitrate is still on its way up to what the link carries or the client wants.
+    pub climbing: AtomicBool,
     /// How long converting and encoding the latest frame took, in microseconds.
     pub encode_micros: AtomicU32,
 }

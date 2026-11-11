@@ -99,6 +99,8 @@ pub struct Verdict {
     pub probing: bool,
     /// Whether the link, not the ceiling, keeps the rate where it is.
     pub held_back: bool,
+    /// Whether the rate is neither there nor at the ceiling yet, but still on its way up.
+    pub climbing: bool,
 }
 
 pub struct Controller {
@@ -230,11 +232,13 @@ impl Controller {
                 0
             }
         };
+        let below = self.kbps < reading.ceiling;
         Verdict {
             kbps: self.kbps,
             padding,
             probing: self.probe.is_some(),
-            held_back: self.limited && self.kbps < reading.ceiling,
+            held_back: self.limited && below,
+            climbing: !self.limited && below,
         }
     }
 
