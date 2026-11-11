@@ -13,11 +13,15 @@ pub use encode::{PROBE, probe};
 use crate::capture::{Settings, Shared, Sink};
 use encode::Encoder;
 
-/// For how many seconds at most a still picture is encoded again to bring it up to the quality target.
+/// How many times a second a still picture is encoded again to bring it up to the quality target. Far fewer
+/// than the frame rate, so that each of these frames may take a correspondingly larger share of the bitrate cap:
+/// with a frame's ordinary share an encoder soon finds nothing it can add.
+pub const REFINE_FPS: u32 = 10;
+/// For how many seconds at most a still picture is refined.
 const REFINE_SECONDS: u32 = 20;
-/// How many frames in a row have to add nothing before a still picture counts as finished. A few are not
-/// enough: while the bitrate cap holds the encoder back, frames that add detail alternate with ones that add none.
-pub const SETTLED_FRAMES: u32 = 20;
+/// How many refinements in a row have to add nothing before the picture counts as finished.
+pub const SETTLED_FRAMES: u32 = 3;
+const REFINE_INTERVAL: Duration = Duration::from_millis(1000 / REFINE_FPS as u64);
 
 pub struct Stream {
     pub settings: Settings,
@@ -28,6 +32,8 @@ pub struct Stream {
     /// The half-size copy of the screen, when the picture is scaled down.
     scaled: Vec<u8>,
     encoder: Option<Encoder>,
+    /// The bitrate cap in kbit/s and the frames a second the encoder was last told.
+    rate: (u32, u32),
     /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
     /// frame would ever improve it, so the same picture is encoded again until the encoder has nothing to add.
     refinements_left: u32,
@@ -50,6 +56,7 @@ impl Stream {
             screen: (0, 0),
             scaled: Vec::new(),
             encoder: None,
+            rate: (0, 0),
             refinements_left: 0,
             fine_frames: 0,
             encoded: now,
@@ -70,26 +77,27 @@ impl Stream {
     }
 
     /// How long the capture may wait for the screen to change before it calls `refine` and looks at `wanted`
-    /// again: a still screen sends nothing, and while its picture is being refined each frame's time counts.
+    /// again: a still screen sends nothing, so not long, and no longer than until the next refinement is due.
     pub fn patience(&self) -> Duration {
-        if self.refinements_left > 0 { self.frame_interval() } else { Duration::from_millis(250) }
+        let refinement = if self.refinements_left > 0 {
+            REFINE_INTERVAL.saturating_sub(self.encoded.elapsed())
+        } else {
+            Duration::MAX
+        };
+        refinement.min(Duration::from_millis(250))
     }
 
     /// Encodes a new picture of the screen. `pixels` holds its rows, `stride` bytes apart, each pixel as blue,
     /// green, red and a fourth byte that is ignored.
     pub fn picture(&mut self, pixels: &[u8], stride: usize, width: usize, height: usize) {
         let started = Instant::now();
-        if self.encoder.is_none() || self.screen != (width, height) {
-            if let Err(reason) = self.open(width, height) {
-                self.ended = Some(Err(reason));
-                return;
-            }
+        if (self.encoder.is_none() || self.screen != (width, height))
+            && let Err(reason) = self.open(width, height)
+        {
+            self.ended = Some(Err(reason));
+            return;
         }
         let Some(encoder) = &mut self.encoder else { return };
-        let wanted = self.shared.kbps.load(Ordering::Relaxed);
-        if wanted != 0 && wanted != self.settings.kbps && encoder.set_bitrate(wanted) {
-            self.settings.kbps = wanted;
-        }
         let (mut source, mut stride) = (pixels, stride);
         if self.settings.half_size {
             convert::halve(source, stride, width, height, &mut self.scaled);
@@ -97,16 +105,16 @@ impl Stream {
         }
         let full_chroma = encoder.full_chroma;
         convert::bgrx_to_yuv(source, stride, encoder.width, encoder.height, encoder.planes(), full_chroma);
-        self.refinements_left = REFINE_SECONDS * self.settings.fps;
-        self.encode(started);
+        self.refinements_left = REFINE_SECONDS * REFINE_FPS;
+        self.encode(started, self.settings.fps);
     }
 
-    /// Encodes the latest picture once more if the screen has stood still for a frame's time and the picture is
-    /// not yet as good as it should be.
+    /// Encodes the latest picture once more if the screen has stood still long enough and the picture is not
+    /// yet as good as it should be.
     pub fn refine(&mut self) {
-        if self.refinements_left > 0 && self.encoded.elapsed() >= self.frame_interval() {
+        if self.refinements_left > 0 && self.encoded.elapsed() >= REFINE_INTERVAL {
             self.refinements_left -= 1;
-            self.encode(Instant::now());
+            self.encode(Instant::now(), REFINE_FPS);
         }
     }
 
@@ -115,10 +123,11 @@ impl Stream {
         self.screen = (width, height);
         let scale = if self.settings.half_size { 2 } else { 1 };
         // 4:2:0 needs even dimensions; an odd last row or column is dropped.
-        let (width, height) = (width / scale & !1, height / scale & !1);
+        let (width, height) = ((width / scale) & !1, (height / scale) & !1);
         let mut encoder =
             Encoder::open(width, height, self.settings.fps, self.settings.kbps, self.settings.full_chroma)
                 .ok_or("could not open the encoder")?;
+        self.rate = (self.settings.kbps, self.settings.fps);
         eprintln!("remote-desktop: encoding {width}x{height} {}", if encoder.gpu { "on the GPU" } else { "with x264" });
         if !self.wrote_header {
             self.send(b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00");
@@ -130,9 +139,18 @@ impl Stream {
         Ok(())
     }
 
-    /// Encodes the picture currently in the encoder's planes and sends it.
-    fn encode(&mut self, started: Instant) {
+    /// Encodes the picture currently in the encoder's planes, as one of `fps` frames a second, and sends it.
+    fn encode(&mut self, started: Instant, fps: u32) {
         let Some(encoder) = &mut self.encoder else { return };
+        // The client may have asked for another bitrate cap, and refining goes at another pace than the screen.
+        let wanted = match self.shared.kbps.load(Ordering::Relaxed) {
+            0 => self.settings.kbps,
+            kbps => kbps,
+        };
+        if self.rate != (wanted, fps) && encoder.set_rate(wanted, fps) {
+            self.rate = (wanted, fps);
+            self.settings.kbps = wanted;
+        }
         if let Some(encoded) = encoder.encode() {
             let (unit, keyframe, settled) = (encoded.unit.to_vec(), encoded.keyframe, encoded.settled);
             self.shared.encode_micros.store(started.elapsed().as_micros() as u32, Ordering::Relaxed);

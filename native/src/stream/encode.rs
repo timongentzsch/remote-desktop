@@ -22,7 +22,7 @@ unsafe extern "C" {
         pps_size: *mut c_int,
     ) -> c_int;
     fn encoder_encode(encoder: *mut Raw, data: *mut *mut u8, keyframe: *mut c_int) -> c_int;
-    fn encoder_set_bitrate(encoder: *mut Raw, kbps: c_int) -> c_int;
+    fn encoder_set_rate(encoder: *mut Raw, kbps: c_int, fps: c_int) -> c_int;
     fn encoder_close(encoder: *mut Raw);
 }
 
@@ -37,8 +37,7 @@ pub struct Encoded<'a> {
     /// The access unit, as length-prefixed NAL units.
     pub unit: &'a [u8],
     pub keyframe: bool,
-    /// The frame is so small that it can only say "nothing changed". Under a bitrate cap such frames also occur
-    /// between ones that add detail, so a still picture is finished only after a run of them.
+    /// The frame is so small that it says little more than "nothing changed".
     pub settled: bool,
 }
 
@@ -132,9 +131,10 @@ impl Encoder {
         record
     }
 
-    /// Changes the bitrate cap while running. False if the encoder refused, in which case the old cap stays.
-    pub fn set_bitrate(&mut self, kbps: u32) -> bool {
-        unsafe { encoder_set_bitrate(self.raw, kbps as c_int) == 0 }
+    /// Tells the running encoder the bitrate cap and how many frames a second it will get from now on; a frame
+    /// may take that much more of the cap the fewer there are. False if the encoder refused and nothing changed.
+    pub fn set_rate(&mut self, kbps: u32, fps: u32) -> bool {
+        unsafe { encoder_set_rate(self.raw, kbps as c_int, fps as c_int) == 0 }
     }
 
     /// Encodes the picture in `planes`.
@@ -142,8 +142,10 @@ impl Encoder {
         let (mut data, mut keyframe) = (ptr::null_mut(), 0);
         let size = unsafe { encoder_encode(self.raw, &mut data, &mut keyframe) };
         // The access unit stays valid until the next call into the encoder, which needs `&mut self`.
-        // "Nothing changed" costs a few bytes per row of blocks; anything bigger carried picture detail.
-        let settled = (size as usize) < 64 + self.width * self.height / 4096;
+        // "Nothing changed" still costs a header of some twenty bytes for each slice the encoder cuts the frame
+        // into, and x264 makes up to one slice for every four rows of 16-pixel blocks. Anything bigger carried
+        // picture detail.
+        let settled = (size as usize) < 64 + 8 * self.height.div_ceil(16);
         (size > 0).then(|| Encoded {
             unit: unsafe { slice::from_raw_parts(data, size as usize) },
             keyframe: keyframe != 0,
@@ -160,6 +162,7 @@ impl Drop for Encoder {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{REFINE_FPS, SETTLED_FRAMES};
     use super::*;
 
     /// The encoders to test: x264 always, and the GPU's if this machine has one.
@@ -197,18 +200,19 @@ mod tests {
                     assert!(length > 0 && 4 + length <= encoded.unit.len(), "NAL units carry their length in front");
                     assert_eq!(encoded.keyframe, expect_keyframe);
                 }
-                assert!(encoder.set_bitrate(500), "the bitrate cap can change mid-stream");
+                assert!(encoder.set_rate(500, 60), "the bitrate cap can change mid-stream");
                 assert!(encoder.encode().is_some_and(|encoded| !encoded.keyframe), "and the stream simply continues");
             }
         }
     }
 
-    /// A bitrate cap forces a detailed picture out coarse at first. Encoding it again and again must improve it
-    /// and then come to rest, or a still screen would either stay blurry or be re-sent forever.
+    /// A bitrate cap forces a detailed picture out coarse at first. Encoding it again at the pace of refinement
+    /// must improve it and then come to rest, or a still screen would either stay blurry or be re-sent forever.
     #[test]
     fn a_still_picture_is_refined_and_then_settles() {
-        let (width, height) = (640, 480);
-        for mut encoder in [false, true].into_iter().flat_map(|full_chroma| encoders(width, height, 300, full_chroma)) {
+        let (width, height, kbps) = (640, 480, 2000);
+        for mut encoder in [false, true].into_iter().flat_map(|full_chroma| encoders(width, height, kbps, full_chroma))
+        {
             let (full_chroma, gpu) = (encoder.full_chroma, encoder.gpu);
             for (index, plane) in encoder.planes().into_iter().enumerate() {
                 for (i, byte) in plane.bytes.iter_mut().enumerate() {
@@ -216,16 +220,23 @@ mod tests {
                     *byte = ((x * 7) ^ (y * 13) ^ (index * 90)) as u8;
                 }
             }
-            let (mut frames, mut bytes, mut settled_in_a_row) = (0, 0, 0);
-            while settled_in_a_row < crate::stream::SETTLED_FRAMES {
+            let first = encoder.encode().expect("a frame in gives a frame out").unit.len();
+            assert!(encoder.set_rate(kbps, REFINE_FPS));
+            let (mut sizes, mut settled_in_a_row) = (Vec::new(), 0);
+            while settled_in_a_row < SETTLED_FRAMES {
                 let encoded = encoder.encode().expect("a frame in gives a frame out");
                 settled_in_a_row = if encoded.settled { settled_in_a_row + 1 } else { 0 };
-                frames += 1;
-                bytes += encoded.unit.len();
-                assert!(frames < 3000, "the picture never settled (full_chroma={full_chroma} gpu={gpu})");
+                sizes.push(encoded.unit.len());
+                assert!(
+                    sizes.len() < 200,
+                    "the picture never settled (full_chroma={full_chroma} gpu={gpu}): {sizes:?}"
+                );
             }
-            println!("full_chroma={full_chroma} gpu={gpu}: settled after {frames} frames and {} kB", bytes / 1024);
-            assert!(frames > 16, "a detailed picture at 300 kbit/s cannot be finished at once");
+            println!("full_chroma={full_chroma} gpu={gpu}: first frame {first} bytes, then {sizes:?}");
+            assert!(sizes.iter().sum::<usize>() > first, "refining adds more detail than the first frame could carry");
+            // No frame may take more than the fifth of a second of the cap that the encoders' buffer allows.
+            let most = kbps as usize * 1000 / 8 / 5;
+            assert!(sizes.iter().all(|&size| size <= most + most / 10), "refinement frames keep to the bitrate cap");
         }
     }
 }

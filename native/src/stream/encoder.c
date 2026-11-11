@@ -27,10 +27,11 @@ int encoder_encode(struct encoder *encoder, uint8_t **data, int *keyframe)
     return encoder->ops->encode(encoder, data, keyframe);
 }
 
-/* Changes the bitrate cap of a running encoder. Returns 0 on success. */
-int encoder_set_bitrate(struct encoder *encoder, int kbps)
+/* Tells a running encoder the bitrate cap and how many frames a second it will be given from now on, which
+   together say how much each frame may take. Returns 0 on success. */
+int encoder_set_rate(struct encoder *encoder, int kbps, int fps)
 {
-    return encoder->ops->set_bitrate(encoder, kbps);
+    return encoder->ops->set_rate(encoder, kbps, fps);
 }
 
 void encoder_close(struct encoder *encoder)

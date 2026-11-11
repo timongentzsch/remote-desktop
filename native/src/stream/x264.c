@@ -12,6 +12,15 @@ struct software {
 
 static const struct encoder_ops software_ops;
 
+/* x264 is told a constant frame rate once and for all (see below), so fewer frames a second are expressed as a
+   higher bitrate at that rate: each frame's share of the cap stays right. The buffer, which bounds one frame,
+   is a fifth of a second at the cap. */
+static void set_rate(x264_param_t *param, int kbps, int fps)
+{
+    param->rc.i_vbv_max_bitrate = (int)((int64_t)kbps * param->i_fps_num / fps);
+    param->rc.i_vbv_buffer_size = kbps / 5;
+}
+
 struct encoder *software_open(int width, int height, int fps, int kbps, int full_chroma)
 {
     x264_param_t param;
@@ -31,8 +40,7 @@ struct encoder *software_open(int width, int height, int fps, int kbps, int full
     /* Constant quality, capped: a still screen costs almost nothing and motion cannot outrun the link. */
     param.rc.i_rc_method = X264_RC_CRF;
     param.rc.f_rf_constant = QUALITY; /* x264's "rate factor" */
-    param.rc.i_vbv_max_bitrate = kbps;
-    param.rc.i_vbv_buffer_size = kbps / 5;
+    set_rate(&param, kbps, fps);
     param.vui.b_fullrange = 1;
     param.vui.i_colorprim = 1; /* BT.709 */
     param.vui.i_transfer = 1;
@@ -98,13 +106,12 @@ static int software_encode(struct encoder *base, uint8_t **data, int *keyframe)
     return size;
 }
 
-static int software_set_bitrate(struct encoder *base, int kbps)
+static int software_set_rate(struct encoder *base, int kbps, int fps)
 {
     struct software *encoder = (struct software *)base;
     x264_param_t param;
     x264_encoder_parameters(encoder->x264, &param);
-    param.rc.i_vbv_max_bitrate = kbps;
-    param.rc.i_vbv_buffer_size = kbps / 5;
+    set_rate(&param, kbps, fps);
     return x264_encoder_reconfig(encoder->x264, &param);
 }
 
@@ -116,4 +123,4 @@ static void software_close(struct encoder *base)
     free(encoder);
 }
 
-static const struct encoder_ops software_ops = { software_plane, software_headers, software_encode, software_set_bitrate, software_close };
+static const struct encoder_ops software_ops = { software_plane, software_headers, software_encode, software_set_rate, software_close };

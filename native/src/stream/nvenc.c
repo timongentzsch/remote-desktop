@@ -61,10 +61,13 @@ static void load(void)
         && cuda->cuCtxPopCurrent(&unused) == CUDA_SUCCESS; /* creating it made it current on this thread */
 }
 
-static void set_rate(NV_ENC_RC_PARAMS *rate, int kbps)
+/* The encoder is told one frame rate at the start, so fewer frames a second are expressed as a higher bitrate
+   at that rate: each frame's share of the cap stays right. The buffer, which bounds one frame, is a fifth of a
+   second at the cap, as for x264. */
+static void set_rate(NV_ENC_RC_PARAMS *rate, int kbps, int fps, int configured_fps)
 {
-    rate->averageBitRate = rate->maxBitRate = kbps * 1000;
-    rate->vbvBufferSize = rate->vbvInitialDelay = kbps * 1000 / 5; /* a fifth of a second, as for x264 */
+    rate->averageBitRate = rate->maxBitRate = (uint32_t)((int64_t)kbps * 1000 * configured_fps / fps);
+    rate->vbvBufferSize = rate->vbvInitialDelay = kbps * 1000 / 5;
 }
 
 static int width_of(const struct nvenc *encoder, int plane)
@@ -138,7 +141,7 @@ struct encoder *nvenc_open(int width, int height, int fps, int kbps, int full_ch
         config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
         config->rcParams.targetQuality = QUALITY;
         config->rcParams.zeroReorderDelay = 1;
-        set_rate(&config->rcParams, kbps);
+        set_rate(&config->rcParams, kbps, fps, fps);
         NV_ENC_CONFIG_H264 *h264 = &config->encodeCodecConfig.h264Config;
         h264->idrPeriod = NVENC_INFINITE_GOPLENGTH;
         h264->disableSPSPPS = 1; /* the parameter sets travel in the stream's configuration record instead */
@@ -235,7 +238,7 @@ static int nvenc_headers(struct encoder *base, uint8_t **sps, int *sps_size, uin
         return -1;
     for (int code = start_code(encoder->headers, size, 0), begin, next; code < (int)size; code = next) {
         int length = nal_unit(encoder->headers, size, code, &begin, &next);
-        int type = encoder->headers[begin] & 0x1F;
+        int type = length ? encoder->headers[begin] & 0x1F : 0;
         if (type == NAL_SPS) {
             *sps = encoder->headers + begin;
             *sps_size = length;
@@ -319,12 +322,12 @@ done:
     return size;
 }
 
-static int nvenc_set_bitrate(struct encoder *base, int kbps)
+static int nvenc_set_rate(struct encoder *base, int kbps, int fps)
 {
     struct nvenc *encoder = (struct nvenc *)base;
     CUcontext unused;
     NV_ENC_RC_PARAMS before = encoder->config.rcParams;
-    set_rate(&encoder->config.rcParams, kbps);
+    set_rate(&encoder->config.rcParams, kbps, fps, encoder->setup.frameRateNum);
     NV_ENC_RECONFIGURE_PARAMS change = { .version = NV_ENC_RECONFIGURE_PARAMS_VER, .reInitEncodeParams = encoder->setup };
     cuda->cuCtxPushCurrent(context);
     NVENCSTATUS status = api.nvEncReconfigureEncoder(encoder->session, &change);
@@ -334,4 +337,4 @@ static int nvenc_set_bitrate(struct encoder *base, int kbps)
     return status == NV_ENC_SUCCESS ? 0 : -1;
 }
 
-static const struct encoder_ops nvenc_ops = { nvenc_plane, nvenc_headers, nvenc_encode, nvenc_set_bitrate, nvenc_close };
+static const struct encoder_ops nvenc_ops = { nvenc_plane, nvenc_headers, nvenc_encode, nvenc_set_rate, nvenc_close };

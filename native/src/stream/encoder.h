@@ -7,7 +7,7 @@ struct encoder_ops {
     uint8_t *(*plane)(struct encoder *encoder, int index, int *stride);
     int (*headers)(struct encoder *encoder, uint8_t **sps, int *sps_size, uint8_t **pps, int *pps_size);
     int (*encode)(struct encoder *encoder, uint8_t **data, int *keyframe);
-    int (*set_bitrate)(struct encoder *encoder, int kbps);
+    int (*set_rate)(struct encoder *encoder, int kbps, int fps);
     void (*close)(struct encoder *encoder);
 };
 

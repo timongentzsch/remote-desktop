@@ -30,7 +30,7 @@ pub fn halve(pixels: &[u8], stride: usize, width: usize, height: usize, out: &mu
     out.clear();
     for pair in pixels.chunks_exact(stride * 2).take(height / 2) {
         let (top, bottom) = pair.split_at(stride);
-        for (top, bottom) in top[..width / 2 * 8].chunks_exact(8).zip(bottom.chunks_exact(8)) {
+        for (top, bottom) in top[..width / 2 * 8].as_chunks::<8>().0.iter().zip(bottom.as_chunks::<8>().0) {
             for channel in 0..4 {
                 let sum =
                     top[channel] as u16 + top[channel + 4] as u16 + bottom[channel] as u16 + bottom[channel + 4] as u16;
