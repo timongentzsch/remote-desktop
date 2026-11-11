@@ -120,5 +120,5 @@ builds them and publishes them when a version tag is pushed.
 
 ## Licence
 
-x264 is licensed under the GPL, version 2 or later, and is linked into the binary, so the binary can only be
-distributed under the GPL.
+GNU General Public License, version 2 or (at your option) any later version; see `LICENSE`. x264, which is
+linked into the binary, is under the same terms.
