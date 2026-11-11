@@ -5,6 +5,10 @@ streams the screen as H.264 and the desktop's sound as Opus, shares the clipboar
 pointer input. Capture currently needs a Wayland compositor that offers `ext-image-copy-capture-v1`
 (Hyprland, Sway and other wlroots compositors). Sound needs PipeWire or PulseAudio.
 
+The picture is encoded on the GPU where an NVIDIA card with a hardware encoder and its driver (470 or newer)
+are present, which takes about a tenth of the processor time, and with the built-in x264 everywhere else.
+Nothing has to be configured; the service's log says which one a session uses.
+
 ## Install on the machine to control
 
 Run this in a terminal of the desktop session you want to control. It downloads the binary for the
@@ -56,7 +60,9 @@ which `install` makes your user Tailscale's operator on this machine.
 ## Build
 
 Sources are in `native/`; the client (`index.html`, `manifest.json`, `icon.svg`) is compiled into the binary.
-x264 is built from the `native/x264` submodule, so clone with `--recurse-submodules`.
+x264 is built from the `native/x264` submodule and the GPU encoder's API comes from the
+`native/nv-codec-headers` submodule (headers only; NVIDIA's libraries are loaded at run time if present), so
+clone with `--recurse-submodules`.
 
 Needs Rust, a C compiler, `make` and, for x86, `nasm`.
 

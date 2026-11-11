@@ -1,3 +1,6 @@
 [submodule "native/x264"]
 	path = native/x264
 	url = https://code.videolan.org/videolan/x264.git
+[submodule "native/nv-codec-headers"]
+	path = native/nv-codec-headers
+	url = https://github.com/FFmpeg/nv-codec-headers

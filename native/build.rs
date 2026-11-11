@@ -1,5 +1,6 @@
 //! Builds x264 from the pinned sources in x264/ and links it statically, so the binary carries its encoder
 //! instead of depending on whichever x264 version a distribution ships. Needs nasm when targeting x86.
+//! The GPU encoder needs only the headers in nv-codec-headers/; its libraries are loaded at run time.
 
 use std::env;
 use std::ffi::OsString;
@@ -22,7 +23,9 @@ fn run(command: &mut Command) {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=src/encoder.c");
+    for file in ["encoder.c", "encoder.h", "nvenc.c"] {
+        println!("cargo:rerun-if-changed=src/{file}");
+    }
     println!("cargo:rerun-if-changed=x264/x264.h");
     let source = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("x264");
     let build = PathBuf::from(env::var("OUT_DIR").unwrap()).join("x264");
@@ -41,7 +44,7 @@ fn main() {
         run(Command::new("make").current_dir(&build).arg(format!("-j{}", env::var("NUM_JOBS").unwrap())).arg("libx264.a"));
     }
 
-    cc::Build::new().file("src/encoder.c").include(&source).include(&build).compile("encoder");
+    cc::Build::new().files(["src/encoder.c", "src/nvenc.c"]).include(&source).include(&build).include("nv-codec-headers/include").compile("encoder");
     println!("cargo:rustc-link-search=native={}", build.display());
     println!("cargo:rustc-link-lib=static=x264");
 }

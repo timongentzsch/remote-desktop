@@ -44,6 +44,8 @@ fn main() {
         (Some("password"), None) => install::set_password(),
         (Some("password"), Some(option)) if option == "--none" => install::remove_password(),
         (Some("certificate"), option) if is_tailscale(&option) => install::renew_certificate(option.is_some()),
+        // Not for users: the service runs this once to learn whether the GPU can encode (see encode.rs).
+        (Some(encode::PROBE), None) => std::process::exit(if encode::Encoder::probe() { 0 } else { 1 }),
         _ => fail("usage: remote-desktop [install [--tailscale] | uninstall | password [--none] | certificate [--tailscale] | --listen ADDRESS]"),
     }
 }

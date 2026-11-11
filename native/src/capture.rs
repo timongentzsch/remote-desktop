@@ -213,6 +213,7 @@ impl Capture {
         let (width, height) = (width / scale & !1, height / scale & !1);
         let mut encoder = Encoder::open(width, height, self.settings.fps, self.settings.kbps, self.settings.full_chroma)
             .ok_or("could not open the encoder")?;
+        eprintln!("remote-desktop: encoding {width}x{height} {}", if encoder.gpu { "on the GPU" } else { "with x264" });
         if !self.wrote_header {
             self.send(b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00");
             self.wrote_header = true;
