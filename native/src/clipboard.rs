@@ -172,11 +172,11 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for Clipboard {
                 let kind = TEXT_TYPES.iter().find(|kind| kinds.iter().any(|offered| offered == *kind));
                 if kinds.iter().any(|offered| offered == OWN) {
                     // our own text coming back
-                } else if let Some(text) = kind.and_then(|kind| state.receive(&offer, kind)) {
-                    if text != state.last {
-                        state.last.clone_from(&text);
-                        (state.copied)(text);
-                    }
+                } else if let Some(text) = kind.and_then(|kind| state.receive(&offer, kind))
+                    && text != state.last
+                {
+                    state.last.clone_from(&text);
+                    (state.copied)(text);
                 }
                 offer.destroy();
             }

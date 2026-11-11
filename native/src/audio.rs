@@ -10,7 +10,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use pulseaudio::protocol;
-use unsafe_libopus as opus;
+use unsafe_libopus::{
+    OPUS_APPLICATION_RESTRICTED_LOWDELAY, OPUS_OK, OPUS_SET_BITRATE_REQUEST, OpusEncoder, opus_encode,
+    opus_encoder_create, opus_encoder_ctl, opus_encoder_destroy,
+};
 
 use crate::capture::Shared;
 
@@ -21,8 +24,11 @@ const FRAME_SAMPLES: usize = RATE as usize / 50;
 const FRAME_BYTES: usize = FRAME_SAMPLES * CHANNELS * 2;
 const BITRATE: i32 = 96_000;
 
+/// Receives each encoded packet of sound.
+pub type Packets = Box<dyn FnMut(&[u8]) + Send>;
+
 /// Records until `shared.stop` is set and hands each encoded packet to `packet`. Silence is not sent.
-pub fn run(shared: Arc<Shared>, mut packet: Box<dyn FnMut(&[u8]) + Send>) -> Result<(), String> {
+pub fn run(shared: Arc<Shared>, mut packet: Packets) -> Result<(), String> {
     let failed = |error: protocol::ProtocolError| format!("the audio server refused: {error}");
     let (mut server, version) = connect()?;
     let stream = protocol::RecordStreamParams {
@@ -59,7 +65,7 @@ pub fn run(shared: Arc<Shared>, mut packet: Box<dyn FnMut(&[u8]) + Send>) -> Res
         }
         chunk.resize(descriptor.length as usize, 0);
         server.read_exact(&mut chunk).map_err(|error| format!("lost the audio server: {error}"))?;
-        samples.extend(chunk.chunks_exact(2).map(|sample| i16::from_le_bytes([sample[0], sample[1]])));
+        samples.extend(chunk.as_chunks::<2>().0.iter().map(|&sample| i16::from_le_bytes(sample)));
         while samples.len() >= FRAME_SAMPLES * CHANNELS {
             let frame: Vec<i16> = samples.drain(..FRAME_SAMPLES * CHANNELS).collect();
             if frame.iter().any(|&sample| sample != 0) {
@@ -94,32 +100,25 @@ fn connect() -> Result<(BufReader<UnixStream>, u16), String> {
     Ok((server, version))
 }
 
-struct Encoder(*mut opus::OpusEncoder);
+struct Encoder(*mut OpusEncoder);
 
 impl Encoder {
     fn new() -> Result<Self, String> {
         let mut error = 0;
         // "Restricted low delay" drops the codec's look-ahead; the sound follows the picture more closely.
         let raw = unsafe {
-            opus::opus_encoder_create(
-                RATE as i32,
-                CHANNELS as i32,
-                opus::OPUS_APPLICATION_RESTRICTED_LOWDELAY,
-                &mut error,
-            )
+            opus_encoder_create(RATE as i32, CHANNELS as i32, OPUS_APPLICATION_RESTRICTED_LOWDELAY, &mut error)
         };
-        if raw.is_null() || error != opus::OPUS_OK {
+        if raw.is_null() || error != OPUS_OK {
             return Err(format!("cannot create the audio encoder (Opus error {error})"));
         }
-        unsafe { opus::opus_encoder_ctl!(raw, opus::OPUS_SET_BITRATE_REQUEST, BITRATE) };
+        unsafe { opus_encoder_ctl!(raw, OPUS_SET_BITRATE_REQUEST, BITRATE) };
         Ok(Self(raw))
     }
 
     /// Encodes one frame of interleaved samples into `out` and returns the packet's length.
     fn encode(&mut self, frame: &[i16], out: &mut [u8]) -> Result<usize, String> {
-        match unsafe {
-            opus::opus_encode(self.0, frame.as_ptr(), FRAME_SAMPLES as i32, out.as_mut_ptr(), out.len() as i32)
-        } {
+        match unsafe { opus_encode(self.0, frame.as_ptr(), FRAME_SAMPLES as i32, out.as_mut_ptr(), out.len() as i32) } {
             size if size > 0 => Ok(size as usize),
             error => Err(format!("the audio encoder failed (Opus error {error})")),
         }
@@ -128,7 +127,7 @@ impl Encoder {
 
 impl Drop for Encoder {
     fn drop(&mut self) {
-        unsafe { opus::opus_encoder_destroy(self.0) }
+        unsafe { opus_encoder_destroy(self.0) }
     }
 }
 
