@@ -9,7 +9,7 @@ use rustbus::params::{Container, Param};
 use rustbus::wire::ObjectPath;
 use rustbus::{MessageBuilder, MessageType, RpcConn, standard_messages};
 
-use crate::pipewire::Screen;
+use crate::pipewire;
 use crate::stream::Stream;
 
 const SERVICE: &str = "org.gnome.Mutter.ScreenCast";
@@ -20,8 +20,8 @@ const CURSOR_HIDDEN: u32 = 0;
 const CURSOR_EMBEDDED: u32 = 1;
 
 /// Captures the primary monitor until the stream is no longer wanted or GNOME ends the cast.
-pub fn run(mut stream: Stream) -> Result<(), String> {
-    let unavailable = "this desktop offers no screen capture this program knows: it needs the ext-image-copy-capture-v1 protocol or GNOME";
+pub fn run(stream: Stream) -> Result<(), String> {
+    let unavailable = "this desktop offers no screen capture this program knows: it needs the ext-image-copy-capture-v1 protocol, GNOME or KDE";
     let mut bus = RpcConn::session_conn(WAIT).map_err(|_| unavailable)?;
     bus.set_filter(Box::new(|message| matches!(message.typ, MessageType::Reply | MessageType::Error | MessageType::Signal)));
     let mut listen = standard_messages::add_match(&format!("type='signal',sender='{SERVICE}'"));
@@ -43,16 +43,7 @@ pub fn run(mut stream: Stream) -> Result<(), String> {
             break signal.body.parser().get::<u32>().map_err(|error| format!("GNOME sent an unreadable stream announcement: {error:?}"))?;
         }
     };
-    let mut screen = Screen::open(node, stream.settings.fps).ok_or("could not receive the screen from PipeWire")?;
-    while stream.wanted() {
-        match screen.next(stream.patience()) {
-            Ok(Some(picture)) => stream.picture(picture.pixels, picture.stride, picture.width, picture.height),
-            Ok(None) => {}
-            Err(()) => return Err("GNOME ended the screen cast".into()),
-        }
-        stream.refine();
-    }
-    stream.ended.take().unwrap_or(Ok(()))
+    pipewire::run(node, stream, "GNOME")
 }
 
 /// A method call to Mutter's screen-cast service.

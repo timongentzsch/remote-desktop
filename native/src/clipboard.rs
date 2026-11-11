@@ -1,4 +1,4 @@
-//! Clipboard text in both directions, through the compositor's wlr-data-control protocol.
+//! Clipboard text in both directions, through the compositor's ext-data-control-v1 protocol.
 //!
 //! One thread per session watches the desktop's clipboard and tells the client when its text changes, and puts
 //! text the client copied onto the desktop's clipboard.
@@ -15,15 +15,18 @@ use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop, event_created_child};
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_device_v1::{self as device, ZwlrDataControlDeviceV1};
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::{self as offer, ZwlrDataControlOfferV1};
-use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_source_v1::{self as source, ZwlrDataControlSourceV1};
+use wayland_protocols::ext::data_control::v1::client::ext_data_control_device_v1::{self as device, ExtDataControlDeviceV1};
+use wayland_protocols::ext::data_control::v1::client::ext_data_control_manager_v1::ExtDataControlManagerV1;
+use wayland_protocols::ext::data_control::v1::client::ext_data_control_offer_v1::{self as offer, ExtDataControlOfferV1};
+use wayland_protocols::ext::data_control::v1::client::ext_data_control_source_v1::{self as source, ExtDataControlSourceV1};
 
 use crate::capture::Shared;
 
 /// The names text goes by on the clipboard, most precise first.
 const TEXT_TYPES: [&str; 4] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
+/// An extra type on what this side puts on the clipboard. The compositor announces every clipboard change,
+/// this side's own too; the mark tells those apart, so that they are not read back and sent to the client.
+const OWN: &str = "application/x-remote-desktop-own";
 /// Longer clipboard contents are not passed on.
 const LIMIT: usize = 1 << 20;
 
@@ -54,9 +57,9 @@ pub fn run(inbox: Arc<Inbox>, shared: Arc<Shared>, copied: Box<dyn FnMut(String)
     let queue = events.handle();
     let missing = |error| format!("the compositor lacks a protocol this needs: {error}");
     let seat: WlSeat = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
-    let manager: ZwlrDataControlManagerV1 = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
+    let manager: ExtDataControlManagerV1 = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
     let device = manager.get_data_device(&seat, &queue, ());
-    let mut clipboard = Clipboard { connection: connection.clone(), manager, device, offers: HashMap::new(), own: None, own_announced: false, last: String::new(), copied, finished: false };
+    let mut clipboard = Clipboard { connection: connection.clone(), manager, device, offers: HashMap::new(), own: None, last: String::new(), copied, finished: false };
 
     let lost = |error| format!("lost the Wayland connection: {error}");
     while !shared.stop.load(Ordering::Relaxed) && !clipboard.finished {
@@ -82,14 +85,12 @@ pub fn run(inbox: Arc<Inbox>, shared: Arc<Shared>, copied: Box<dyn FnMut(String)
 
 struct Clipboard {
     connection: Connection,
-    manager: ZwlrDataControlManagerV1,
-    device: ZwlrDataControlDeviceV1,
+    manager: ExtDataControlManagerV1,
+    device: ExtDataControlDeviceV1,
     /// The types each announced offer comes in.
     offers: HashMap<ObjectId, Vec<String>>,
     /// The selection this side put on the clipboard, and its text.
-    own: Option<(ZwlrDataControlSourceV1, String)>,
-    /// The compositor announces our own selection back to us; that one must not be read.
-    own_announced: bool,
+    own: Option<(ExtDataControlSourceV1, String)>,
     /// The text last passed in either direction, so that it is not passed straight back.
     last: String,
     copied: Box<dyn FnMut(String) + Send>,
@@ -103,11 +104,10 @@ impl Clipboard {
             return;
         }
         let source = self.manager.create_data_source(queue, ());
-        for kind in TEXT_TYPES {
+        for kind in TEXT_TYPES.into_iter().chain([OWN]) {
             source.offer(kind.to_string());
         }
         self.device.set_selection(Some(&source));
-        self.own_announced = true;
         self.last.clone_from(&text);
         if let Some((replaced, _)) = self.own.replace((source, text)) {
             replaced.destroy();
@@ -115,7 +115,7 @@ impl Clipboard {
     }
 
     /// Reads an offer's text. The owning application writes it into a pipe; one that stalls is given up on.
-    fn receive(&self, offer: &ZwlrDataControlOfferV1, kind: &str) -> Option<String> {
+    fn receive(&self, offer: &ExtDataControlOfferV1, kind: &str) -> Option<String> {
         let mut ends = [0; 2];
         if unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
             return None;
@@ -141,8 +141,8 @@ impl Clipboard {
     }
 }
 
-impl Dispatch<ZwlrDataControlDeviceV1, ()> for Clipboard {
-    fn event(state: &mut Self, _: &ZwlrDataControlDeviceV1, event: device::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+impl Dispatch<ExtDataControlDeviceV1, ()> for Clipboard {
+    fn event(state: &mut Self, _: &ExtDataControlDeviceV1, event: device::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         match event {
             device::Event::DataOffer { id } => {
                 state.offers.insert(id.id(), Vec::new());
@@ -150,7 +150,7 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for Clipboard {
             device::Event::Selection { id: Some(offer) } => {
                 let kinds = state.offers.remove(&offer.id()).unwrap_or_default();
                 let kind = TEXT_TYPES.iter().find(|kind| kinds.iter().any(|offered| offered == *kind));
-                if std::mem::take(&mut state.own_announced) {
+                if kinds.iter().any(|offered| offered == OWN) {
                     // our own text coming back
                 } else if let Some(text) = kind.and_then(|kind| state.receive(&offer, kind)) {
                     if text != state.last {
@@ -165,21 +165,21 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for Clipboard {
         }
     }
 
-    event_created_child!(Clipboard, ZwlrDataControlDeviceV1, [
-        device::EVT_DATA_OFFER_OPCODE => (ZwlrDataControlOfferV1, ()),
+    event_created_child!(Clipboard, ExtDataControlDeviceV1, [
+        device::EVT_DATA_OFFER_OPCODE => (ExtDataControlOfferV1, ()),
     ]);
 }
 
-impl Dispatch<ZwlrDataControlOfferV1, ()> for Clipboard {
-    fn event(state: &mut Self, offer: &ZwlrDataControlOfferV1, event: offer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+impl Dispatch<ExtDataControlOfferV1, ()> for Clipboard {
+    fn event(state: &mut Self, offer: &ExtDataControlOfferV1, event: offer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         if let offer::Event::Offer { mime_type } = event {
             state.offers.entry(offer.id()).or_default().push(mime_type);
         }
     }
 }
 
-impl Dispatch<ZwlrDataControlSourceV1, ()> for Clipboard {
-    fn event(state: &mut Self, source: &ZwlrDataControlSourceV1, event: source::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+impl Dispatch<ExtDataControlSourceV1, ()> for Clipboard {
+    fn event(state: &mut Self, source: &ExtDataControlSourceV1, event: source::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         let current = state.own.as_ref().filter(|(own, _)| own == source);
         match event {
             // An application on the desktop is pasting: hand it the text.
@@ -205,4 +205,4 @@ impl Dispatch<WlRegistry, GlobalListContents> for Clipboard {
 }
 
 delegate_noop!(Clipboard: ignore WlSeat);
-delegate_noop!(Clipboard: ZwlrDataControlManagerV1);
+delegate_noop!(Clipboard: ExtDataControlManagerV1);

@@ -5,9 +5,9 @@ streams the screen as H.264 and the desktop's sound as Opus, shares the clipboar
 pointer input.
 
 It captures the screen on Wayland compositors that offer `ext-image-copy-capture-v1` (Hyprland, Sway and
-other wlroots compositors) and on GNOME, where the picture comes from Mutter's screen cast through PipeWire.
-Sound needs PipeWire or PulseAudio. Sharing the clipboard needs the compositor's data-control protocol,
-which GNOME does not offer.
+other wlroots compositors), on GNOME and on KDE Plasma 6; the latter two cast the screen through PipeWire.
+Sound needs PipeWire or PulseAudio. Sharing the clipboard needs the compositor's `ext-data-control-v1`
+protocol, which GNOME does not offer.
 
 The picture is encoded on the GPU where an NVIDIA card with a hardware encoder and its driver (470 or newer)
 are present, which takes about a tenth of the processor time, and with the built-in x264 everywhere else.
@@ -65,7 +65,7 @@ which `install` makes your user Tailscale's operator on this machine.
 
 Sources are in `native/`; the client (`index.html`, `manifest.json`, `icon.svg`) is compiled into the binary.
 x264 is built from the `native/x264` submodule. The `native/nv-codec-headers` and `native/pipewire`
-submodules provide headers only, for the GPU encoder and for GNOME's screen cast; NVIDIA's and PipeWire's
+submodules provide headers only, for the GPU encoder and for the screen casts of GNOME and KDE; NVIDIA's and PipeWire's
 libraries are loaded at run time where present. Clone with `--recurse-submodules`.
 
 Needs Rust, a C compiler, `make` and, for x86, `nasm`.

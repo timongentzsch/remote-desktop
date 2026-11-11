@@ -27,6 +27,25 @@ Restart=on-failure
 WantedBy=graphical-session.target
 ";
 
+/// Plasma before 6.8 only casts the screen for a program whose desktop file asks for that (see kwin.rs). The
+/// entry is hidden from menus.
+const DESKTOP_ENTRY: &str = "\
+[Desktop Entry]
+Type=Application
+Name=Remote Desktop
+Exec=/usr/local/bin/remote-desktop
+NoDisplay=true
+X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1
+";
+
+fn desktop_entry_path() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".local/share")))
+        .unwrap_or_else(|| fail("neither XDG_DATA_HOME nor HOME is set"))
+        .join("applications/remote-desktop.desktop")
+}
+
 pub fn config_directory() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -55,9 +74,11 @@ pub fn install(tailscale: bool) {
     }
 
     let unit = config_directory().join("systemd/user/remote-desktop.service");
-    fs::create_dir_all(unit.parent().unwrap())
-        .and_then(|()| fs::write(&unit, UNIT))
-        .unwrap_or_else(|error| fail(&format!("cannot write {}: {error}", unit.display())));
+    for (path, contents) in [(unit, UNIT), (desktop_entry_path(), DESKTOP_ENTRY)] {
+        fs::create_dir_all(path.parent().unwrap())
+            .and_then(|()| fs::write(&path, contents))
+            .unwrap_or_else(|error| fail(&format!("cannot write {}: {error}", path.display())));
+    }
     run("systemctl", &["--user", "daemon-reload"]);
     run("systemctl", &["--user", "enable", "remote-desktop.service"]);
     run("systemctl", &["--user", "restart", "remote-desktop.service"]);
@@ -90,6 +111,7 @@ pub fn uninstall() {
     // The service may already be gone, which is fine.
     let _ = Command::new("systemctl").args(["--user", "--quiet", "disable", "--now", "remote-desktop.service"]).status();
     let _ = fs::remove_file(config_directory().join("systemd/user/remote-desktop.service"));
+    let _ = fs::remove_file(desktop_entry_path());
     run("systemctl", &["--user", "daemon-reload"]);
     firewall(false);
     run("sudo", &["rm", "-f", BINARY, UDEV_RULE_PATH]);

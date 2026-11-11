@@ -18,6 +18,7 @@ mod convert;
 mod encode;
 mod input;
 mod install;
+mod kwin;
 mod mutter;
 mod pipewire;
 mod server;
