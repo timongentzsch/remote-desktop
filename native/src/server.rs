@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::capture::{self, Settings, Shared};
 use crate::input::{Input, KEY_LEFTSHIFT};
 use crate::tls::{self, Connection};
-use crate::{fail, install, ws};
+use crate::{clipboard, fail, install, ws};
 
 /// The client, compiled into the binary: path, content type, body.
 const PAGES: [(&str, &str, &[u8]); 3] = [
@@ -216,6 +216,20 @@ fn session(connection: &Arc<Connection>, host: &Host) {
         }
     });
 
+    // Clipboard text goes both ways where the compositor allows it; the session works without.
+    let inbox = clipboard::Inbox::new().ok();
+    let sharing = inbox.clone().map(|inbox| {
+        let (outbox, shared) = (outbox.clone(), shared.clone());
+        thread::spawn(move || {
+            let copied = Box::new(move |text: String| {
+                outbox.push_control(ws::frame(ws::TEXT, serde_json::json!(["clipboard", text]).to_string().as_bytes()));
+            });
+            if let Err(reason) = clipboard::run(inbox, shared, copied) {
+                eprintln!("remote-desktop: the clipboard is not shared: {reason}");
+            }
+        })
+    });
+
     let mut held = HashSet::new();
     while let Ok(Some(message)) = ws::read(&mut &**connection) {
         if connection.take_reply_pending() {
@@ -232,6 +246,11 @@ fn session(connection: &Arc<Connection>, host: &Host) {
             Some("move") => host.input.move_to(number(1) as i32, number(2) as i32),
             Some("scroll") => host.input.scroll(number(1) as i32, number(2) as i32),
             Some("bitrate") => shared.kbps.store(number(1).clamp(500, 50000) as u32, Ordering::Relaxed),
+            Some("clipboard") => {
+                if let (Some(inbox), Some(text)) = (&inbox, parts.get(1).and_then(Value::as_str)) {
+                    inbox.put(text.to_string());
+                }
+            }
             // Echoed so the client can time the round trip.
             Some("ping") => outbox.push_control(ws::frame(ws::TEXT, &message)),
             _ => {}
@@ -239,7 +258,7 @@ fn session(connection: &Arc<Connection>, host: &Host) {
     }
     shared.stop.store(true, Ordering::Relaxed);
     outbox.close();
-    let _ = (capture.join(), writer.join());
+    let _ = (capture.join(), writer.join(), sharing.map(thread::JoinHandle::join));
     for code in held {
         host.input.key(code, false);
     }

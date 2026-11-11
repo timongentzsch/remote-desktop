@@ -201,6 +201,19 @@ const send = (...message) => socket?.readyState === WebSocket.OPEN && socket.sen
 const automatic = () => !settings.bitrate.value;
 const cap = () => +settings.bitrate.value || rate;  // the bitrate limit in force, kbit/s
 
+// Clipboard text is kept the same on both sides: the local one is offered whenever this window gains focus
+// (the browser asks for permission once), and text copied remotely is written to the local clipboard.
+let clipboard = '';
+async function offerClipboard() {
+  try {
+    const text = await navigator.clipboard.readText();
+    const message = JSON.stringify(['clipboard', text, 0]);
+    if (!text || text === clipboard || new TextEncoder().encode(message).length > 60000) return;  // the host reads messages up to 64 kB
+    clipboard = text;
+    if (socket?.readyState === WebSocket.OPEN) socket.send(message);
+  } catch {}  // not permitted, or the window is not focused
+}
+
 function key(code, down) {
   down ? held.add(code) : held.delete(code);
   send('key', code, +down);
@@ -336,12 +349,14 @@ function connect() {
         roundTrip = performance.now() - pinged;
         pinged = 0;
       } else if (kind === 'stats') [encodeTime, sendTime] = [first, second];
+      else if (kind === 'clipboard') navigator.clipboard.writeText(clipboard = first).catch(() => {});
       return;
     }
     if (!started) {
       setConnected(true);
       // Kept in this browser so the next visit only needs a click. Anyone using this browser profile can read it.
       try { localStorage.password = login.password.value; } catch {}
+      offerClipboard();
     }
     bytes += event.data.byteLength;
     demux(event.data);
@@ -411,6 +426,7 @@ function onKey(event) {
 addEventListener('keydown', onKey);
 addEventListener('keyup', onKey);
 addEventListener('blur', releaseAll);
+addEventListener('focus', () => connected() && offerClipboard());
 
 // Raw updates are delivered as they happen; ordinary move events wait for the next animation frame.
 canvas.addEventListener('onpointerrawupdate' in canvas ? 'pointerrawupdate' : 'pointermove', event => {

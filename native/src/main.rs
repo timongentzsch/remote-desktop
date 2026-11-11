@@ -11,6 +11,7 @@
 //! `--tailscale` it comes from Tailscale instead and needs no trusting, for devices on the same tailnet.
 
 mod capture;
+mod clipboard;
 mod convert;
 mod encode;
 mod input;
