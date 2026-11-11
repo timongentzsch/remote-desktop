@@ -27,8 +27,9 @@ Restart=on-failure
 WantedBy=graphical-session.target
 ";
 
-/// Plasma before 6.8 only casts the screen for a program whose desktop file asks for that (see kwin.rs). The
-/// entry is hidden from menus.
+/// The program's desktop entry, hidden from menus. Plasma before 6.8 only casts the screen for a program whose
+/// entry asks for that (see capture/kwin.rs), and a copy among the desktop's autostart entries starts the
+/// host at login where systemd does not.
 const DESKTOP_ENTRY: &str = "\
 [Desktop Entry]
 Type=Application
@@ -58,7 +59,37 @@ pub fn password_path() -> PathBuf {
     config_directory().join("remote-desktop/password")
 }
 
-/// Copies this binary into place, grants access to uinput (both through sudo) and starts the user service.
+/// Whether systemd runs the user's services. Where it does not, the desktop's autostart starts the host.
+fn has_systemd() -> bool {
+    Command::new("systemctl").args(["--user", "show-environment"]).output().is_ok_and(|output| output.status.success())
+}
+
+/// What the user is told to run for a change of password or certificate to take effect.
+fn restart_command() -> &'static str {
+    if has_systemd() { "systemctl --user restart remote-desktop" } else { "remote-desktop install" }
+}
+
+fn unit_path() -> PathBuf {
+    config_directory().join("systemd/user/remote-desktop.service")
+}
+
+fn autostart_path() -> PathBuf {
+    config_directory().join("autostart/remote-desktop.desktop")
+}
+
+fn write(path: PathBuf, contents: &str) {
+    fs::create_dir_all(path.parent().unwrap())
+        .and_then(|()| fs::write(&path, contents))
+        .unwrap_or_else(|error| fail(&format!("cannot write {}: {error}", path.display())));
+}
+
+/// Stops a host that was started without systemd: the process whose whole command line is the binary's path.
+fn stop_host() {
+    let _ = Command::new("pkill").args(["-x", "-f", BINARY]).status();
+}
+
+/// Copies this binary into place, grants access to uinput (both through sudo) and starts the host: as a
+/// service of the user's systemd, or without one now and through the desktop's autostart at each login.
 pub fn install(tailscale: bool) {
     if !password_path().exists() {
         set_password();
@@ -81,16 +112,25 @@ pub fn install(tailscale: bool) {
         certificate::create().unwrap_or_else(|error| fail(&error));
     }
 
-    let unit = config_directory().join("systemd/user/remote-desktop.service");
-    for (path, contents) in [(unit, UNIT), (desktop_entry_path(), DESKTOP_ENTRY)] {
-        fs::create_dir_all(path.parent().unwrap())
-            .and_then(|()| fs::write(&path, contents))
-            .unwrap_or_else(|error| fail(&format!("cannot write {}: {error}", path.display())));
+    write(desktop_entry_path(), DESKTOP_ENTRY);
+    if has_systemd() {
+        write(unit_path(), UNIT);
+        run("systemctl", &["--user", "daemon-reload"]);
+        run("systemctl", &["--user", "enable", "remote-desktop.service"]);
+        run("systemctl", &["--user", "restart", "remote-desktop.service"]);
+        println!("Installed {BINARY} and started the remote-desktop user service.");
+    } else {
+        write(autostart_path(), DESKTOP_ENTRY);
+        stop_host();
+        // In a session of its own, so that it outlives this terminal; `setsid` leaves once it has started it.
+        let silent = std::process::Stdio::null;
+        let started =
+            Command::new("setsid").args(["--fork", BINARY]).stdin(silent()).stdout(silent()).stderr(silent()).status();
+        if !started.is_ok_and(|status| status.success()) {
+            fail(&format!("cannot start {BINARY}"));
+        }
+        println!("Installed {BINARY} and started it. From now on it starts with the desktop session, at login.");
     }
-    run("systemctl", &["--user", "daemon-reload"]);
-    run("systemctl", &["--user", "enable", "remote-desktop.service"]);
-    run("systemctl", &["--user", "restart", "remote-desktop.service"]);
-    println!("Installed {BINARY} and started the remote-desktop user service.");
     show_certificate();
 }
 
@@ -120,12 +160,19 @@ fn firewall(open: bool) {
 /// `remote-desktop uninstall`: undoes `install`. The password and certificate stay, so installing again keeps
 /// the address clients already trust.
 pub fn uninstall() {
-    // The service may already be gone, which is fine.
-    let _ =
-        Command::new("systemctl").args(["--user", "--quiet", "disable", "--now", "remote-desktop.service"]).status();
-    let _ = fs::remove_file(config_directory().join("systemd/user/remote-desktop.service"));
-    let _ = fs::remove_file(desktop_entry_path());
-    run("systemctl", &["--user", "daemon-reload"]);
+    // Whichever way it was started; what is not there to stop or remove is fine.
+    if has_systemd() {
+        let _ = Command::new("systemctl")
+            .args(["--user", "--quiet", "disable", "--now", "remote-desktop.service"])
+            .status();
+    }
+    stop_host();
+    for path in [unit_path(), autostart_path(), desktop_entry_path()] {
+        let _ = fs::remove_file(path);
+    }
+    if has_systemd() {
+        run("systemctl", &["--user", "daemon-reload"]);
+    }
     firewall(false);
     run("sudo", &["rm", "-f", BINARY, UDEV_RULE_PATH]);
     run("sudo", &["udevadm", "control", "--reload"]);
@@ -144,7 +191,7 @@ pub fn renew_certificate(tailscale: bool) {
     } else {
         certificate::create().unwrap_or_else(|error| fail(&error));
     }
-    println!("The certificate changed. Restart the service to use it: systemctl --user restart remote-desktop");
+    println!("The certificate changed. Restart the host to use it: {}", restart_command());
     show_certificate();
 }
 
@@ -196,7 +243,7 @@ pub fn remove_password() {
         "No password is needed any more: anyone who can reach port {} on this machine can see and control",
         crate::PORT
     );
-    println!("this desktop. Restart the service to apply: systemctl --user restart remote-desktop");
+    println!("this desktop. Restart the host to apply: {}", restart_command());
 }
 
 /// Writes a file only its owner can read, creating the directory it lives in.
