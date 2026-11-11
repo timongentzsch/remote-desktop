@@ -2,6 +2,7 @@
 //! offers, and one wording for what can go wrong.
 
 use std::fmt::Display;
+use std::ops::RangeInclusive;
 use std::os::fd::{AsRawFd, RawFd};
 use std::time::Duration;
 
@@ -24,13 +25,26 @@ where
     Ok((connection, globals, events))
 }
 
-/// Binds the object through which one of the compositor's protocols is used.
+/// Binds the object through which one of the compositor's protocols is used, in the protocol's first version.
 pub fn bind<Interface, State>(globals: &GlobalList, queue: &QueueHandle<State>) -> Result<Interface, String>
 where
     Interface: Proxy + 'static,
     State: Dispatch<Interface, ()> + 'static,
 {
-    globals.bind(queue, 1..=1, ()).map_err(|error| format!("the compositor lacks a protocol this needs: {error}"))
+    bind_versions(globals, queue, 1..=1)
+}
+
+/// Like `bind`, in the newest of `versions` that the compositor has.
+pub fn bind_versions<Interface, State>(
+    globals: &GlobalList,
+    queue: &QueueHandle<State>,
+    versions: RangeInclusive<u32>,
+) -> Result<Interface, String>
+where
+    Interface: Proxy + 'static,
+    State: Dispatch<Interface, ()> + 'static,
+{
+    globals.bind(queue, versions, ()).map_err(|error| format!("the compositor lacks a protocol this needs: {error}"))
 }
 
 pub fn lost(error: impl Display) -> String {

@@ -1,4 +1,6 @@
-//! The clipboard of a Wayland session, through the compositor's ext-data-control-v1 protocol.
+//! Clipboard sharing through a data-control protocol. The standard one and the wlroots one it grew out of
+//! differ in nothing but their names, so this file is compiled once for each: as a module of ext.rs and of
+//! wlr.rs, which say what `Manager`, `Device`, `Offer` and `Source` stand for.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -7,25 +9,15 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use super::{Device, Manager, Offer, Source, device, offer, source};
+use crate::capture::Shared;
+use crate::clipboard::{Copied, Inbox, LIMIT};
+use crate::compositor::{self, bind};
 use wayland_client::backend::ObjectId;
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop, event_created_child};
-use wayland_protocols::ext::data_control::v1::client::ext_data_control_device_v1::{
-    self as device, ExtDataControlDeviceV1,
-};
-use wayland_protocols::ext::data_control::v1::client::ext_data_control_manager_v1::ExtDataControlManagerV1;
-use wayland_protocols::ext::data_control::v1::client::ext_data_control_offer_v1::{
-    self as offer, ExtDataControlOfferV1,
-};
-use wayland_protocols::ext::data_control::v1::client::ext_data_control_source_v1::{
-    self as source, ExtDataControlSourceV1,
-};
-
-use super::{Copied, Inbox, LIMIT};
-use crate::capture::Shared;
-use crate::compositor::{self, bind};
 
 /// The names text goes by on the clipboard, most precise first.
 const TEXT_TYPES: [&str; 4] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
@@ -36,7 +28,7 @@ pub fn run(inbox: &Inbox, shared: &Shared, copied: Copied) -> Result<(), String>
     let (connection, globals, mut events) = compositor::connect::<Clipboard>()?;
     let queue = events.handle();
     let seat: WlSeat = bind(&globals, &queue)?;
-    let manager: ExtDataControlManagerV1 = bind(&globals, &queue)?;
+    let manager: Manager = bind(&globals, &queue)?;
     let device = manager.get_data_device(&seat, &queue, ());
     let mut clipboard = Clipboard {
         connection,
@@ -60,12 +52,12 @@ pub fn run(inbox: &Inbox, shared: &Shared, copied: Copied) -> Result<(), String>
 
 struct Clipboard {
     connection: Connection,
-    manager: ExtDataControlManagerV1,
-    device: ExtDataControlDeviceV1,
+    manager: Manager,
+    device: Device,
     /// The types each announced offer comes in.
     offers: HashMap<ObjectId, Vec<String>>,
     /// The selection this side put on the clipboard, and its text.
-    own: Option<(ExtDataControlSourceV1, String)>,
+    own: Option<(Source, String)>,
     /// The text last passed in either direction, so that it is not passed straight back.
     last: String,
     copied: Copied,
@@ -90,7 +82,7 @@ impl Clipboard {
     }
 
     /// Reads an offer's text. The owning application writes it into a pipe; one that stalls is given up on.
-    fn receive(&self, offer: &ExtDataControlOfferV1, kind: &str) -> Option<String> {
+    fn receive(&self, offer: &Offer, kind: &str) -> Option<String> {
         let mut ends = [0; 2];
         if unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
             return None;
@@ -116,15 +108,8 @@ impl Clipboard {
     }
 }
 
-impl Dispatch<ExtDataControlDeviceV1, ()> for Clipboard {
-    fn event(
-        state: &mut Self,
-        _: &ExtDataControlDeviceV1,
-        event: device::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
+impl Dispatch<Device, ()> for Clipboard {
+    fn event(state: &mut Self, _: &Device, event: device::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         match event {
             device::Event::DataOffer { id } => {
                 state.offers.insert(id.id(), Vec::new());
@@ -147,35 +132,21 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for Clipboard {
         }
     }
 
-    event_created_child!(Clipboard, ExtDataControlDeviceV1, [
-        device::EVT_DATA_OFFER_OPCODE => (ExtDataControlOfferV1, ()),
+    event_created_child!(Clipboard, Device, [
+        device::EVT_DATA_OFFER_OPCODE => (Offer, ()),
     ]);
 }
 
-impl Dispatch<ExtDataControlOfferV1, ()> for Clipboard {
-    fn event(
-        state: &mut Self,
-        offer: &ExtDataControlOfferV1,
-        event: offer::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
+impl Dispatch<Offer, ()> for Clipboard {
+    fn event(state: &mut Self, offer: &Offer, event: offer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         if let offer::Event::Offer { mime_type } = event {
             state.offers.entry(offer.id()).or_default().push(mime_type);
         }
     }
 }
 
-impl Dispatch<ExtDataControlSourceV1, ()> for Clipboard {
-    fn event(
-        state: &mut Self,
-        source: &ExtDataControlSourceV1,
-        event: source::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
+impl Dispatch<Source, ()> for Clipboard {
+    fn event(state: &mut Self, source: &Source, event: source::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         let current = state.own.as_ref().filter(|(own, _)| own == source);
         match event {
             // An application on the desktop is pasting: hand it the text.
@@ -209,4 +180,4 @@ impl Dispatch<WlRegistry, GlobalListContents> for Clipboard {
 }
 
 delegate_noop!(Clipboard: ignore WlSeat);
-delegate_noop!(Clipboard: ExtDataControlManagerV1);
+delegate_noop!(Clipboard: Manager);

@@ -46,7 +46,7 @@ pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), St
     }
     let offered = compositor::protocols()?;
     let offers = |protocol: &str| offered.iter().any(|name| name == protocol);
-    if offers(wayland::PROTOCOL) {
+    if wayland::offered(&offered) {
         wayland::run(stream)
     } else if offers(kwin::PROTOCOL) {
         kwin::run(stream)
