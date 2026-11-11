@@ -187,7 +187,7 @@ mod tests {
                 }
             }
             let (mut frames, mut bytes, mut settled_in_a_row) = (0, 0, 0);
-            while settled_in_a_row < crate::capture::SETTLED_FRAMES {
+            while settled_in_a_row < crate::stream::SETTLED_FRAMES {
                 let encoded = encoder.encode().expect("a frame in gives a frame out");
                 settled_in_a_row = if encoded.settled { settled_in_a_row + 1 } else { 0 };
                 frames += 1;

@@ -1,10 +1,10 @@
-//! Screen capture through the compositor's ext-image-copy-capture-v1 protocol, encoded into FLV video tags.
+//! Screen capture through the compositor's ext-image-copy-capture-v1 protocol; the pictures go to a `Stream`.
 //!
 //! The compositor hands over a frame only when the screen changed, so a still screen costs nothing.
 
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::time::{Duration, Instant};
 
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -23,8 +23,7 @@ use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_captu
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1;
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_v1::{self as power, ZwlrOutputPowerV1};
 
-use crate::convert;
-use crate::encode::Encoder;
+use crate::stream::Stream;
 
 pub struct Settings {
     pub kbps: u32,
@@ -47,12 +46,6 @@ pub struct Shared {
     pub encode_micros: AtomicU32,
 }
 
-/// For how many seconds at most a still picture is encoded again to bring it up to the quality target.
-const REFINE_SECONDS: u32 = 20;
-/// How many frames in a row have to add nothing before a still picture counts as finished. A few are not
-/// enough: while the bitrate cap holds the encoder back, frames that add detail alternate with ones that add none.
-pub const SETTLED_FRAMES: u32 = 20;
-
 /// Receives each piece of the stream; returns false once nobody is listening any more.
 pub type Sink = Box<dyn FnMut(&[u8]) -> bool + Send>;
 
@@ -73,48 +66,30 @@ pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), St
     let options = if settings.cursor { Options::PaintCursors } else { Options::empty() };
     let session = manager.create_session(&source, options, &queue, ());
 
-    let now = Instant::now();
     let mut capture = Capture {
-        settings,
-        shared: shared.clone(),
+        stream: Stream::new(settings, shared, sink),
         shm,
         session,
         size: (0, 0),
         format: None,
         pixels: None,
-        scaled: Vec::new(),
-        encoder: None,
         awake: power.is_none(),
-        refinements_left: 0,
-        fine_frames: 0,
-        encoded: now,
         frame_pending: false,
-        started: now,
-        requested: now - Duration::from_secs(1),
-        sink,
-        wrote_header: false,
-        ended: None,
+        requested: Instant::now() - Duration::from_secs(1),
     };
     let lost = |error| format!("lost the Wayland connection: {error}");
-    while !shared.stop.load(Ordering::Relaxed) && capture.ended.is_none() {
+    while capture.stream.wanted() {
         events.flush().map_err(lost)?;
-        // Wait for events, but look at `stop` a few times a second: a still screen sends nothing. While a still
-        // picture is being refined, wait no longer than one frame.
-        let wait = if capture.refinements_left > 0 { 1000 / capture.settings.fps as i32 } else { 250 };
         if let Some(guard) = events.prepare_read() {
             let mut poll = libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            if unsafe { libc::poll(&mut poll, 1, wait) } > 0 {
+            if unsafe { libc::poll(&mut poll, 1, capture.stream.patience().as_millis() as i32) } > 0 {
                 guard.read().map_err(lost)?;
             }
         }
         events.dispatch_pending(&mut capture).map_err(|error| format!("lost the Wayland connection: {error}"))?;
-        // Refining is for a screen that stands still: only once a whole frame's time passed without a new one.
-        if capture.refinements_left > 0 && capture.encoded.elapsed() >= Duration::from_secs(1) / capture.settings.fps {
-            capture.refinements_left -= 1;
-            capture.encode_picture(Instant::now());
-        }
+        capture.stream.refine();
     }
-    capture.ended.take().unwrap_or(Ok(()))
+    capture.stream.ended.take().unwrap_or(Ok(()))
 }
 
 /// A shared-memory buffer the compositor copies the screen into.
@@ -168,59 +143,32 @@ impl Drop for Pixels {
 }
 
 struct Capture {
-    settings: Settings,
-    shared: Arc<Shared>,
+    stream: Stream,
     shm: WlShm,
     session: ExtImageCopyCaptureSessionV1,
     size: (usize, usize),
     format: Option<wl_shm::Format>,
     pixels: Option<Pixels>,
-    /// The half-size copy of the screen, when the picture is scaled down.
-    scaled: Vec<u8>,
-    encoder: Option<Encoder>,
     /// Whether the display is known to be on. Frames are only requested then: one requested from a sleeping
     /// display never arrives, even after it wakes.
     awake: bool,
-    /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
-    /// frame would ever improve it, so the same picture is encoded again until the encoder has nothing to add.
-    refinements_left: u32,
-    fine_frames: u32,
-    /// When the latest frame, new or refined, was encoded.
-    encoded: Instant,
     frame_pending: bool,
-    started: Instant,
     requested: Instant,
-    sink: Sink,
-    wrote_header: bool,
-    /// Set once the capture is over: Ok when the sink went away, Err with the reason otherwise.
-    ended: Option<Result<(), String>>,
 }
 
 impl Capture {
-    /// (Re)creates the buffer and encoder for the size the compositor announced.
+    /// (Re)creates the buffer for the size the compositor announced.
     fn configure(&mut self, queue: &QueueHandle<Self>) -> Result<(), String> {
         let (width, height) = self.size;
         if self.pixels.as_ref().is_some_and(|pixels| (pixels.width, pixels.height) == (width, height)) {
             return Ok(());
         }
+        // Both hold blue, green, red and a fourth byte per pixel, which is what the stream takes.
         let format = match self.format {
             Some(format @ (wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888)) => format,
             other => return Err(format!("unsupported capture pixel format {other:?}")),
         };
         self.pixels = Some(Pixels::new(&self.shm, queue, width, height, format)?);
-        let scale = if self.settings.half_size { 2 } else { 1 };
-        // 4:2:0 needs even dimensions; an odd last row or column is dropped.
-        let (width, height) = (width / scale & !1, height / scale & !1);
-        let mut encoder = Encoder::open(width, height, self.settings.fps, self.settings.kbps, self.settings.full_chroma)
-            .ok_or("could not open the encoder")?;
-        eprintln!("remote-desktop: encoding {width}x{height} {}", if encoder.gpu { "on the GPU" } else { "with x264" });
-        if !self.wrote_header {
-            self.send(b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00");
-            self.wrote_header = true;
-        }
-        let configuration = encoder.configuration();
-        self.send_tag(true, 0, &configuration);
-        self.encoder = Some(encoder);
         Ok(())
     }
 
@@ -230,7 +178,7 @@ impl Capture {
         }
         let Some(pixels) = &self.pixels else { return };
         // Hold the request back when the screen changes faster than the wanted frame rate.
-        let due = self.requested + Duration::from_secs(1) / self.settings.fps;
+        let due = self.requested + self.stream.frame_interval();
         std::thread::sleep(due.saturating_duration_since(Instant::now()));
         let frame = self.session.create_frame(queue, ());
         frame.attach_buffer(&pixels.buffer);
@@ -238,59 +186,6 @@ impl Capture {
         frame.capture();
         self.requested = Instant::now();
         self.frame_pending = true;
-    }
-
-    fn encode(&mut self) {
-        let (Some(pixels), Some(encoder)) = (&self.pixels, &mut self.encoder) else { return };
-        let started = Instant::now();
-        let wanted = self.shared.kbps.load(Ordering::Relaxed);
-        if wanted != 0 && wanted != self.settings.kbps && encoder.set_bitrate(wanted) {
-            self.settings.kbps = wanted;
-        }
-        let (width, height, full_chroma) = (encoder.width, encoder.height, encoder.full_chroma);
-        let (mut source, mut stride) = (pixels.bytes(), pixels.width * 4);
-        if self.settings.half_size {
-            convert::halve(source, stride, pixels.width, pixels.height, &mut self.scaled);
-            (source, stride) = (&self.scaled, pixels.width / 2 * 4);
-        }
-        convert::bgrx_to_yuv(source, stride, width, height, encoder.planes(), full_chroma);
-        self.refinements_left = REFINE_SECONDS * self.settings.fps;
-        self.encode_picture(started);
-    }
-
-    /// Encodes the picture currently in the encoder's planes and sends it.
-    fn encode_picture(&mut self, started: Instant) {
-        let Some(encoder) = &mut self.encoder else { return };
-        if let Some(encoded) = encoder.encode() {
-            let (unit, keyframe, settled) = (encoded.unit.to_vec(), encoded.keyframe, encoded.settled);
-            self.shared.encode_micros.store(started.elapsed().as_micros() as u32, Ordering::Relaxed);
-            self.fine_frames = if settled { self.fine_frames + 1 } else { 0 };
-            if self.fine_frames >= SETTLED_FRAMES {
-                self.refinements_left = 0;
-            }
-            self.encoded = Instant::now();
-            self.send_tag(keyframe, 1, &unit);
-        }
-    }
-
-    /// Sends one FLV video tag. Packet type 0 carries the decoder configuration, 1 an access unit.
-    fn send_tag(&mut self, keyframe: bool, packet_type: u8, payload: &[u8]) {
-        let size = payload.len() as u32 + 5;
-        let time = (self.started.elapsed().as_millis() as u32).to_be_bytes();
-        let mut tag = Vec::with_capacity(payload.len() + 20);
-        tag.push(9);
-        tag.extend(&size.to_be_bytes()[1..]);
-        tag.extend([time[1], time[2], time[3], time[0], 0, 0, 0]);
-        tag.extend([if keyframe { 0x17 } else { 0x27 }, packet_type, 0, 0, 0]);
-        tag.extend(payload);
-        tag.extend((size + 11).to_be_bytes());
-        self.send(&tag);
-    }
-
-    fn send(&mut self, bytes: &[u8]) {
-        if !(self.sink)(bytes) {
-            self.ended.get_or_insert(Ok(()));
-        }
     }
 }
 
@@ -301,9 +196,9 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Capture {
             session::Event::ShmFormat { format: WEnum::Value(format) } if state.format.is_none() => state.format = Some(format),
             session::Event::Done => match state.configure(queue) {
                 Ok(()) => state.request_frame(queue),
-                Err(reason) => state.ended = Some(Err(reason)),
+                Err(reason) => state.stream.ended = Some(Err(reason)),
             },
-            session::Event::Stopped => state.ended = Some(Err("the compositor stopped the capture".into())),
+            session::Event::Stopped => state.stream.ended = Some(Err("the compositor stopped the capture".into())),
             _ => {}
         }
     }
@@ -312,15 +207,19 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Capture {
 impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Capture {
     fn event(state: &mut Self, frame: &ExtImageCopyCaptureFrameV1, event: frame::Event, _: &(), _: &Connection, queue: &QueueHandle<Self>) {
         match event {
-            frame::Event::Ready => state.encode(),
+            frame::Event::Ready => {
+                if let Some(pixels) = &state.pixels {
+                    state.stream.picture(pixels.bytes(), pixels.width * 4, pixels.width, pixels.height);
+                }
+            }
             // The buffer no longer fits; the session announces the new size and `configure` replaces it.
             frame::Event::Failed { reason: WEnum::Value(frame::FailureReason::BufferConstraints) } => {}
-            frame::Event::Failed { .. } => state.ended = Some(Err("the compositor could not capture a frame".into())),
+            frame::Event::Failed { .. } => state.stream.ended = Some(Err("the compositor could not capture a frame".into())),
             _ => return,
         }
         frame.destroy();
         state.frame_pending = false;
-        if state.ended.is_none() {
+        if state.stream.ended.is_none() {
             state.request_frame(queue);
         }
     }

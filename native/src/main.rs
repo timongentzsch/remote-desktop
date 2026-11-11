@@ -19,6 +19,7 @@ mod encode;
 mod input;
 mod install;
 mod server;
+mod stream;
 mod tls;
 mod ws;
 
