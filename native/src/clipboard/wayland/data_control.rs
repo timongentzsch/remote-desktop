@@ -4,14 +4,14 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Write};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::io::Write;
+use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::{Device, Manager, Offer, Source, device, offer, source};
 use crate::capture::Shared;
-use crate::clipboard::{Copied, Inbox, LIMIT};
+use crate::clipboard::{Copied, Inbox, TEXT_TYPES, read_text};
 use crate::compositor::{self, bind};
 use wayland_client::backend::ObjectId;
 use wayland_client::globals::GlobalListContents;
@@ -19,8 +19,6 @@ use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop, event_created_child};
 
-/// The names text goes by on the clipboard, most precise first.
-const TEXT_TYPES: [&str; 4] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
 /// An extra type on what this side puts on the clipboard. The compositor announces every clipboard change,
 /// this side's own too; the mark tells those apart, so that they are not read back and sent to the client.
 const OWN: &str = "application/x-remote-desktop-own";
@@ -87,24 +85,11 @@ impl Clipboard {
         if unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
             return None;
         }
-        let (mut reading, writing) = unsafe { (File::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+        let (reading, writing) = unsafe { (File::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
         offer.receive(kind.to_string(), writing.as_fd());
         self.connection.flush().ok()?;
         drop(writing);
-        let mut text = Vec::new();
-        let mut chunk = [0; 65536];
-        loop {
-            let mut poll = libc::pollfd { fd: reading.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            if unsafe { libc::poll(&mut poll, 1, 1000) } <= 0 {
-                return None;
-            }
-            match reading.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(count) if text.len() + count <= LIMIT => text.extend(&chunk[..count]),
-                _ => return None,
-            }
-        }
-        Some(String::from_utf8_lossy(&text).into_owned())
+        read_text(reading)
     }
 }
 

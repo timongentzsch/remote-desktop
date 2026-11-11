@@ -12,6 +12,7 @@ mod capture;
 mod certificate;
 mod clipboard;
 mod compositor;
+mod gnome;
 mod input;
 mod install;
 mod outbox;

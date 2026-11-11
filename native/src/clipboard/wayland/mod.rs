@@ -7,14 +7,16 @@ use super::{Copied, Inbox};
 use crate::capture::Shared;
 use crate::compositor;
 
+/// Whether a compositor that offers these protocols has one for the clipboard.
+pub fn offered(protocols: &[String]) -> bool {
+    protocols.iter().any(|name| name == ext::PROTOCOL || name == wlr::PROTOCOL)
+}
+
 pub fn run(inbox: &Inbox, shared: &Shared, copied: Copied) -> Result<(), String> {
-    let offered = compositor::protocols()?;
-    let offers = |protocol: &str| offered.iter().any(|name| name == protocol);
-    if offers(ext::PROTOCOL) {
+    // The standard protocol where there is one.
+    if compositor::protocols()?.iter().any(|name| name == ext::PROTOCOL) {
         ext::run(inbox, shared, copied)
-    } else if offers(wlr::PROTOCOL) {
-        wlr::run(inbox, shared, copied)
     } else {
-        Err("the compositor offers no way to share the clipboard".into())
+        wlr::run(inbox, shared, copied)
     }
 }
