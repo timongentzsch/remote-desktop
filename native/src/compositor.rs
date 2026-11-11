@@ -34,7 +34,15 @@ pub fn lost(error: impl Display) -> String {
 pub fn protocols() -> Result<Vec<String>, String> {
     struct Asking;
     impl Dispatch<WlRegistry, GlobalListContents> for Asking {
-        fn event(_: &mut Self, _: &WlRegistry, _: wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+        fn event(
+            _: &mut Self,
+            _: &WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
     }
     let (_, globals, _) = connect::<Asking>()?;
     Ok(globals.contents().with_list(|list| list.iter().map(|global| global.interface.clone()).collect()))

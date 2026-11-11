@@ -19,7 +19,11 @@ use crate::{audio, clipboard, ws};
 
 /// Checks the client's login, then streams to it and injects its input until it leaves.
 pub fn run(connection: &Arc<Connection>, host: &Host) {
-    let login: Value = ws::read(&mut &**connection).ok().flatten().and_then(|message| serde_json::from_slice(&message).ok()).unwrap_or_default();
+    let login: Value = ws::read(&mut &**connection)
+        .ok()
+        .flatten()
+        .and_then(|message| serde_json::from_slice(&message).ok())
+        .unwrap_or_default();
     if !host.password.is_empty() && !same(login["password"].as_str().unwrap_or("").as_bytes(), &host.password) {
         thread::sleep(Duration::from_secs(1)); // slow down guessing
         return;
@@ -66,7 +70,8 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
         let (outbox, shared) = (outbox.clone(), shared.clone());
         threads.push(thread::spawn(move || {
             // Sound is its own kind of binary message: it starts with 8, where video starts with 9 or the stream header.
-            let packet = Box::new(move |packet: &[u8]| outbox.push_audio(ws::frame(ws::BINARY, &[&[8], packet].concat())));
+            let packet =
+                Box::new(move |packet: &[u8]| outbox.push_audio(ws::frame(ws::BINARY, &[&[8], packet].concat())));
             if let Err(reason) = audio::run(shared, packet) {
                 eprintln!("remote-desktop: no sound: {reason}");
             }
@@ -83,7 +88,11 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
         match parts.first().and_then(Value::as_str) {
             Some("key") => {
                 let (code, down) = (number(1) as u16, number(2) != 0);
-                if down { held.insert(code) } else { held.remove(&code) };
+                if down {
+                    held.insert(code)
+                } else {
+                    held.remove(&code)
+                };
                 host.input.key(code, down);
             }
             Some("move") => host.input.move_to(number(1) as i32, number(2) as i32),
@@ -159,7 +168,8 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared) {
 
 /// Compares without stopping at the first difference, so timing does not reveal how much matched.
 fn same(offered: &[u8], password: &[u8]) -> bool {
-    offered.len() == password.len() && offered.iter().zip(password).fold(0, |difference, (a, b)| difference | (a ^ b)) == 0
+    offered.len() == password.len()
+        && offered.iter().zip(password).fold(0, |difference, (a, b)| difference | (a ^ b)) == 0
 }
 
 /// Capture gets no frames from a sleeping display, and a key press wakes it.

@@ -6,7 +6,9 @@ use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
-use wayland_protocols_plasma::screencast::v1::client::zkde_screencast_stream_unstable_v1::{self as cast, ZkdeScreencastStreamUnstableV1};
+use wayland_protocols_plasma::screencast::v1::client::zkde_screencast_stream_unstable_v1::{
+    self as cast, ZkdeScreencastStreamUnstableV1,
+};
 use wayland_protocols_plasma::screencast::v1::client::zkde_screencast_unstable_v1::ZkdeScreencastUnstableV1;
 
 use super::pipewire;
@@ -47,7 +49,14 @@ pub fn run(stream: Stream) -> Result<(), String> {
 }
 
 impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Cast {
-    fn event(state: &mut Self, _: &ZkdeScreencastStreamUnstableV1, event: cast::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &ZkdeScreencastStreamUnstableV1,
+        event: cast::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
             cast::Event::Created { node } => state.node = Some(node),
             cast::Event::Failed { error } => state.failed = Some(error),
@@ -58,7 +67,15 @@ impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Cast {
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for Cast {
-    fn event(_: &mut Self, _: &WlRegistry, _: wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 delegate_noop!(Cast: ignore WlOutput);

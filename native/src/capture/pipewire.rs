@@ -29,7 +29,14 @@ struct Raw {
 
 unsafe extern "C" {
     fn screen_open(node: u32, fps: c_int) -> *mut Raw;
-    fn screen_next(screen: *mut Raw, timeout_ms: c_int, pixels: *mut *const u8, stride: *mut c_int, width: *mut c_int, height: *mut c_int) -> c_int;
+    fn screen_next(
+        screen: *mut Raw,
+        timeout_ms: c_int,
+        pixels: *mut *const u8,
+        stride: *mut c_int,
+        width: *mut c_int,
+        height: *mut c_int,
+    ) -> c_int;
     fn screen_close(screen: *mut Raw);
 }
 
@@ -55,11 +62,18 @@ impl Screen {
     fn next(&mut self, wait: Duration) -> Result<Option<Picture<'_>>, ()> {
         let mut pixels = ptr::null();
         let (mut stride, mut width, mut height) = (0, 0, 0);
-        match unsafe { screen_next(self.0, wait.as_millis() as c_int, &mut pixels, &mut stride, &mut width, &mut height) } {
+        match unsafe {
+            screen_next(self.0, wait.as_millis() as c_int, &mut pixels, &mut stride, &mut width, &mut height)
+        } {
             1 => {
                 let (stride, width, height) = (stride as usize, width as usize, height as usize);
                 // The picture stays valid until the next call, which needs `&mut self`.
-                Ok(Some(Picture { pixels: unsafe { slice::from_raw_parts(pixels, stride * height) }, stride, width, height }))
+                Ok(Some(Picture {
+                    pixels: unsafe { slice::from_raw_parts(pixels, stride * height) },
+                    stride,
+                    width,
+                    height,
+                }))
             }
             0 => Ok(None),
             _ => Err(()),

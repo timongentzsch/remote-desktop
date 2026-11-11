@@ -32,7 +32,8 @@ pub fn halve(pixels: &[u8], stride: usize, width: usize, height: usize, out: &mu
         let (top, bottom) = pair.split_at(stride);
         for (top, bottom) in top[..width / 2 * 8].chunks_exact(8).zip(bottom.chunks_exact(8)) {
             for channel in 0..4 {
-                let sum = top[channel] as u16 + top[channel + 4] as u16 + bottom[channel] as u16 + bottom[channel + 4] as u16;
+                let sum =
+                    top[channel] as u16 + top[channel + 4] as u16 + bottom[channel] as u16 + bottom[channel + 4] as u16;
                 out.push(((sum + 2) / 4) as u8);
             }
         }
@@ -55,7 +56,11 @@ mod tests {
                 let chroma_size = if full_chroma { 4 } else { 1 };
                 let (mut y, mut u, mut v) = (vec![0; 4], vec![0; chroma_size], vec![0; chroma_size]);
                 let chroma_stride = if full_chroma { 2 } else { 1 };
-                let planes = [Plane { bytes: &mut y, stride: 2 }, Plane { bytes: &mut u, stride: chroma_stride }, Plane { bytes: &mut v, stride: chroma_stride }];
+                let planes = [
+                    Plane { bytes: &mut y, stride: 2 },
+                    Plane { bytes: &mut u, stride: chroma_stride },
+                    Plane { bytes: &mut v, stride: chroma_stride },
+                ];
                 bgrx_to_yuv(&pixels, 8, 2, 2, planes, full_chroma);
                 assert_eq!((y[0], u[0], v[0]), expected, "{colour:?} full_chroma={full_chroma}");
             }

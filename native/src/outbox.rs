@@ -25,7 +25,10 @@ struct Pending {
 impl Outbox {
     /// Waits until the previous piece of video has gone out. False once the session is over.
     pub fn push_video(&self, piece: Vec<u8>) -> bool {
-        let mut pending = self.changed.wait_while(self.pending.lock().unwrap(), |pending| pending.video.is_some() && !pending.closed).unwrap();
+        let mut pending = self
+            .changed
+            .wait_while(self.pending.lock().unwrap(), |pending| pending.video.is_some() && !pending.closed)
+            .unwrap();
         pending.video = Some((piece, Instant::now()));
         self.changed.notify_all();
         !pending.closed
@@ -49,7 +52,9 @@ impl Outbox {
     /// The next thing to send: control messages first, then sound, then video (with the time it was queued).
     /// None once the session is over.
     pub fn next(&self) -> Option<(Vec<u8>, Option<Instant>)> {
-        let idle = |pending: &mut Pending| pending.video.is_none() && pending.audio.is_empty() && pending.control.is_empty() && !pending.closed;
+        let idle = |pending: &mut Pending| {
+            pending.video.is_none() && pending.audio.is_empty() && pending.control.is_empty() && !pending.closed
+        };
         let mut pending = self.changed.wait_while(self.pending.lock().unwrap(), idle).unwrap();
         if pending.closed {
             return None;

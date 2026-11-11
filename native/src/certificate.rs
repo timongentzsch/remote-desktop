@@ -36,18 +36,24 @@ pub fn tailscale_name() -> Option<String> {
 
 /// This machine's name on its tailnet, taken from `tailscale status --json`.
 fn tailnet_name(status: &[u8]) -> Result<String, String> {
-    let status: serde_json::Value = serde_json::from_slice(status).map_err(|_| "tailscale is not running or not logged in")?;
+    let status: serde_json::Value =
+        serde_json::from_slice(status).map_err(|_| "tailscale is not running or not logged in")?;
     let name = status["Self"]["DNSName"].as_str().unwrap_or("").trim_end_matches('.');
     let domains = status["CertDomains"].as_array().map(Vec::as_slice).unwrap_or_default();
     if name.is_empty() || !domains.iter().any(|domain| domain.as_str() == Some(name)) {
-        return Err("this tailnet has no HTTPS certificates; enable them in the Tailscale admin console under DNS".into());
+        return Err(
+            "this tailnet has no HTTPS certificates; enable them in the Tailscale admin console under DNS".into()
+        );
     }
     Ok(name.to_string())
 }
 
 /// Switches to a certificate issued through Tailscale, which browsers trust without any setup.
 pub fn use_tailscale() -> Result<(), String> {
-    let status = Command::new("tailscale").args(["status", "--json"]).output().map_err(|error| format!("cannot run tailscale: {error}"))?;
+    let status = Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+        .map_err(|error| format!("cannot run tailscale: {error}"))?;
     let name = tailnet_name(&status.stdout)?;
     fetch_tailscale_certificate(&name)?;
     std::fs::write(tailscale_marker(), &name).map_err(|error| error.to_string())
@@ -65,7 +71,10 @@ fn fetch_tailscale_certificate(name: &str) -> Result<(), String> {
         .output()
         .map_err(|error| format!("cannot run tailscale: {error}"))?;
     if !output.status.success() {
-        return Err(format!("tailscale could not issue a certificate for {name}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        return Err(format!(
+            "tailscale could not issue a certificate for {name}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
     Ok(())
 }
@@ -121,7 +130,10 @@ pub fn configuration() -> Result<Arc<ServerConfig>, String> {
         create()?;
     }
     let unreadable = |error| format!("cannot read the certificate or its key: {error}");
-    let chain = CertificateDer::pem_file_iter(path()).map_err(unreadable)?.collect::<Result<Vec<_>, _>>().map_err(unreadable)?;
+    let chain = CertificateDer::pem_file_iter(path())
+        .map_err(unreadable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(unreadable)?;
     let key = PrivateKeyDer::from_pem_file(key_path()).map_err(unreadable)?;
     let configuration = ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_safe_default_protocol_versions()

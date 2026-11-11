@@ -23,12 +23,15 @@ const CURSOR_EMBEDDED: u32 = 1;
 pub fn run(stream: Stream) -> Result<(), String> {
     let unavailable = "this desktop offers no screen capture this program knows: it needs the ext-image-copy-capture-v1 protocol, GNOME or KDE";
     let mut bus = RpcConn::session_conn(WAIT).map_err(|_| unavailable)?;
-    bus.set_filter(Box::new(|message| matches!(message.typ, MessageType::Reply | MessageType::Error | MessageType::Signal)));
+    bus.set_filter(Box::new(|message| {
+        matches!(message.typ, MessageType::Reply | MessageType::Error | MessageType::Signal)
+    }));
     let mut listen = standard_messages::add_match(&format!("type='signal',sender='{SERVICE}'"));
     send(&mut bus, &mut listen)?;
 
     let nothing = || dictionary(Vec::new());
-    let session = send(&mut bus, &mut call("/org/gnome/Mutter/ScreenCast", SERVICE, "CreateSession", &[nothing()])?).map_err(|_| unavailable)?;
+    let session = send(&mut bus, &mut call("/org/gnome/Mutter/ScreenCast", SERVICE, "CreateSession", &[nothing()])?)
+        .map_err(|_| unavailable)?;
     let session = path(&session)?;
     let cursor = if stream.settings.cursor { CURSOR_EMBEDDED } else { CURSOR_HIDDEN };
     let options = dictionary(vec![("cursor-mode", Container::make_variant(cursor).into())]);
@@ -40,7 +43,11 @@ pub fn run(stream: Stream) -> Result<(), String> {
     let node = loop {
         let signal = bus.wait_signal(WAIT).map_err(|error| format!("GNOME did not start the screen cast: {error}"))?;
         if signal.dynheader.member.as_deref() == Some("PipeWireStreamAdded") {
-            break signal.body.parser().get::<u32>().map_err(|error| format!("GNOME sent an unreadable stream announcement: {error:?}"))?;
+            break signal
+                .body
+                .parser()
+                .get::<u32>()
+                .map_err(|error| format!("GNOME sent an unreadable stream announcement: {error:?}"))?;
         }
     };
     pipewire::run(node, stream, "GNOME")
@@ -55,18 +62,26 @@ fn call(object: &str, interface: &str, method: &str, arguments: &[Param]) -> Res
 
 /// Sends a request and waits for its answer.
 fn send(bus: &mut RpcConn, message: &mut MarshalledMessage) -> Result<MarshalledMessage, String> {
-    let failed = |error: rustbus::connection::Error| format!("lost the connection to the desktop's message bus: {error}");
+    let failed =
+        |error: rustbus::connection::Error| format!("lost the connection to the desktop's message bus: {error}");
     let serial = bus.send_message(message).map_err(failed)?.write_all().map_err(|(_, error)| failed(error))?;
     let reply = bus.wait_response(serial, WAIT).map_err(failed)?;
     match reply.typ {
-        MessageType::Error => Err(format!("GNOME refused a screen cast request: {}", reply.body.parser().get::<&str>().unwrap_or("no reason given"))),
+        MessageType::Error => Err(format!(
+            "GNOME refused a screen cast request: {}",
+            reply.body.parser().get::<&str>().unwrap_or("no reason given")
+        )),
         _ => Ok(reply),
     }
 }
 
 /// The object path a reply carries.
 fn path(reply: &MarshalledMessage) -> Result<String, String> {
-    let path = reply.body.parser().get::<ObjectPath<&str>>().map_err(|error| format!("GNOME sent an unreadable reply: {error:?}"))?;
+    let path = reply
+        .body
+        .parser()
+        .get::<ObjectPath<&str>>()
+        .map_err(|error| format!("GNOME sent an unreadable reply: {error:?}"))?;
     Ok(path.as_ref().to_owned())
 }
 

@@ -14,7 +14,13 @@ struct Raw {
 unsafe extern "C" {
     fn encoder_open(width: c_int, height: c_int, fps: c_int, kbps: c_int, full_chroma: c_int, gpu: c_int) -> *mut Raw;
     fn encoder_plane(encoder: *mut Raw, index: c_int, stride: *mut c_int) -> *mut u8;
-    fn encoder_headers(encoder: *mut Raw, sps: *mut *mut u8, sps_size: *mut c_int, pps: *mut *mut u8, pps_size: *mut c_int) -> c_int;
+    fn encoder_headers(
+        encoder: *mut Raw,
+        sps: *mut *mut u8,
+        sps_size: *mut c_int,
+        pps: *mut *mut u8,
+        pps_size: *mut c_int,
+    ) -> c_int;
     fn encoder_encode(encoder: *mut Raw, data: *mut *mut u8, keyframe: *mut c_int) -> c_int;
     fn encoder_set_bitrate(encoder: *mut Raw, kbps: c_int) -> c_int;
     fn encoder_close(encoder: *mut Raw);
@@ -43,7 +49,11 @@ pub const PROBE: &str = "probe-gpu";
 /// and on a machine whose GPU has no encoder they would stay in the service's memory for nothing.
 fn gpu_can_encode() -> bool {
     static ANSWER: OnceLock<bool> = OnceLock::new();
-    *ANSWER.get_or_init(|| std::env::current_exe().and_then(|program| Command::new(program).arg(PROBE).status()).is_ok_and(|status| status.success()))
+    *ANSWER.get_or_init(|| {
+        std::env::current_exe()
+            .and_then(|program| Command::new(program).arg(PROBE).status())
+            .is_ok_and(|status| status.success())
+    })
 }
 
 /// What the `PROBE` command answers: whether a small ordinary picture can be encoded on the GPU.
@@ -67,9 +77,17 @@ impl Encoder {
         on_gpu.or_else(|| Self::open_on(false, width, height, fps, kbps, full_chroma))
     }
 
-
     fn open_on(gpu: bool, width: usize, height: usize, fps: u32, kbps: u32, full_chroma: bool) -> Option<Self> {
-        let raw = unsafe { encoder_open(width as c_int, height as c_int, fps as c_int, kbps as c_int, full_chroma as c_int, gpu as c_int) };
+        let raw = unsafe {
+            encoder_open(
+                width as c_int,
+                height as c_int,
+                fps as c_int,
+                kbps as c_int,
+                full_chroma as c_int,
+                gpu as c_int,
+            )
+        };
         // Built only on success: dropping an `Encoder` closes the pointer it holds.
         (!raw.is_null()).then(|| Self { raw, width, height, full_chroma, gpu })
     }
@@ -84,7 +102,10 @@ impl Encoder {
                 // The wrapper owns the planes for the encoder's lifetime; each is at least stride * rows bytes.
                 let pointer = unsafe { encoder_plane(self.raw, index, &mut stride) };
                 index += 1;
-                Plane { bytes: unsafe { slice::from_raw_parts_mut(pointer, stride as usize * rows) }, stride: stride as usize }
+                Plane {
+                    bytes: unsafe { slice::from_raw_parts_mut(pointer, stride as usize * rows) },
+                    stride: stride as usize,
+                }
             }
         })
     }
@@ -95,7 +116,8 @@ impl Encoder {
         let (mut sps_size, mut pps_size) = (0, 0);
         let status = unsafe { encoder_headers(self.raw, &mut sps, &mut sps_size, &mut pps, &mut pps_size) };
         assert!(status == 0 && !sps.is_null() && !pps.is_null(), "the encoder returned no parameter sets");
-        let (sps, pps) = unsafe { (slice::from_raw_parts(sps, sps_size as usize), slice::from_raw_parts(pps, pps_size as usize)) };
+        let (sps, pps) =
+            unsafe { (slice::from_raw_parts(sps, sps_size as usize), slice::from_raw_parts(pps, pps_size as usize)) };
 
         let mut record = vec![1, sps[1], sps[2], sps[3], 0xFF, 0xE1];
         record.extend((sps.len() as u16).to_be_bytes());
@@ -122,7 +144,11 @@ impl Encoder {
         // The access unit stays valid until the next call into the encoder, which needs `&mut self`.
         // "Nothing changed" costs a few bytes per row of blocks; anything bigger carried picture detail.
         let settled = (size as usize) < 64 + self.width * self.height / 4096;
-        (size > 0).then(|| Encoded { unit: unsafe { slice::from_raw_parts(data, size as usize) }, keyframe: keyframe != 0, settled })
+        (size > 0).then(|| Encoded {
+            unit: unsafe { slice::from_raw_parts(data, size as usize) },
+            keyframe: keyframe != 0,
+            settled,
+        })
     }
 }
 
@@ -140,7 +166,10 @@ mod tests {
     fn encoders(width: usize, height: usize, kbps: u32, full_chroma: bool) -> Vec<Encoder> {
         let software = Encoder::open_on(false, width, height, 60, kbps, full_chroma).expect("x264 opens");
         let hardware = Encoder::open_on(true, width, height, 60, kbps, full_chroma);
-        println!("full_chroma={full_chroma}: {}", if hardware.is_some() { "testing x264 and the GPU" } else { "testing x264 only (no GPU encoder here)" });
+        println!(
+            "full_chroma={full_chroma}: {}",
+            if hardware.is_some() { "testing x264 and the GPU" } else { "testing x264 only (no GPU encoder here)" }
+        );
         std::iter::once(software).chain(hardware).collect()
     }
 

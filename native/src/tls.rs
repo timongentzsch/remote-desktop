@@ -25,7 +25,15 @@ impl Connection {
     pub fn accept(configuration: &Arc<ServerConfig>, mut socket: TcpStream) -> io::Result<Self> {
         socket.set_nodelay(true)?;
         let limit = UNSENT_LIMIT;
-        unsafe { libc::setsockopt(socket.as_raw_fd(), libc::IPPROTO_TCP, libc::TCP_NOTSENT_LOWAT, (&raw const limit).cast(), size_of::<libc::c_int>() as u32) };
+        unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                libc::TCP_NOTSENT_LOWAT,
+                (&raw const limit).cast(),
+                size_of::<libc::c_int>() as u32,
+            )
+        };
         let mut tls = ServerConnection::new(configuration.clone()).map_err(io::Error::other)?;
         tls.set_buffer_limit(None); // `write` hands everything to the socket right away
         while tls.is_handshaking() {

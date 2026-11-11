@@ -24,7 +24,8 @@ fn run(command: &mut Command) {
 }
 
 fn main() {
-    for file in ["stream/encoder.c", "stream/encoder.h", "stream/x264.c", "stream/nvenc.c", "capture/pipewire_stream.c"] {
+    for file in ["stream/encoder.c", "stream/encoder.h", "stream/x264.c", "stream/nvenc.c", "capture/pipewire_stream.c"]
+    {
         println!("cargo:rerun-if-changed=src/{file}");
     }
     println!("cargo:rerun-if-changed=x264/x264.h");
@@ -42,12 +43,24 @@ fn main() {
             .env("CC", words(&tools.get_compiler().to_command()))
             .env("AR", words(&tools.get_archiver()))
             .env("RANLIB", words(&tools.get_ranlib())));
-        run(Command::new("make").current_dir(&build).arg(format!("-j{}", env::var("NUM_JOBS").unwrap())).arg("libx264.a"));
+        run(Command::new("make")
+            .current_dir(&build)
+            .arg(format!("-j{}", env::var("NUM_JOBS").unwrap()))
+            .arg("libx264.a"));
     }
 
     let encoders = ["src/stream/encoder.c", "src/stream/x264.c", "src/stream/nvenc.c"];
-    cc::Build::new().files(encoders).include(&source).include(&build).include("nv-codec-headers/include").compile("encoder");
-    cc::Build::new().file("src/capture/pipewire_stream.c").include("pipewire/src").include("pipewire/spa/include").compile("pipewire_stream");
+    cc::Build::new()
+        .files(encoders)
+        .include(&source)
+        .include(&build)
+        .include("nv-codec-headers/include")
+        .compile("encoder");
+    cc::Build::new()
+        .file("src/capture/pipewire_stream.c")
+        .include("pipewire/src")
+        .include("pipewire/spa/include")
+        .compile("pipewire_stream");
     println!("cargo:rustc-link-search=native={}", build.display());
     println!("cargo:rustc-link-lib=static=x264");
 }

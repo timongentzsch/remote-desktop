@@ -15,11 +15,19 @@ use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::ext::image_capture_source::v1::client::ext_image_capture_source_v1::ExtImageCaptureSourceV1;
 use wayland_protocols::ext::image_capture_source::v1::client::ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1;
-use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_frame_v1::{self as frame, ExtImageCopyCaptureFrameV1};
-use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::{ExtImageCopyCaptureManagerV1, Options};
-use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_session_v1::{self as session, ExtImageCopyCaptureSessionV1};
+use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_frame_v1::{
+    self as frame, ExtImageCopyCaptureFrameV1,
+};
+use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::{
+    ExtImageCopyCaptureManagerV1, Options,
+};
+use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_session_v1::{
+    self as session, ExtImageCopyCaptureSessionV1,
+};
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1;
-use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_v1::{self as power, ZwlrOutputPowerV1};
+use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_v1::{
+    self as power, ZwlrOutputPowerV1,
+};
 
 use crate::compositor::{self, bind, lost};
 use crate::stream::Stream;
@@ -37,7 +45,9 @@ pub fn run(stream: Stream) -> Result<(), String> {
     let manager: ExtImageCopyCaptureManagerV1 = bind(&globals, &queue)?;
 
     // A sleeping display produces no frames, so it is switched on first where the compositor allows that.
-    let power = bind::<ZwlrOutputPowerManagerV1, _>(&globals, &queue).ok().map(|manager| manager.get_output_power(&output, &queue, ()));
+    let power = bind::<ZwlrOutputPowerManagerV1, _>(&globals, &queue)
+        .ok()
+        .map(|manager| manager.get_output_power(&output, &queue, ()));
     let source = sources.create_source(&output, &queue, ());
     let options = if stream.settings.cursor { Options::PaintCursors } else { Options::empty() };
     let session = manager.create_session(&source, options, &queue, ());
@@ -81,7 +91,13 @@ struct Pixels {
 unsafe impl Send for Pixels {}
 
 impl Pixels {
-    fn new(shm: &WlShm, queue: &QueueHandle<Capture>, width: usize, height: usize, format: wl_shm::Format) -> Result<Self, String> {
+    fn new(
+        shm: &WlShm,
+        queue: &QueueHandle<Capture>,
+        width: usize,
+        height: usize,
+        format: wl_shm::Format,
+    ) -> Result<Self, String> {
         let length = width * height * 4;
         let (memory, map) = unsafe {
             let fd = libc::memfd_create(c"remote-desktop".as_ptr(), libc::MFD_CLOEXEC);
@@ -165,10 +181,19 @@ impl Capture {
 }
 
 impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Capture {
-    fn event(state: &mut Self, _: &ExtImageCopyCaptureSessionV1, event: session::Event, _: &(), _: &Connection, queue: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &ExtImageCopyCaptureSessionV1,
+        event: session::Event,
+        _: &(),
+        _: &Connection,
+        queue: &QueueHandle<Self>,
+    ) {
         match event {
             session::Event::BufferSize { width, height } => state.size = (width as usize, height as usize),
-            session::Event::ShmFormat { format: WEnum::Value(format) } if state.format.is_none() => state.format = Some(format),
+            session::Event::ShmFormat { format: WEnum::Value(format) } if state.format.is_none() => {
+                state.format = Some(format)
+            }
             session::Event::Done => match state.configure(queue) {
                 Ok(()) => state.request_frame(queue),
                 Err(reason) => state.stream.ended = Some(Err(reason)),
@@ -180,7 +205,14 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Capture {
 }
 
 impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Capture {
-    fn event(state: &mut Self, frame: &ExtImageCopyCaptureFrameV1, event: frame::Event, _: &(), _: &Connection, queue: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        frame: &ExtImageCopyCaptureFrameV1,
+        event: frame::Event,
+        _: &(),
+        _: &Connection,
+        queue: &QueueHandle<Self>,
+    ) {
         match event {
             frame::Event::Ready => {
                 if let Some(pixels) = &state.pixels {
@@ -189,7 +221,9 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Capture {
             }
             // The buffer no longer fits; the session announces the new size and `configure` replaces it.
             frame::Event::Failed { reason: WEnum::Value(frame::FailureReason::BufferConstraints) } => {}
-            frame::Event::Failed { .. } => state.stream.ended = Some(Err("the compositor could not capture a frame".into())),
+            frame::Event::Failed { .. } => {
+                state.stream.ended = Some(Err("the compositor could not capture a frame".into()))
+            }
             _ => return,
         }
         frame.destroy();
@@ -201,7 +235,14 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Capture {
 }
 
 impl Dispatch<ZwlrOutputPowerV1, ()> for Capture {
-    fn event(state: &mut Self, output: &ZwlrOutputPowerV1, event: power::Event, _: &(), _: &Connection, queue: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        output: &ZwlrOutputPowerV1,
+        event: power::Event,
+        _: &(),
+        _: &Connection,
+        queue: &QueueHandle<Self>,
+    ) {
         match event {
             power::Event::Mode { mode: WEnum::Value(power::Mode::On) } => {
                 state.awake = true;
@@ -221,7 +262,15 @@ impl Dispatch<ZwlrOutputPowerV1, ()> for Capture {
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for Capture {
-    fn event(_: &mut Self, _: &WlRegistry, _: wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 delegate_noop!(Capture: ignore WlShm);

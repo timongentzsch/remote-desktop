@@ -15,10 +15,16 @@ use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop, event_created_child};
-use wayland_protocols::ext::data_control::v1::client::ext_data_control_device_v1::{self as device, ExtDataControlDeviceV1};
+use wayland_protocols::ext::data_control::v1::client::ext_data_control_device_v1::{
+    self as device, ExtDataControlDeviceV1,
+};
 use wayland_protocols::ext::data_control::v1::client::ext_data_control_manager_v1::ExtDataControlManagerV1;
-use wayland_protocols::ext::data_control::v1::client::ext_data_control_offer_v1::{self as offer, ExtDataControlOfferV1};
-use wayland_protocols::ext::data_control::v1::client::ext_data_control_source_v1::{self as source, ExtDataControlSourceV1};
+use wayland_protocols::ext::data_control::v1::client::ext_data_control_offer_v1::{
+    self as offer, ExtDataControlOfferV1,
+};
+use wayland_protocols::ext::data_control::v1::client::ext_data_control_source_v1::{
+    self as source, ExtDataControlSourceV1,
+};
 
 use crate::capture::Shared;
 use crate::compositor::{self, bind, lost};
@@ -58,7 +64,16 @@ pub fn run(inbox: Arc<Inbox>, shared: Arc<Shared>, copied: Box<dyn FnMut(String)
     let seat: WlSeat = bind(&globals, &queue)?;
     let manager: ExtDataControlManagerV1 = bind(&globals, &queue)?;
     let device = manager.get_data_device(&seat, &queue, ());
-    let mut clipboard = Clipboard { connection, manager, device, offers: HashMap::new(), own: None, last: String::new(), copied, finished: false };
+    let mut clipboard = Clipboard {
+        connection,
+        manager,
+        device,
+        offers: HashMap::new(),
+        own: None,
+        last: String::new(),
+        copied,
+        finished: false,
+    };
 
     while !shared.stop.load(Ordering::Relaxed) && !clipboard.finished {
         events.flush().map_err(lost)?;
@@ -140,7 +155,14 @@ impl Clipboard {
 }
 
 impl Dispatch<ExtDataControlDeviceV1, ()> for Clipboard {
-    fn event(state: &mut Self, _: &ExtDataControlDeviceV1, event: device::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &ExtDataControlDeviceV1,
+        event: device::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
             device::Event::DataOffer { id } => {
                 state.offers.insert(id.id(), Vec::new());
@@ -169,7 +191,14 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for Clipboard {
 }
 
 impl Dispatch<ExtDataControlOfferV1, ()> for Clipboard {
-    fn event(state: &mut Self, offer: &ExtDataControlOfferV1, event: offer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        offer: &ExtDataControlOfferV1,
+        event: offer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let offer::Event::Offer { mime_type } = event {
             state.offers.entry(offer.id()).or_default().push(mime_type);
         }
@@ -177,7 +206,14 @@ impl Dispatch<ExtDataControlOfferV1, ()> for Clipboard {
 }
 
 impl Dispatch<ExtDataControlSourceV1, ()> for Clipboard {
-    fn event(state: &mut Self, source: &ExtDataControlSourceV1, event: source::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        source: &ExtDataControlSourceV1,
+        event: source::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         let current = state.own.as_ref().filter(|(own, _)| own == source);
         match event {
             // An application on the desktop is pasting: hand it the text.
@@ -199,7 +235,15 @@ impl Dispatch<ExtDataControlSourceV1, ()> for Clipboard {
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for Clipboard {
-    fn event(_: &mut Self, _: &WlRegistry, _: wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 delegate_noop!(Clipboard: ignore WlSeat);

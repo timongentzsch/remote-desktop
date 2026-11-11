@@ -66,7 +66,14 @@ pub fn install(tailscale: bool) {
     let this = std::env::current_exe().unwrap_or_else(|error| fail(&format!("cannot locate this program: {error}")));
     run("sudo", &["install", "-Dm755", &this.to_string_lossy(), BINARY]);
     let rule = format!("printf '%s\\n' '{UDEV_RULE}' > {UDEV_RULE_PATH}");
-    run("sudo", &["sh", "-c", &format!("{rule} && modprobe uinput && udevadm control --reload && udevadm trigger --name-match=uinput")]);
+    run(
+        "sudo",
+        &[
+            "sh",
+            "-c",
+            &format!("{rule} && modprobe uinput && udevadm control --reload && udevadm trigger --name-match=uinput"),
+        ],
+    );
     firewall(true);
     if tailscale {
         use_tailscale();
@@ -91,7 +98,11 @@ pub fn install(tailscale: bool) {
 fn firewall(open: bool) {
     let port = format!("{}/tcp", crate::PORT);
     let active = |program: &str, arguments: &[&str], marker: &str| {
-        Command::new("sudo").arg(program).args(arguments).output().is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(marker))
+        Command::new("sudo")
+            .arg(program)
+            .args(arguments)
+            .output()
+            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(marker))
     };
     let done = if open { "Opened" } else { "Closed" };
     if active("ufw", &["status"], "Status: active") {
@@ -110,7 +121,8 @@ fn firewall(open: bool) {
 /// the address clients already trust.
 pub fn uninstall() {
     // The service may already be gone, which is fine.
-    let _ = Command::new("systemctl").args(["--user", "--quiet", "disable", "--now", "remote-desktop.service"]).status();
+    let _ =
+        Command::new("systemctl").args(["--user", "--quiet", "disable", "--now", "remote-desktop.service"]).status();
     let _ = fs::remove_file(config_directory().join("systemd/user/remote-desktop.service"));
     let _ = fs::remove_file(desktop_entry_path());
     run("systemctl", &["--user", "daemon-reload"]);
@@ -118,7 +130,10 @@ pub fn uninstall() {
     run("sudo", &["rm", "-f", BINARY, UDEV_RULE_PATH]);
     run("sudo", &["udevadm", "control", "--reload"]);
     let kept = config_directory().join("remote-desktop");
-    println!("Removed the service, {BINARY} and the input rule. The password and certificate remain in {}.", kept.display());
+    println!(
+        "Removed the service, {BINARY} and the input rule. The password and certificate remain in {}.",
+        kept.display()
+    );
 }
 
 /// `remote-desktop certificate [--tailscale]`: makes a fresh self-signed certificate, for when the machine's
@@ -147,10 +162,17 @@ fn show_certificate() {
         return;
     }
     let path = certificate::path();
-    println!("\nOpen https://{}:{} in Chrome. It also answers to: {}", certificate::names()[0], crate::PORT, certificate::names()[1..].join(", "));
+    println!(
+        "\nOpen https://{}:{} in Chrome. It also answers to: {}",
+        certificate::names()[0],
+        crate::PORT,
+        certificate::names()[1..].join(", ")
+    );
     println!("The certificate is self-signed, so each client has to trust it once. On a Mac:");
     println!("    scp <this machine>:{} remote-desktop.pem", path.display());
-    println!("    security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db remote-desktop.pem");
+    println!(
+        "    security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db remote-desktop.pem"
+    );
 }
 
 /// Reads a password from the terminal (not echoed) or from standard input and stores it for the service.
@@ -170,7 +192,10 @@ pub fn set_password() {
 /// `remote-desktop password --none`: lets anyone who can reach this machine's port control it.
 pub fn remove_password() {
     write_private(&password_path(), b"").unwrap_or_else(|error| fail(&error));
-    println!("No password is needed any more: anyone who can reach port {} on this machine can see and control", crate::PORT);
+    println!(
+        "No password is needed any more: anyone who can reach port {} on this machine can see and control",
+        crate::PORT
+    );
     println!("this desktop. Restart the service to apply: systemctl --user restart remote-desktop");
 }
 

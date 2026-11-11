@@ -1,0 +1,3 @@
+# Wide enough for a signature or a message on one line; code is otherwise formatted with the defaults.
+max_width = 120
+use_small_heuristics = "Max"

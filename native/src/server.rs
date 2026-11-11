@@ -34,10 +34,12 @@ pub fn run(address: &str) -> ! {
         .unwrap_or_else(|_| fail("no password is set; run `remote-desktop password`"))
         .trim_ascii()
         .to_vec();
-    let input = Input::open()
-        .unwrap_or_else(|error| fail(&format!("cannot create input devices through /dev/uinput ({error}); run `remote-desktop install`")));
+    let input = Input::open().unwrap_or_else(|error| {
+        fail(&format!("cannot create input devices through /dev/uinput ({error}); run `remote-desktop install`"))
+    });
     let tls = certificate::configuration().unwrap_or_else(|error| fail(&error));
-    let listener = TcpListener::bind(address).unwrap_or_else(|error| fail(&format!("cannot listen on {address}: {error}")));
+    let listener =
+        TcpListener::bind(address).unwrap_or_else(|error| fail(&format!("cannot listen on {address}: {error}")));
     let host = Arc::new(Host { input, password, tls: Mutex::new(tls) });
     thread::spawn({
         let host = host.clone();
@@ -86,9 +88,15 @@ fn serve(socket: TcpStream, host: &Host) -> io::Result<()> {
         Some((_, content_type, body)) => {
             // The page hides its password field when none is needed.
             let open = path == "/" && host.password.is_empty();
-            let body = if open { String::from_utf8_lossy(body).replacen("<html ", "<html class=\"open\" ", 1).into_bytes() } else { body.to_vec() };
+            let body = if open {
+                String::from_utf8_lossy(body).replacen("<html ", "<html class=\"open\" ", 1).into_bytes()
+            } else {
+                body.to_vec()
+            };
             let length = body.len();
-            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {length}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n");
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {length}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
+            );
             [head.as_bytes(), &body[..]].concat()
         }
         None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),

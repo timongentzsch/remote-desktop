@@ -27,14 +27,19 @@ pub fn run(shared: Arc<Shared>, mut packet: Box<dyn FnMut(&[u8]) + Send>) -> Res
     let (mut server, version) = connect()?;
     let stream = protocol::RecordStreamParams {
         source_name: Some(c"@DEFAULT_MONITOR@".to_owned()),
-        sample_spec: protocol::SampleSpec { format: protocol::SampleFormat::S16Le, channels: CHANNELS as u8, sample_rate: RATE },
+        sample_spec: protocol::SampleSpec {
+            format: protocol::SampleFormat::S16Le,
+            channels: CHANNELS as u8,
+            sample_rate: RATE,
+        },
         channel_map: protocol::ChannelMap::stereo(),
         // Deliver a frame at a time rather than the server's larger default chunks.
         buffer_attr: protocol::stream::BufferAttr { fragment_size: FRAME_BYTES as u32, ..Default::default() },
         flags: protocol::stream::StreamFlags { adjust_latency: true, ..Default::default() },
         ..Default::default()
     };
-    protocol::write_command_message(server.get_mut(), 2, &protocol::Command::CreateRecordStream(stream), version).map_err(failed)?;
+    protocol::write_command_message(server.get_mut(), 2, &protocol::Command::CreateRecordStream(stream), version)
+        .map_err(failed)?;
     protocol::read_reply_message::<protocol::CreateRecordStreamReply>(&mut server, version).map_err(failed)?;
 
     let mut encoder = Encoder::new()?;
@@ -70,16 +75,21 @@ pub fn run(shared: Arc<Shared>, mut packet: Box<dyn FnMut(&[u8]) + Send>) -> Res
 fn connect() -> Result<(BufReader<UnixStream>, u16), String> {
     let failed = |error: protocol::ProtocolError| format!("the audio server refused: {error}");
     let path = pulseaudio::socket_path_from_env().ok_or("no audio server is running")?;
-    let mut server = BufReader::new(UnixStream::connect(path).map_err(|error| format!("cannot reach the audio server: {error}"))?);
+    let mut server =
+        BufReader::new(UnixStream::connect(path).map_err(|error| format!("cannot reach the audio server: {error}"))?);
     let cookie = pulseaudio::cookie_path_from_env().and_then(|path| std::fs::read(path).ok()).unwrap_or_default();
-    let login = protocol::AuthParams { version: protocol::MAX_VERSION, supports_shm: false, supports_memfd: false, cookie };
-    protocol::write_command_message(server.get_mut(), 0, &protocol::Command::Auth(login), protocol::MAX_VERSION).map_err(failed)?;
-    let (_, reply) = protocol::read_reply_message::<protocol::AuthReply>(&mut server, protocol::MAX_VERSION).map_err(failed)?;
+    let login =
+        protocol::AuthParams { version: protocol::MAX_VERSION, supports_shm: false, supports_memfd: false, cookie };
+    protocol::write_command_message(server.get_mut(), 0, &protocol::Command::Auth(login), protocol::MAX_VERSION)
+        .map_err(failed)?;
+    let (_, reply) =
+        protocol::read_reply_message::<protocol::AuthReply>(&mut server, protocol::MAX_VERSION).map_err(failed)?;
     let version = reply.version.min(protocol::MAX_VERSION);
 
     let mut properties = protocol::Props::new();
     properties.set(protocol::Prop::ApplicationName, CString::from(c"Remote Desktop"));
-    protocol::write_command_message(server.get_mut(), 1, &protocol::Command::SetClientName(properties), version).map_err(failed)?;
+    protocol::write_command_message(server.get_mut(), 1, &protocol::Command::SetClientName(properties), version)
+        .map_err(failed)?;
     protocol::read_reply_message::<protocol::SetClientNameReply>(&mut server, version).map_err(failed)?;
     Ok((server, version))
 }
@@ -90,7 +100,14 @@ impl Encoder {
     fn new() -> Result<Self, String> {
         let mut error = 0;
         // "Restricted low delay" drops the codec's look-ahead; the sound follows the picture more closely.
-        let raw = unsafe { opus::opus_encoder_create(RATE as i32, CHANNELS as i32, opus::OPUS_APPLICATION_RESTRICTED_LOWDELAY, &mut error) };
+        let raw = unsafe {
+            opus::opus_encoder_create(
+                RATE as i32,
+                CHANNELS as i32,
+                opus::OPUS_APPLICATION_RESTRICTED_LOWDELAY,
+                &mut error,
+            )
+        };
         if raw.is_null() || error != opus::OPUS_OK {
             return Err(format!("cannot create the audio encoder (Opus error {error})"));
         }
@@ -100,7 +117,9 @@ impl Encoder {
 
     /// Encodes one frame of interleaved samples into `out` and returns the packet's length.
     fn encode(&mut self, frame: &[i16], out: &mut [u8]) -> Result<usize, String> {
-        match unsafe { opus::opus_encode(self.0, frame.as_ptr(), FRAME_SAMPLES as i32, out.as_mut_ptr(), out.len() as i32) } {
+        match unsafe {
+            opus::opus_encode(self.0, frame.as_ptr(), FRAME_SAMPLES as i32, out.as_mut_ptr(), out.len() as i32)
+        } {
             size if size > 0 => Ok(size as usize),
             error => Err(format!("the audio encoder failed (Opus error {error})")),
         }

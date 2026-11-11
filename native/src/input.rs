@@ -80,11 +80,14 @@ impl Input {
 
 fn device(name: &str, keys: &[u16], relative: &[u16], absolute: &[u16]) -> io::Result<File> {
     let file = OpenOptions::new().write(true).open("/dev/uinput")?;
-    let control = |request: u32, argument: usize| match unsafe { libc::ioctl(file.as_raw_fd(), request as _, argument) } {
+    let control = |request: u32, argument: usize| match unsafe { libc::ioctl(file.as_raw_fd(), request as _, argument) }
+    {
         -1 => Err(io::Error::last_os_error()),
         _ => Ok(()),
     };
-    for (event, set_bit, codes) in [(EV_KEY, UI_SET_KEYBIT, keys), (EV_REL, UI_SET_RELBIT, relative), (EV_ABS, UI_SET_ABSBIT, absolute)] {
+    for (event, set_bit, codes) in
+        [(EV_KEY, UI_SET_KEYBIT, keys), (EV_REL, UI_SET_RELBIT, relative), (EV_ABS, UI_SET_ABSBIT, absolute)]
+    {
         if !codes.is_empty() {
             control(UI_SET_EVBIT, event as usize)?;
         }
@@ -108,7 +111,12 @@ fn emit(mut device: &File, events: &[(u16, u16, i32)]) {
     let batch: Vec<libc::input_event> = events
         .iter()
         .chain([&(EV_SYN, 0, 0)])
-        .map(|&(type_, code, value)| libc::input_event { time: libc::timeval { tv_sec: 0, tv_usec: 0 }, type_, code, value })
+        .map(|&(type_, code, value)| libc::input_event {
+            time: libc::timeval { tv_sec: 0, tv_usec: 0 },
+            type_,
+            code,
+            value,
+        })
         .collect();
     let bytes = unsafe { std::slice::from_raw_parts(batch.as_ptr().cast::<u8>(), size_of_val(&batch[..])) };
     // An event the kernel refuses (an out-of-range code from the client) is simply not injected.
