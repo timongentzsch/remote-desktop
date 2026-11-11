@@ -67,5 +67,3 @@ Release binaries that run on any distribution with glibc 2.28 or newer need `zig
     cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
 
 Linking x264 makes the binary GPL-licensed.
-
-`host.py` and `install.sh` are the earlier Python host, kept as a fallback for now.
