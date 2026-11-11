@@ -6,7 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::{fail, tls};
+use crate::{certificate, fail};
 
 const BINARY: &str = "/usr/local/bin/remote-desktop";
 const UDEV_RULE_PATH: &str = "/etc/udev/rules.d/70-remote-desktop.rules";
@@ -38,19 +38,20 @@ NoDisplay=true
 X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1
 ";
 
-fn desktop_entry_path() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
+/// One of the user's base directories: where `variable` points, or `fallback` in the home directory.
+fn user_directory(variable: &str, fallback: &str) -> PathBuf {
+    std::env::var_os(variable)
         .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".local/share")))
-        .unwrap_or_else(|| fail("neither XDG_DATA_HOME nor HOME is set"))
-        .join("applications/remote-desktop.desktop")
+        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(fallback)))
+        .unwrap_or_else(|| fail(&format!("neither {variable} nor HOME is set")))
+}
+
+fn desktop_entry_path() -> PathBuf {
+    user_directory("XDG_DATA_HOME", ".local/share").join("applications/remote-desktop.desktop")
 }
 
 pub fn config_directory() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".config")))
-        .unwrap_or_else(|| fail("neither XDG_CONFIG_HOME nor HOME is set"))
+    user_directory("XDG_CONFIG_HOME", ".config")
 }
 
 pub fn password_path() -> PathBuf {
@@ -69,8 +70,8 @@ pub fn install(tailscale: bool) {
     firewall(true);
     if tailscale {
         use_tailscale();
-    } else if !tls::certificate_path().exists() {
-        tls::create_certificate().unwrap_or_else(|error| fail(&error));
+    } else if !certificate::path().exists() {
+        certificate::create().unwrap_or_else(|error| fail(&error));
     }
 
     let unit = config_directory().join("systemd/user/remote-desktop.service");
@@ -126,7 +127,7 @@ pub fn renew_certificate(tailscale: bool) {
     if tailscale {
         use_tailscale();
     } else {
-        tls::create_certificate().unwrap_or_else(|error| fail(&error));
+        certificate::create().unwrap_or_else(|error| fail(&error));
     }
     println!("The certificate changed. Restart the service to use it: systemctl --user restart remote-desktop");
     show_certificate();
@@ -136,19 +137,19 @@ pub fn renew_certificate(tailscale: bool) {
 fn use_tailscale() {
     let user = std::env::var("USER").unwrap_or_else(|_| fail("USER is not set"));
     run("sudo", &["tailscale", "set", &format!("--operator={user}")]);
-    tls::use_tailscale().unwrap_or_else(|error| fail(&error));
+    certificate::use_tailscale().unwrap_or_else(|error| fail(&error));
 }
 
 /// Tells the user where to connect and, for a self-signed certificate, how to make their browser trust it.
 fn show_certificate() {
-    if let Some(name) = tls::tailscale_name() {
+    if let Some(name) = certificate::tailscale_name() {
         println!("\nOpen https://{name}:{} in Chrome from any device on your tailnet.", crate::PORT);
         return;
     }
-    let certificate = tls::certificate_path();
-    println!("\nOpen https://{}:{} in Chrome. It also answers to: {}", tls::names()[0], crate::PORT, tls::names()[1..].join(", "));
+    let path = certificate::path();
+    println!("\nOpen https://{}:{} in Chrome. It also answers to: {}", certificate::names()[0], crate::PORT, certificate::names()[1..].join(", "));
     println!("The certificate is self-signed, so each client has to trust it once. On a Mac:");
-    println!("    scp <this machine>:{} remote-desktop.pem", certificate.display());
+    println!("    scp <this machine>:{} remote-desktop.pem", path.display());
     println!("    security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db remote-desktop.pem");
 }
 

@@ -5,9 +5,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+mod convert;
+mod encode;
+
+pub use encode::{PROBE, probe};
+
 use crate::capture::{Settings, Shared, Sink};
-use crate::convert;
-use crate::encode::Encoder;
+use encode::Encoder;
 
 /// For how many seconds at most a still picture is encoded again to bring it up to the quality target.
 const REFINE_SECONDS: u32 = 20;

@@ -11,8 +11,8 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use wayland_client::backend::ObjectId;
-use wayland_client::globals::{GlobalListContents, registry_queue_init};
-use wayland_client::protocol::wl_registry::WlRegistry;
+use wayland_client::globals::GlobalListContents;
+use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop, event_created_child};
 use wayland_protocols::ext::data_control::v1::client::ext_data_control_device_v1::{self as device, ExtDataControlDeviceV1};
@@ -21,6 +21,7 @@ use wayland_protocols::ext::data_control::v1::client::ext_data_control_offer_v1:
 use wayland_protocols::ext::data_control::v1::client::ext_data_control_source_v1::{self as source, ExtDataControlSourceV1};
 
 use crate::capture::Shared;
+use crate::compositor::{self, bind, lost};
 
 /// The names text goes by on the clipboard, most precise first.
 const TEXT_TYPES: [&str; 4] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
@@ -52,16 +53,13 @@ impl Inbox {
 
 /// Shares the clipboard until `shared.stop` is set. `copied` is called with each new text on the desktop's clipboard.
 pub fn run(inbox: Arc<Inbox>, shared: Arc<Shared>, copied: Box<dyn FnMut(String) + Send>) -> Result<(), String> {
-    let connection = Connection::connect_to_env().map_err(|error| format!("no Wayland display: {error}"))?;
-    let (globals, mut events) = registry_queue_init::<Clipboard>(&connection).map_err(|error| error.to_string())?;
+    let (connection, globals, mut events) = compositor::connect::<Clipboard>()?;
     let queue = events.handle();
-    let missing = |error| format!("the compositor lacks a protocol this needs: {error}");
-    let seat: WlSeat = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
-    let manager: ExtDataControlManagerV1 = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
+    let seat: WlSeat = bind(&globals, &queue)?;
+    let manager: ExtDataControlManagerV1 = bind(&globals, &queue)?;
     let device = manager.get_data_device(&seat, &queue, ());
-    let mut clipboard = Clipboard { connection: connection.clone(), manager, device, offers: HashMap::new(), own: None, last: String::new(), copied, finished: false };
+    let mut clipboard = Clipboard { connection, manager, device, offers: HashMap::new(), own: None, last: String::new(), copied, finished: false };
 
-    let lost = |error| format!("lost the Wayland connection: {error}");
     while !shared.stop.load(Ordering::Relaxed) && !clipboard.finished {
         events.flush().map_err(lost)?;
         if let Some(guard) = events.prepare_read() {
@@ -78,7 +76,7 @@ pub fn run(inbox: Arc<Inbox>, shared: Arc<Shared>, copied: Box<dyn FnMut(String)
         if let Some(text) = inbox.text.lock().unwrap().take() {
             clipboard.set(text, &queue);
         }
-        events.dispatch_pending(&mut clipboard).map_err(|error| format!("lost the Wayland connection: {error}"))?;
+        events.dispatch_pending(&mut clipboard).map_err(lost)?;
     }
     Ok(())
 }
@@ -201,7 +199,7 @@ impl Dispatch<ExtDataControlSourceV1, ()> for Clipboard {
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for Clipboard {
-    fn event(_: &mut Self, _: &WlRegistry, _: <WlRegistry as Proxy>::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(_: &mut Self, _: &WlRegistry, _: wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
 }
 
 delegate_noop!(Clipboard: ignore WlSeat);

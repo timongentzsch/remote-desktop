@@ -1,16 +1,15 @@
-//! Screen capture through the compositor's ext-image-copy-capture-v1 protocol; the pictures go to a `Stream`.
+//! Screen capture through the ext-image-copy-capture-v1 protocol, which Hyprland, Sway and other wlroots
+//! compositors offer.
 //!
 //! The compositor hands over a frame only when the screen changed, so a still screen costs nothing.
 
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::time::{Duration, Instant};
 
-use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::protocol::wl_registry::WlRegistry;
+use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_shm::{self, WlShm};
 use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
@@ -19,62 +18,32 @@ use wayland_protocols::ext::image_capture_source::v1::client::ext_output_image_c
 use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_frame_v1::{self as frame, ExtImageCopyCaptureFrameV1};
 use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::{ExtImageCopyCaptureManagerV1, Options};
 use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_session_v1::{self as session, ExtImageCopyCaptureSessionV1};
-
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1;
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_v1::{self as power, ZwlrOutputPowerV1};
 
+use crate::compositor::{self, bind, lost};
 use crate::stream::Stream;
-use crate::{kwin, mutter};
 
-pub struct Settings {
-    pub kbps: u32,
-    pub fps: u32,
-    /// Paint the pointer into the picture. Off when the client draws its own.
-    pub cursor: bool,
-    /// Keep full colour resolution (4:4:4) instead of 4:2:0.
-    pub full_chroma: bool,
-    pub half_size: bool,
-}
+/// The protocol's name, by which a compositor announces it.
+pub const PROTOCOL: &str = "ext_image_copy_capture_manager_v1";
 
-/// What a session and its capture exchange while the capture runs.
-#[derive(Default)]
-pub struct Shared {
-    /// Set by the session to end the capture.
-    pub stop: AtomicBool,
-    /// The bitrate cap in kbit/s the client now wants; 0 until it asks for a change.
-    pub kbps: AtomicU32,
-    /// How long converting and encoding the latest frame took, in microseconds.
-    pub encode_micros: AtomicU32,
-}
-
-/// Receives each piece of the stream; returns false once nobody is listening any more.
-pub type Sink = Box<dyn FnMut(&[u8]) -> bool + Send>;
-
-/// Captures the first output until `shared.stop` is set, the sink declines a piece, or the compositor ends it.
-pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), String> {
-    let connection = Connection::connect_to_env().map_err(|error| format!("no Wayland display: {error}"))?;
-    let (globals, mut events) = registry_queue_init::<Capture>(&connection).map_err(|error| error.to_string())?;
-    let offers = |protocol: &str| globals.contents().with_list(|list| list.iter().any(|global| global.interface == protocol));
-    if !offers("ext_image_copy_capture_manager_v1") {
-        // Not a compositor that offers capture as a standard Wayland protocol. KDE and GNOME have their own ways.
-        let stream = Stream::new(settings, shared, sink);
-        return if offers(kwin::PROTOCOL) { kwin::run(stream) } else { mutter::run(stream) };
-    }
+/// Captures the first output until the stream is no longer wanted or the compositor ends the capture.
+pub fn run(stream: Stream) -> Result<(), String> {
+    let (_connection, globals, mut events) = compositor::connect::<Capture>()?;
     let queue = events.handle();
-    let missing = |error| format!("the compositor lacks a protocol this needs: {error}");
-    let shm: WlShm = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
-    let output: WlOutput = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
-    let sources: ExtOutputImageCaptureSourceManagerV1 = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
-    let manager: ExtImageCopyCaptureManagerV1 = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
+    let shm: WlShm = bind(&globals, &queue)?;
+    let output: WlOutput = bind(&globals, &queue)?;
+    let sources: ExtOutputImageCaptureSourceManagerV1 = bind(&globals, &queue)?;
+    let manager: ExtImageCopyCaptureManagerV1 = bind(&globals, &queue)?;
 
     // A sleeping display produces no frames, so it is switched on first where the compositor allows that.
-    let power = globals.bind::<ZwlrOutputPowerManagerV1, _, _>(&queue, 1..=1, ()).ok().map(|manager| manager.get_output_power(&output, &queue, ()));
+    let power = bind::<ZwlrOutputPowerManagerV1, _>(&globals, &queue).ok().map(|manager| manager.get_output_power(&output, &queue, ()));
     let source = sources.create_source(&output, &queue, ());
-    let options = if settings.cursor { Options::PaintCursors } else { Options::empty() };
+    let options = if stream.settings.cursor { Options::PaintCursors } else { Options::empty() };
     let session = manager.create_session(&source, options, &queue, ());
 
     let mut capture = Capture {
-        stream: Stream::new(settings, shared, sink),
+        stream,
         shm,
         session,
         size: (0, 0),
@@ -84,7 +53,6 @@ pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), St
         frame_pending: false,
         requested: Instant::now() - Duration::from_secs(1),
     };
-    let lost = |error| format!("lost the Wayland connection: {error}");
     while capture.stream.wanted() {
         events.flush().map_err(lost)?;
         if let Some(guard) = events.prepare_read() {
@@ -93,7 +61,7 @@ pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), St
                 guard.read().map_err(lost)?;
             }
         }
-        events.dispatch_pending(&mut capture).map_err(|error| format!("lost the Wayland connection: {error}"))?;
+        events.dispatch_pending(&mut capture).map_err(lost)?;
         capture.stream.refine();
     }
     capture.stream.ended.take().unwrap_or(Ok(()))
@@ -253,7 +221,7 @@ impl Dispatch<ZwlrOutputPowerV1, ()> for Capture {
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for Capture {
-    fn event(_: &mut Self, _: &WlRegistry, _: <WlRegistry as wayland_client::Proxy>::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(_: &mut Self, _: &WlRegistry, _: wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
 }
 
 delegate_noop!(Capture: ignore WlShm);

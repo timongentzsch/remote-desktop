@@ -1,12 +1,8 @@
-/* The encoders behind one interface, so the Rust side does not depend on the layout of their structs:
-   x264 here, and the GPU's encoder in nvenc.c. */
+/* Software H.264 encoding with x264, which is built into the binary. */
 #include <stdint.h>
 #include <stdlib.h>
 #include <x264.h>
 #include "encoder.h"
-
-/* The constant-quality target (x264's "rate factor"; lower is better). */
-#define QUALITY 20
 
 struct software {
     struct encoder base;
@@ -16,7 +12,7 @@ struct software {
 
 static const struct encoder_ops software_ops;
 
-static struct encoder *software_open(int width, int height, int fps, int kbps, int full_chroma)
+struct encoder *software_open(int width, int height, int fps, int kbps, int full_chroma)
 {
     x264_param_t param;
     if (x264_param_default_preset(&param, "ultrafast", "zerolatency") < 0)
@@ -34,7 +30,7 @@ static struct encoder *software_open(int width, int height, int fps, int kbps, i
     param.b_annexb = 0; /* length-prefixed NAL units, as FLV carries them */
     /* Constant quality, capped: a still screen costs almost nothing and motion cannot outrun the link. */
     param.rc.i_rc_method = X264_RC_CRF;
-    param.rc.f_rf_constant = QUALITY;
+    param.rc.f_rf_constant = QUALITY; /* x264's "rate factor" */
     param.rc.i_vbv_max_bitrate = kbps;
     param.rc.i_vbv_buffer_size = kbps / 5;
     param.vui.b_fullrange = 1;
@@ -121,39 +117,3 @@ static void software_close(struct encoder *base)
 }
 
 static const struct encoder_ops software_ops = { software_plane, software_headers, software_encode, software_set_bitrate, software_close };
-
-/* Opens the GPU's encoder if `gpu` is set, x264 otherwise. NULL if that one cannot be used. */
-struct encoder *encoder_open(int width, int height, int fps, int kbps, int full_chroma, int gpu)
-{
-    return (gpu ? nvenc_open : software_open)(width, height, fps, kbps, full_chroma);
-}
-
-/* A plane of the picture to encode, for the caller to fill; it stays valid while the encoder is open. */
-uint8_t *encoder_plane(struct encoder *encoder, int index, int *stride)
-{
-    return encoder->ops->plane(encoder, index, stride);
-}
-
-/* Points sps/pps at the raw parameter sets (without start code or length prefix). Returns 0 on success. */
-int encoder_headers(struct encoder *encoder, uint8_t **sps, int *sps_size, uint8_t **pps, int *pps_size)
-{
-    return encoder->ops->headers(encoder, sps, sps_size, pps, pps_size);
-}
-
-/* Encodes the picture in the planes. Returns the size of the access unit at *data (length-prefixed NAL
-   units, valid until the next call), or 0 or less if there is none. */
-int encoder_encode(struct encoder *encoder, uint8_t **data, int *keyframe)
-{
-    return encoder->ops->encode(encoder, data, keyframe);
-}
-
-/* Changes the bitrate cap of a running encoder. Returns 0 on success. */
-int encoder_set_bitrate(struct encoder *encoder, int kbps)
-{
-    return encoder->ops->set_bitrate(encoder, kbps);
-}
-
-void encoder_close(struct encoder *encoder)
-{
-    encoder->ops->close(encoder);
-}

@@ -1,4 +1,4 @@
-//! H.264 encoding through the C wrapper in encoder.c: on the GPU where it has an encoder, with x264 otherwise.
+//! H.264 encoding through the C interface in encoder.c: on the GPU where it has an encoder, with x264 otherwise.
 
 use std::ffi::c_int;
 use std::process::Command;
@@ -46,6 +46,11 @@ fn gpu_can_encode() -> bool {
     *ANSWER.get_or_init(|| std::env::current_exe().and_then(|program| Command::new(program).arg(PROBE).status()).is_ok_and(|status| status.success()))
 }
 
+/// What the `PROBE` command answers: whether a small ordinary picture can be encoded on the GPU.
+pub fn probe() -> bool {
+    Encoder::open_on(true, 256, 256, 30, 1000, false).is_some()
+}
+
 pub struct Encoder {
     raw: *mut Raw,
     pub width: usize,
@@ -62,10 +67,6 @@ impl Encoder {
         on_gpu.or_else(|| Self::open_on(false, width, height, fps, kbps, full_chroma))
     }
 
-    /// What the `PROBE` command answers: whether a small ordinary picture can be encoded on the GPU.
-    pub fn probe() -> bool {
-        Self::open_on(true, 256, 256, 30, 1000, false).is_some()
-    }
 
     fn open_on(gpu: bool, width: usize, height: usize, fps: u32, kbps: u32, full_chroma: bool) -> Option<Self> {
         let raw = unsafe { encoder_open(width as c_int, height as c_int, fps as c_int, kbps as c_int, full_chroma as c_int, gpu as c_int) };

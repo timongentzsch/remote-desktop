@@ -2,14 +2,15 @@
 //! own Wayland protocol. Plasma before 6.8 only lets programs use that protocol whose desktop file declares
 //! it, which is why `install` writes one.
 
-use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::protocol::wl_registry::WlRegistry;
+use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols_plasma::screencast::v1::client::zkde_screencast_stream_unstable_v1::{self as cast, ZkdeScreencastStreamUnstableV1};
 use wayland_protocols_plasma::screencast::v1::client::zkde_screencast_unstable_v1::ZkdeScreencastUnstableV1;
 
-use crate::pipewire;
+use super::pipewire;
+use crate::compositor::{self, bind, lost};
 use crate::stream::Stream;
 
 /// The protocol's name, by which a compositor announces it.
@@ -27,13 +28,10 @@ struct Cast {
 
 /// Captures the first output until the stream is no longer wanted or KDE ends the cast.
 pub fn run(stream: Stream) -> Result<(), String> {
-    let lost = |error| format!("lost the Wayland connection: {error}");
-    let connection = Connection::connect_to_env().map_err(|error| format!("no Wayland display: {error}"))?;
-    let (globals, mut events) = registry_queue_init::<Cast>(&connection).map_err(|error| error.to_string())?;
+    let (_connection, globals, mut events) = compositor::connect::<Cast>()?;
     let queue = events.handle();
-    let missing = |error| format!("the compositor lacks a protocol this needs: {error}");
-    let output: WlOutput = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
-    let screencast: ZkdeScreencastUnstableV1 = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
+    let output: WlOutput = bind(&globals, &queue)?;
+    let screencast: ZkdeScreencastUnstableV1 = bind(&globals, &queue)?;
     let pointer = if stream.settings.cursor { POINTER_EMBEDDED } else { POINTER_HIDDEN };
     // The cast lasts as long as this object and the connection it belongs to.
     let _cast = screencast.stream_output(&output, pointer, &queue, ());
@@ -60,7 +58,7 @@ impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Cast {
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for Cast {
-    fn event(_: &mut Self, _: &WlRegistry, _: <WlRegistry as wayland_client::Proxy>::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(_: &mut Self, _: &WlRegistry, _: wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
 }
 
 delegate_noop!(Cast: ignore WlOutput);

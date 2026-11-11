@@ -9,7 +9,7 @@ use rustbus::params::{Container, Param};
 use rustbus::wire::ObjectPath;
 use rustbus::{MessageBuilder, MessageType, RpcConn, standard_messages};
 
-use crate::pipewire;
+use super::pipewire;
 use crate::stream::Stream;
 
 const SERVICE: &str = "org.gnome.Mutter.ScreenCast";

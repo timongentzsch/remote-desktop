@@ -9,9 +9,6 @@
 #include <string.h>
 #include "encoder.h"
 
-/* The constant-quality target (lower is better), the counterpart of x264's rate factor: a picture is given the
-   bits this quality needs and no more, however high the bitrate cap. */
-#define QUALITY 20
 /* P1 is the fastest preset and P7 the best; P3 costs about a millisecond per frame more than P1. */
 #define PRESET NV_ENC_PRESET_P3_GUID
 #define TUNING NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY

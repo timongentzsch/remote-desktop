@@ -16,5 +16,10 @@ struct encoder {
     const struct encoder_ops *ops;
 };
 
+/* The constant-quality target both encoders aim for, on H.264's scale of quantisers (lower is better). A
+   picture is given the bits this quality needs and no more, however high the bitrate cap. */
+#define QUALITY 20
+
+struct encoder *software_open(int width, int height, int fps, int kbps, int full_chroma);
 /* NULL when the machine has no usable hardware encoder. */
 struct encoder *nvenc_open(int width, int height, int fps, int kbps, int full_chroma);

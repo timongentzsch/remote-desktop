@@ -1,11 +1,11 @@
 //! Colour conversion from the compositor's BGRx pixels to planar YUV.
 //!
 //! H.264 that browsers decode in hardware is YUV, and the compositor only hands out RGB, so every changed frame
-//! goes through here. The matrix and range (BT.709, full) are the ones encoder.c announces in the stream.
+//! goes through here. The matrix and range (BT.709, full) are the ones the encoders announce in the stream.
 
 use yuv::{BufferStoreMut, YuvConversionMode, YuvPlanarImageMut, YuvRange, YuvStandardMatrix};
 
-use crate::encode::Plane;
+use super::encode::Plane;
 
 /// Fills the encoder's planes from `pixels` (rows of `stride` bytes, four bytes per pixel in B, G, R, x order).
 pub fn bgrx_to_yuv(pixels: &[u8], stride: usize, width: usize, height: usize, planes: [Plane; 3], full_chroma: bool) {
