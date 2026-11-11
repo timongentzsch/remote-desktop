@@ -1,6 +1,6 @@
 //! The small part of WebSocket (RFC 6455) this server needs: the handshake key and unfragmented frames.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 
 pub const TEXT: u8 = 1;
 pub const BINARY: u8 = 2;
@@ -50,8 +50,8 @@ pub fn read(stream: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(payload))
 }
 
-/// Writes one message to the client.
-pub fn write(stream: &mut impl Write, opcode: u8, payload: &[u8]) -> io::Result<()> {
+/// One message for the client, as the bytes to send.
+pub fn frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(payload.len() + 10);
     frame.push(0x80 | opcode);
     match payload.len() {
@@ -66,7 +66,7 @@ pub fn write(stream: &mut impl Write, opcode: u8, payload: &[u8]) -> io::Result<
         }
     }
     frame.extend(payload);
-    stream.write_all(&frame)
+    frame
 }
 
 #[cfg(test)]
@@ -89,11 +89,7 @@ mod tests {
 
     #[test]
     fn writes_each_length_form() {
-        let frame = |length: usize| {
-            let mut out = Vec::new();
-            write(&mut out, BINARY, &vec![7; length]).unwrap();
-            out
-        };
+        let frame = |length: usize| frame(BINARY, &vec![7; length]);
         assert_eq!(frame(5)[..2], [0x82, 5]);
         assert_eq!(frame(300)[..4], [0x82, 126, 1, 44]);
         assert_eq!(frame(70000)[..10], [0x82, 127, 0, 0, 0, 0, 0, 1, 0x11, 0x70]);

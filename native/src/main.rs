@@ -1,13 +1,14 @@
 //! Remote desktop host in one binary: serves the web client, streams the screen as H.264 and injects the
 //! client's keyboard and pointer input.
 //!
-//!     remote-desktop install             install system-wide and run as a service of the desktop session
-//!     remote-desktop password            set the login password
-//!     remote-desktop [--listen ADDRESS]  run the host (default 127.0.0.1:8765)
+//!     remote-desktop install [--tailscale]      install system-wide and run as a service of the desktop session
+//!     remote-desktop password                   set the login password
+//!     remote-desktop certificate [--tailscale]  make a new certificate, or switch where it comes from
+//!     remote-desktop [--listen ADDRESS]         run the host (default 0.0.0.0:8765)
 //!
-//! It listens on localhost only by default. Browsers expose video decoding and keyboard capture only on secure
-//! origins, and localhost is one: reach it with `ssh -NL 8765:localhost:8765 user@host` and open
-//! http://localhost:8765 in Chrome.
+//! It serves HTTPS, because browsers expose video decoding and keyboard capture only on secure origins. The
+//! certificate is self-signed by default, which each client has to trust once (`install` prints how). With
+//! `--tailscale` it comes from Tailscale instead and needs no trusting, for devices on the same tailnet.
 
 mod capture;
 mod convert;
@@ -15,20 +16,29 @@ mod encode;
 mod input;
 mod install;
 mod server;
+mod tls;
 mod ws;
+
+const PORT: u16 = 8765;
 
 fn fail(message: &str) -> ! {
     eprintln!("remote-desktop: {message}");
     std::process::exit(1)
 }
 
+/// Whether an optional argument is absent or the one option these commands take.
+fn is_tailscale(option: &Option<String>) -> bool {
+    option.as_deref().is_none_or(|option| option == "--tailscale")
+}
+
 fn main() {
     let mut arguments = std::env::args().skip(1);
     match (arguments.next().as_deref(), arguments.next()) {
-        (None, _) => server::run("127.0.0.1:8765"),
+        (None, _) => server::run(&format!("0.0.0.0:{PORT}")),
         (Some("--listen"), Some(address)) => server::run(&address),
-        (Some("install"), None) => install::install(),
+        (Some("install"), option) if is_tailscale(&option) => install::install(option.is_some()),
         (Some("password"), None) => install::set_password(),
-        _ => fail("usage: remote-desktop [install | password | --listen ADDRESS]"),
+        (Some("certificate"), option) if is_tailscale(&option) => install::renew_certificate(option.is_some()),
+        _ => fail("usage: remote-desktop [install [--tailscale] | password | certificate [--tailscale] | --listen ADDRESS]"),
     }
 }

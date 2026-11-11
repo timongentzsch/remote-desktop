@@ -1,18 +1,20 @@
-//! The network side: serves the client page and runs one session per WebSocket connection.
+//! The network side: serves the client page over HTTPS and runs one session per WebSocket connection.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
-use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::io::{self, Read};
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use rustls::ServerConfig;
 use serde_json::Value;
 
 use crate::capture::{self, Settings};
 use crate::input::{Input, KEY_LEFTSHIFT};
+use crate::tls::{self, Connection};
 use crate::{fail, install, ws};
 
 /// The client, compiled into the binary: path, content type, body.
@@ -22,6 +24,13 @@ const PAGES: [(&str, &str, &[u8]); 3] = [
     ("/icon.svg", "image/svg+xml", include_bytes!("../../icon.svg")),
 ];
 
+struct Host {
+    input: Input,
+    password: Vec<u8>,
+    /// Replaced once a day, so that a renewed certificate is picked up without a restart.
+    tls: Mutex<Arc<ServerConfig>>,
+}
+
 pub fn run(address: &str) -> ! {
     let password = fs::read(install::password_path()).unwrap_or_default().trim_ascii().to_vec();
     if password.is_empty() {
@@ -29,23 +38,35 @@ pub fn run(address: &str) -> ! {
     }
     let input = Input::open()
         .unwrap_or_else(|error| fail(&format!("cannot create input devices through /dev/uinput ({error}); run `remote-desktop install`")));
+    let tls = tls::configuration().unwrap_or_else(|error| fail(&error));
     let listener = TcpListener::bind(address).unwrap_or_else(|error| fail(&format!("cannot listen on {address}: {error}")));
-    let shared = Arc::new((input, password));
-    for stream in listener.incoming().flatten() {
-        let shared = shared.clone();
+    let host = Arc::new(Host { input, password, tls: Mutex::new(tls) });
+    thread::spawn({
+        let host = host.clone();
+        move || loop {
+            thread::sleep(Duration::from_secs(24 * 60 * 60));
+            match tls::configuration() {
+                Ok(fresh) => *host.tls.lock().unwrap() = fresh,
+                Err(error) => eprintln!("remote-desktop: could not reload the certificate: {error}"),
+            }
+        }
+    });
+    for socket in listener.incoming().flatten() {
+        let host = host.clone();
         thread::spawn(move || {
-            let _ = serve(stream, &shared.0, &shared.1); // an error here is the client going away
+            let _ = serve(socket, &host); // an error here is the client going away
         });
     }
     unreachable!("the listener never stops accepting")
 }
 
-fn serve(mut stream: TcpStream, input: &Input, password: &[u8]) -> io::Result<()> {
-    stream.set_nodelay(true)?;
+fn serve(socket: TcpStream, host: &Host) -> io::Result<()> {
+    let configuration = host.tls.lock().unwrap().clone();
+    let connection = Arc::new(Connection::accept(&configuration, socket)?);
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
         let mut byte = [0];
-        stream.read_exact(&mut byte)?;
+        (&*connection).read_exact(&mut byte)?;
         head.push(byte[0]);
         if head.len() > 8192 {
             return Ok(());
@@ -59,25 +80,73 @@ fn serve(mut stream: TcpStream, input: &Input, password: &[u8]) -> io::Result<()
     });
     if let (true, Some(key)) = (path == "/ws", key) {
         let accept = ws::accept_key(key);
-        write!(stream, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n")?;
-        return session(stream, input, password);
+        connection.write(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").as_bytes())?;
+        session(&connection, host);
+        return Ok(());
     }
-    match PAGES.iter().find(|page| page.0 == path) {
+    let response = match PAGES.iter().find(|page| page.0 == path) {
         Some((_, content_type, body)) => {
             let length = body.len();
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {length}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n")?;
-            stream.write_all(body)
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {length}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n");
+            [head.as_bytes(), body].concat()
         }
-        None => stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+        None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+    };
+    connection.write(&response)
+}
+
+/// What is waiting to be sent to one client. It holds at most one piece of video, so a slow link makes the
+/// capture skip frames instead of queueing them, while control messages are never stuck behind video.
+#[derive(Default)]
+struct Outbox {
+    pending: Mutex<Pending>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct Pending {
+    video: Option<Vec<u8>>,
+    control: VecDeque<Vec<u8>>,
+    closed: bool,
+}
+
+impl Outbox {
+    /// Waits until the previous piece of video has gone out. False once the session is over.
+    fn push_video(&self, piece: Vec<u8>) -> bool {
+        let mut pending = self.changed.wait_while(self.pending.lock().unwrap(), |pending| pending.video.is_some() && !pending.closed).unwrap();
+        pending.video = Some(piece);
+        self.changed.notify_all();
+        !pending.closed
+    }
+
+    fn push_control(&self, message: Vec<u8>) {
+        self.pending.lock().unwrap().control.push_back(message);
+        self.changed.notify_all();
+    }
+
+    /// The next thing to send, control messages first. None once the session is over.
+    fn next(&self) -> Option<Vec<u8>> {
+        let mut pending = self.changed.wait_while(self.pending.lock().unwrap(), |pending| pending.video.is_none() && pending.control.is_empty() && !pending.closed).unwrap();
+        if pending.closed {
+            return None;
+        }
+        let next = pending.control.pop_front().or_else(|| pending.video.take());
+        self.changed.notify_all();
+        next
+    }
+
+    fn close(&self) {
+        self.pending.lock().unwrap().closed = true;
+        self.changed.notify_all();
     }
 }
 
 /// One client: checks its login, streams the screen to it and injects its input until it leaves.
-fn session(mut stream: TcpStream, input: &Input, password: &[u8]) -> io::Result<()> {
-    let login: Value = ws::read(&mut stream)?.and_then(|message| serde_json::from_slice(&message).ok()).unwrap_or_default();
-    if !same(login["password"].as_str().unwrap_or("").as_bytes(), password) {
+fn session(connection: &Arc<Connection>, host: &Host) {
+    let login: Value = ws::read(&mut &**connection).ok().flatten().and_then(|message| serde_json::from_slice(&message).ok()).unwrap_or_default();
+    if !same(login["password"].as_str().unwrap_or("").as_bytes(), &host.password) {
         thread::sleep(Duration::from_secs(1)); // slow down guessing
-        return Ok(());
+        return;
     }
     let choice = |name: &str| login[name].as_str().unwrap_or("");
     let bitrate = &login["bitrate"];
@@ -92,44 +161,62 @@ fn session(mut stream: TcpStream, input: &Input, password: &[u8]) -> io::Result<
         full_chroma: choice("chroma") == "444",
         half_size: choice("size") == "half",
     };
-    wake_displays(input);
+    wake_displays(&host.input);
 
-    let writer = Arc::new(Mutex::new(stream.try_clone()?));
+    let outbox = Arc::new(Outbox::default());
     let stop = Arc::new(AtomicBool::new(false));
-    let capture = thread::spawn({
-        let (writer, stop, connection) = (writer.clone(), stop.clone(), stream.try_clone()?);
+    let writer = thread::spawn({
+        let (outbox, connection) = (outbox.clone(), connection.clone());
         move || {
-            let sink = Box::new(move |piece: &[u8]| ws::write(&mut *writer.lock().unwrap(), ws::BINARY, piece).is_ok());
+            while let Some(bytes) = outbox.next() {
+                if connection.write(&bytes).is_err() {
+                    break;
+                }
+            }
+            outbox.close();
+            connection.close(); // makes the read loop below finish
+        }
+    });
+    let capture = thread::spawn({
+        let (outbox, stop) = (outbox.clone(), stop.clone());
+        move || {
+            let sink = Box::new({
+                let outbox = outbox.clone();
+                move |piece: &[u8]| outbox.push_video(ws::frame(ws::BINARY, piece))
+            });
             if let Err(reason) = capture::run(settings, stop, sink) {
                 eprintln!("remote-desktop: capture ended: {reason}");
             }
-            let _ = connection.shutdown(Shutdown::Both); // makes the read loop below finish
+            outbox.close();
         }
     });
 
     let mut held = HashSet::new();
-    while let Ok(Some(message)) = ws::read(&mut stream) {
+    while let Ok(Some(message)) = ws::read(&mut &**connection) {
+        if connection.take_reply_pending() {
+            outbox.push_control(Vec::new());
+        }
         let Ok(Value::Array(parts)) = serde_json::from_slice(&message) else { continue };
         let number = |index: usize| parts.get(index).and_then(Value::as_i64).unwrap_or(0);
         match parts.first().and_then(Value::as_str) {
             Some("key") => {
                 let (code, down) = (number(1) as u16, number(2) != 0);
                 if down { held.insert(code) } else { held.remove(&code) };
-                input.key(code, down);
+                host.input.key(code, down);
             }
-            Some("move") => input.move_to(number(1) as i32, number(2) as i32),
-            Some("scroll") => input.scroll(number(1) as i32, number(2) as i32),
+            Some("move") => host.input.move_to(number(1) as i32, number(2) as i32),
+            Some("scroll") => host.input.scroll(number(1) as i32, number(2) as i32),
             // Echoed so the client can time the round trip.
-            Some("ping") => drop(ws::write(&mut *writer.lock().unwrap(), ws::TEXT, &message)),
+            Some("ping") => outbox.push_control(ws::frame(ws::TEXT, &message)),
             _ => {}
         }
     }
     stop.store(true, Ordering::Relaxed);
-    let _ = capture.join();
+    outbox.close();
+    let _ = (capture.join(), writer.join());
     for code in held {
-        input.key(code, false);
+        host.input.key(code, false);
     }
-    Ok(())
 }
 
 /// Compares without stopping at the first difference, so timing does not reveal how much matched.
@@ -159,7 +246,7 @@ fn wake_displays(input: &Input) {
 
 #[cfg(test)]
 mod tests {
-    use super::same;
+    use super::*;
 
     #[test]
     fn password_comparison() {
@@ -167,5 +254,24 @@ mod tests {
         assert!(!same(b"secreT", b"secret"));
         assert!(!same(b"secre", b"secret"));
         assert!(!same(b"", b"secret"));
+    }
+
+    #[test]
+    fn outbox_sends_control_before_video_and_holds_one_piece() {
+        let outbox = Arc::new(Outbox::default());
+        assert!(outbox.push_video(vec![1]));
+        outbox.push_control(vec![2]);
+        // A second piece of video has to wait until the first was taken.
+        let second = thread::spawn({
+            let outbox = outbox.clone();
+            move || outbox.push_video(vec![3])
+        });
+        assert_eq!(outbox.next(), Some(vec![2]));
+        assert_eq!(outbox.next(), Some(vec![1]));
+        assert!(second.join().unwrap());
+        assert_eq!(outbox.next(), Some(vec![3]));
+        outbox.close();
+        assert_eq!(outbox.next(), None);
+        assert!(!outbox.push_video(vec![4]));
     }
 }
