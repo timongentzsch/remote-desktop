@@ -48,6 +48,7 @@ which `install` makes your user Tailscale's operator on this machine.
 ## Other commands
 
     remote-desktop password                  change the login password
+    remote-desktop password --none           allow access without a password (anyone who can reach the port)
     remote-desktop --listen 127.0.0.1:8765   run by hand on another address
 
 ## Build

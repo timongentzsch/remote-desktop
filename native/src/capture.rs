@@ -4,7 +4,7 @@
 
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -20,6 +20,9 @@ use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_captu
 use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::{ExtImageCopyCaptureManagerV1, Options};
 use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_session_v1::{self as session, ExtImageCopyCaptureSessionV1};
 
+use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1;
+use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_v1::{self as power, ZwlrOutputPowerV1};
+
 use crate::convert;
 use crate::encode::Encoder;
 
@@ -33,11 +36,28 @@ pub struct Settings {
     pub half_size: bool,
 }
 
+/// What a session and its capture exchange while the capture runs.
+#[derive(Default)]
+pub struct Shared {
+    /// Set by the session to end the capture.
+    pub stop: AtomicBool,
+    /// The bitrate cap in kbit/s the client now wants; 0 until it asks for a change.
+    pub kbps: AtomicU32,
+    /// How long converting and encoding the latest frame took, in microseconds.
+    pub encode_micros: AtomicU32,
+}
+
+/// For how many seconds at most a still picture is encoded again to bring it up to the quality target.
+const REFINE_SECONDS: u32 = 20;
+/// How many frames in a row have to add nothing before a still picture counts as finished. A few are not
+/// enough: while the bitrate cap holds the encoder back, frames that add detail alternate with ones that add none.
+pub const SETTLED_FRAMES: u32 = 20;
+
 /// Receives each piece of the stream; returns false once nobody is listening any more.
 pub type Sink = Box<dyn FnMut(&[u8]) -> bool + Send>;
 
-/// Captures the first output until `stop` is set, the sink declines a piece, or the compositor ends the capture.
-pub fn run(settings: Settings, stop: Arc<AtomicBool>, sink: Sink) -> Result<(), String> {
+/// Captures the first output until `shared.stop` is set, the sink declines a piece, or the compositor ends it.
+pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), String> {
     let connection = Connection::connect_to_env().map_err(|error| format!("no Wayland display: {error}"))?;
     let (globals, mut events) = registry_queue_init::<Capture>(&connection).map_err(|error| error.to_string())?;
     let queue = events.handle();
@@ -47,6 +67,8 @@ pub fn run(settings: Settings, stop: Arc<AtomicBool>, sink: Sink) -> Result<(), 
     let sources: ExtOutputImageCaptureSourceManagerV1 = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
     let manager: ExtImageCopyCaptureManagerV1 = globals.bind(&queue, 1..=1, ()).map_err(missing)?;
 
+    // A sleeping display produces no frames, so it is switched on first where the compositor allows that.
+    let power = globals.bind::<ZwlrOutputPowerManagerV1, _, _>(&queue, 1..=1, ()).ok().map(|manager| manager.get_output_power(&output, &queue, ()));
     let source = sources.create_source(&output, &queue, ());
     let options = if settings.cursor { Options::PaintCursors } else { Options::empty() };
     let session = manager.create_session(&source, options, &queue, ());
@@ -54,6 +76,7 @@ pub fn run(settings: Settings, stop: Arc<AtomicBool>, sink: Sink) -> Result<(), 
     let now = Instant::now();
     let mut capture = Capture {
         settings,
+        shared: shared.clone(),
         shm,
         session,
         size: (0, 0),
@@ -61,6 +84,10 @@ pub fn run(settings: Settings, stop: Arc<AtomicBool>, sink: Sink) -> Result<(), 
         pixels: None,
         scaled: Vec::new(),
         encoder: None,
+        awake: power.is_none(),
+        refinements_left: 0,
+        fine_frames: 0,
+        frames_sent: 0,
         frame_pending: false,
         started: now,
         requested: now - Duration::from_secs(1),
@@ -69,16 +96,23 @@ pub fn run(settings: Settings, stop: Arc<AtomicBool>, sink: Sink) -> Result<(), 
         ended: None,
     };
     let lost = |error| format!("lost the Wayland connection: {error}");
-    while !stop.load(Ordering::Relaxed) && capture.ended.is_none() {
+    while !shared.stop.load(Ordering::Relaxed) && capture.ended.is_none() {
         events.flush().map_err(lost)?;
-        // Wait for events, but look at `stop` a few times a second: a still screen sends nothing.
+        // Wait for events, but look at `stop` a few times a second: a still screen sends nothing. While a still
+        // picture is being refined, wait no longer than one frame.
+        let wait = if capture.refinements_left > 0 { 1000 / capture.settings.fps as i32 } else { 250 };
         if let Some(guard) = events.prepare_read() {
             let mut poll = libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            if unsafe { libc::poll(&mut poll, 1, 250) } > 0 {
+            if unsafe { libc::poll(&mut poll, 1, wait) } > 0 {
                 guard.read().map_err(lost)?;
             }
         }
+        let sent = capture.frames_sent;
         events.dispatch_pending(&mut capture).map_err(|error| format!("lost the Wayland connection: {error}"))?;
+        if capture.frames_sent == sent && capture.refinements_left > 0 {
+            capture.refinements_left -= 1;
+            capture.encode_picture(Instant::now());
+        }
     }
     capture.ended.take().unwrap_or(Ok(()))
 }
@@ -135,6 +169,7 @@ impl Drop for Pixels {
 
 struct Capture {
     settings: Settings,
+    shared: Arc<Shared>,
     shm: WlShm,
     session: ExtImageCopyCaptureSessionV1,
     size: (usize, usize),
@@ -143,6 +178,14 @@ struct Capture {
     /// The half-size copy of the screen, when the picture is scaled down.
     scaled: Vec<u8>,
     encoder: Option<Encoder>,
+    /// Whether the display is known to be on. Frames are only requested then: one requested from a sleeping
+    /// display never arrives, even after it wakes.
+    awake: bool,
+    /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
+    /// frame would ever improve it, so the same picture is encoded again until the encoder has nothing to add.
+    refinements_left: u32,
+    fine_frames: u32,
+    frames_sent: u64,
     frame_pending: bool,
     started: Instant,
     requested: Instant,
@@ -180,6 +223,9 @@ impl Capture {
     }
 
     fn request_frame(&mut self, queue: &QueueHandle<Self>) {
+        if !self.awake || self.frame_pending {
+            return;
+        }
         let Some(pixels) = &self.pixels else { return };
         // Hold the request back when the screen changes faster than the wanted frame rate.
         let due = self.requested + Duration::from_secs(1) / self.settings.fps;
@@ -194,6 +240,11 @@ impl Capture {
 
     fn encode(&mut self) {
         let (Some(pixels), Some(encoder)) = (&self.pixels, &mut self.encoder) else { return };
+        let started = Instant::now();
+        let wanted = self.shared.kbps.load(Ordering::Relaxed);
+        if wanted != 0 && wanted != self.settings.kbps && encoder.set_bitrate(wanted) {
+            self.settings.kbps = wanted;
+        }
         let (width, height, full_chroma) = (encoder.width, encoder.height, encoder.full_chroma);
         let (mut source, mut stride) = (pixels.bytes(), pixels.width * 4);
         if self.settings.half_size {
@@ -201,8 +252,21 @@ impl Capture {
             (source, stride) = (&self.scaled, pixels.width / 2 * 4);
         }
         convert::bgrx_to_yuv(source, stride, width, height, encoder.planes(), full_chroma);
-        if let Some((unit, keyframe)) = encoder.encode() {
-            let unit = unit.to_vec();
+        self.refinements_left = REFINE_SECONDS * self.settings.fps;
+        self.encode_picture(started);
+    }
+
+    /// Encodes the picture currently in the encoder's planes and sends it.
+    fn encode_picture(&mut self, started: Instant) {
+        let Some(encoder) = &mut self.encoder else { return };
+        if let Some(encoded) = encoder.encode() {
+            let (unit, keyframe, settled) = (encoded.unit.to_vec(), encoded.keyframe, encoded.settled);
+            self.shared.encode_micros.store(started.elapsed().as_micros() as u32, Ordering::Relaxed);
+            self.fine_frames = if settled { self.fine_frames + 1 } else { 0 };
+            if self.fine_frames >= SETTLED_FRAMES {
+                self.refinements_left = 0;
+            }
+            self.frames_sent += 1;
             self.send_tag(keyframe, 1, &unit);
         }
     }
@@ -234,8 +298,7 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Capture {
             session::Event::BufferSize { width, height } => state.size = (width as usize, height as usize),
             session::Event::ShmFormat { format: WEnum::Value(format) } if state.format.is_none() => state.format = Some(format),
             session::Event::Done => match state.configure(queue) {
-                Ok(()) if !state.frame_pending => state.request_frame(queue),
-                Ok(()) => {}
+                Ok(()) => state.request_frame(queue),
                 Err(reason) => state.ended = Some(Err(reason)),
             },
             session::Event::Stopped => state.ended = Some(Err("the compositor stopped the capture".into())),
@@ -261,6 +324,26 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Capture {
     }
 }
 
+impl Dispatch<ZwlrOutputPowerV1, ()> for Capture {
+    fn event(state: &mut Self, output: &ZwlrOutputPowerV1, event: power::Event, _: &(), _: &Connection, queue: &QueueHandle<Self>) {
+        match event {
+            power::Event::Mode { mode: WEnum::Value(power::Mode::On) } => {
+                state.awake = true;
+                state.request_frame(queue);
+            }
+            power::Event::Mode { .. } => {
+                state.awake = false;
+                output.set_mode(power::Mode::On);
+            }
+            // The compositor will not report or change this output's power: carry on as if it were on.
+            _ => {
+                state.awake = true;
+                state.request_frame(queue);
+            }
+        }
+    }
+}
+
 impl Dispatch<WlRegistry, GlobalListContents> for Capture {
     fn event(_: &mut Self, _: &WlRegistry, _: <WlRegistry as wayland_client::Proxy>::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
 }
@@ -272,3 +355,4 @@ delegate_noop!(Capture: WlShmPool);
 delegate_noop!(Capture: ExtOutputImageCaptureSourceManagerV1);
 delegate_noop!(Capture: ExtImageCaptureSourceV1);
 delegate_noop!(Capture: ExtImageCopyCaptureManagerV1);
+delegate_noop!(Capture: ZwlrOutputPowerManagerV1);

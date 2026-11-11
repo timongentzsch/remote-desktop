@@ -2,69 +2,186 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#000">
+<meta name="theme-color" content="#0B0C0E">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg">
 <title>Remote Desktop</title>
 <style>
-  :root { --bg: #000; --fg: #ddd; --panel: #000c; --gap: .75rem; --radius: .5rem; --idle-opacity: .4; color-scheme: dark; }
-  html, body { height: 100%; margin: 0; overflow: hidden; background: var(--bg); color: var(--fg); font: 1rem system-ui; }
-  canvas { display: none; width: 100%; height: 100%; object-fit: contain; }
-  .remote-cursor canvas { cursor: none; }
-  form { position: fixed; inset: 0; display: flex; flex-wrap: wrap; gap: var(--gap); align-items: center; align-content: center; justify-content: center; }
-  output { flex-basis: 100%; text-align: center; font-variant-numeric: tabular-nums; }
+  :root {
+    --ground: #0B0C0E; --surface: #15171A; --raised: #1D2024; --line: #2A2E34;
+    --text: #ECEEF1; --muted: #A3A9B3; --accent: #6AA5FF; --on-accent: #0B0C0E;
+    --warn: #F2A65A; --warn-text: #F2C48D; --warn-ground: #2B2118; --warn-line: #5A4630;
+    --part-encode: #9CC3FF; --part-send: #6AA5FF; --part-network: #3F7FE0; --part-decode: #737B87;
+    --sans: Inter, system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, monospace;
+    --control: 44px; --radius: 10px; --gap: 12px;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: var(--ground); color: var(--text); font: 14px/1.5 var(--sans); }
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  [hidden] { display: none !important; }
 
-  /* Once connected the same form shrinks into a status bar: statistics always, controls on hover. */
+  /* Connect screen */
+  .connect { position: fixed; inset: 0; box-sizing: border-box; padding: 24px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 40px; }
+  .card { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 28px; }
+  .host { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+  .host h1 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+  .field { display: flex; flex-direction: column; gap: var(--gap); }
+  .field label, .setting, .stat span, .delay > span { font-size: 12px; color: var(--muted); }
+  .field label { font-size: 13px; font-weight: 500; }
+  .field input { height: 48px; box-sizing: border-box; padding: 0 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); font-size: 16px; outline-color: var(--accent); }
+  .primary { height: 48px; border: 0; border-radius: var(--radius); background: var(--accent); color: var(--on-accent); font-size: 16px; font-weight: 600; }
+  .option { display: flex; align-items: flex-start; gap: var(--gap); min-height: var(--control); cursor: pointer; }
+  .option input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); }
+  .option small { display: block; font-size: 13px; color: var(--muted); }
+  .summary { margin: 0; min-height: 1.5em; font: 12px var(--mono); color: var(--muted); text-align: center; }
+  .problem { color: var(--warn-text); }
+  .open .field label, .open .field input { display: none; }
+
+  /* Session */
+  canvas { display: none; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .overlay { display: none; position: fixed; left: 0; right: 0; bottom: 16px; box-sizing: border-box; padding: 0 16px; flex-direction: column; align-items: center; gap: var(--gap); pointer-events: none; }
+  .overlay > * { pointer-events: auto; }
+  .connected .connect { display: none; }
   .connected canvas { display: block; }
-  .connected form { inset: auto auto 0 50%; translate: -50%; padding: calc(var(--gap) / 2) var(--gap); border-radius: var(--radius) var(--radius) 0 0; background: var(--panel); font-size: .8rem; opacity: var(--idle-opacity); }
-  .connected form:hover { opacity: 1; }
-  .connected form > :not(output) { display: none; }
-  .connected form:hover > :is(select, button) { display: initial; }
+  .connected .overlay { display: flex; }
+  .remote-cursor canvas { cursor: none; }
+
+  .pill { height: var(--control); padding: 0 16px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 22px; background: var(--surface); font: 500 13px var(--mono); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .slow .dot { background: var(--warn); }
+  .pill svg { transition: rotate .15s; }
+  .panel-open .pill svg { rotate: 180deg; }
+
+  .panel { width: 100%; max-width: 760px; box-sizing: border-box; padding: 20px; display: flex; flex-direction: column; gap: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+  .notice { display: none; margin: 0; padding: 10px 14px; border-radius: var(--radius); background: var(--warn-ground); color: var(--warn-text); }
+  .slow .notice { display: block; }
+  .stats, .settings, .actions, .legend { display: flex; flex-wrap: wrap; gap: var(--gap); }
+  .stats { gap: 16px 24px; }
+  .stat { flex: 1 1 130px; display: flex; flex-direction: column; gap: 4px; }
+  .stat output { font: 500 20px var(--mono); white-space: nowrap; }
+  .delay { display: flex; flex-direction: column; gap: 10px; }
+  .bar { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; }
+  .bar i { flex: var(--weight, 1) 1 0; background: var(--part); }
+  .legend { gap: 6px 18px; font-size: 12px; color: var(--muted); }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .legend i { width: 8px; height: 8px; border-radius: 2px; background: var(--part); }
+  .legend output { font-family: var(--mono); color: var(--text); }
+  .encode { --part: var(--part-encode); } .send { --part: var(--part-send); } .network { --part: var(--part-network); } .decode { --part: var(--part-decode); }
+  .slow .network, .slow .send { --part: var(--warn); }
+  .setting { flex: 1 1 120px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .setting select, .actions button { height: var(--control); padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raised); color: var(--text); font-size: 14px; }
+  .actions button { padding: 0 16px; font-weight: 500; }
+  .actions .spacer { flex: 1 1 0; }
+  .actions .leave { border-color: var(--warn-line); background: transparent; color: var(--warn-text); }
 </style>
+
 <canvas></canvas>
-<form>
-  <input type="password" name="password" placeholder="Password" autocomplete="current-password" autofocus required>
-  <select name="bitrate" title="Video bitrate. Auto follows what the connection can carry.">
-    <option value="">Auto bitrate</option>
-    <option value="2000">2 Mbit/s</option>
-    <option value="5000">5 Mbit/s</option>
-    <option value="10000">10 Mbit/s</option>
-    <option value="20000">20 Mbit/s</option>
-    <option value="40000">40 Mbit/s</option>
-  </select>
-  <select name="fps" title="Frame rate">
-    <option value="60">60 fps</option>
-    <option value="30">30 fps</option>
-    <option value="15">15 fps</option>
-  </select>
-  <select name="size" title="Resolution">
-    <option value="native">Native size</option>
-    <option value="half">Half size</option>
-  </select>
-  <select name="chroma" title="Sharp keeps full colour detail in text and thin lines. It costs more processing on both ends and is not used when the picture is scaled down.">
-    <option value="420">Standard colour</option>
-    <option value="444">Sharp colour</option>
-  </select>
-  <select name="cursor" title="Local: instant but always an arrow. Remote: true shape but drawn in the video.">
-    <option value="no">Local cursor</option>
-    <option value="yes">Remote cursor</option>
-  </select>
-  <label><input type="checkbox" name="fullscreen" checked> Fullscreen (captures system shortcuts)</label>
-  <button>Connect</button>
-  <output></output>
-</form>
+
+<main class="connect">
+  <form class="card" id="login">
+    <div class="host">
+      <svg aria-hidden="true" width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 16v4M8 20h8"/></svg>
+      <h1 id="host">Remote Desktop</h1>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+      <button class="primary">Connect</button>
+    </div>
+    <label class="option">
+      <input type="checkbox" name="fullscreen" checked>
+      <span>Open in full screen <small>Sends system shortcuts to the remote computer. Hold Esc to leave.</small></span>
+    </label>
+  </form>
+  <p class="summary" id="summary"></p>
+</main>
+
+<div class="overlay">
+  <form class="panel" id="settings" hidden>
+    <p class="notice" id="notice"></p>
+    <div class="stats">
+      <div class="stat"><span>Frame rate</span><output id="now-fps">–</output></div>
+      <div class="stat"><span>Delay</span><output id="now-delay">–</output></div>
+      <div class="stat"><span>Bitrate, Mbit/s</span><output id="now-bitrate">–</output></div>
+      <div class="stat"><span>Picture</span><output id="now-picture">–</output></div>
+    </div>
+    <div class="delay">
+      <span>Where the measured delay goes (capturing and displaying are not included)</span>
+      <div class="bar" role="img" aria-label="Delay split into encoding, sending, network and decoding">
+        <i class="encode"></i><i class="send"></i><i class="network"></i><i class="decode"></i>
+      </div>
+      <div class="legend">
+        <span><i class="encode"></i>Encode <output class="encode">–</output></span>
+        <span><i class="send"></i>Send <output class="send">–</output></span>
+        <span><i class="network"></i>Network <output class="network">–</output></span>
+        <span><i class="decode"></i>Decode <output class="decode">–</output></span>
+      </div>
+    </div>
+    <div class="settings">
+      <label class="setting">Bitrate
+        <select name="bitrate">
+          <option value="">Auto</option>
+          <option value="2000">2 Mbit/s</option>
+          <option value="5000">5 Mbit/s</option>
+          <option value="10000">10 Mbit/s</option>
+          <option value="20000">20 Mbit/s</option>
+          <option value="40000">40 Mbit/s</option>
+        </select>
+      </label>
+      <label class="setting">Frame rate
+        <select name="fps">
+          <option value="60">60 fps</option>
+          <option value="30">30 fps</option>
+          <option value="15">15 fps</option>
+        </select>
+      </label>
+      <label class="setting">Resolution
+        <select name="size">
+          <option value="native">Native</option>
+          <option value="half">Half size</option>
+        </select>
+      </label>
+      <label class="setting">Colour
+        <select name="chroma" title="Sharp keeps full colour detail in text and thin lines. It costs more processing on both ends.">
+          <option value="420">Standard</option>
+          <option value="444">Sharp</option>
+        </select>
+      </label>
+      <label class="setting">Pointer
+        <select name="cursor" title="Drawn here: instant, but always an arrow. Drawn remotely: true shape, but part of the video.">
+          <option value="no">Drawn here</option>
+          <option value="yes">Drawn remotely</option>
+        </select>
+      </label>
+    </div>
+    <div class="actions">
+      <button type="button" id="attention">Send Ctrl + Alt + Del</button>
+      <button type="button" id="fullscreen">Full screen</button>
+      <span class="spacer"></span>
+      <button type="button" class="leave" id="leave">Disconnect</button>
+    </div>
+  </form>
+  <button type="button" class="pill" id="pill">
+    <span class="dot" aria-hidden="true"></span>
+    <span id="pill-text">Connecting</span>
+    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
+  </button>
+</div>
+
 <script>
-const canvas = document.querySelector('canvas'), form = document.querySelector('form');
-const status = form.querySelector('output'), button = form.querySelector('button');
+const $ = id => document.getElementById(id);
+const canvas = document.querySelector('canvas'), login = $('login'), settings = $('settings');
 const context = canvas.getContext('2d', { alpha: false, desynchronized: true });  // skip compositor queueing where supported
 const SAVED = ['bitrate', 'fps', 'size', 'chroma', 'cursor'];
-// Auto bitrate, in kbit/s. The stream is checked every TICK ms: after LAG_TICKS checks in a row with a round trip
-// above LAG_LIMIT ms the rate is cut to what the link actually delivered; after `patience` calm seconds it is raised.
-const TICK = 250, LAG_LIMIT = 250, LAG_TICKS = 3, MIN_RATE = 500, MAX_RATE = 30000;
+// Auto bitrate, in kbit/s. The stream is checked every TICK ms: after LAG_TICKS checks in a row in which the host
+// took longer than SEND_LIMIT ms to get a frame out, or the round trip exceeded LAG_LIMIT ms, the rate is cut to
+// what the link actually delivered; after `patience` calm seconds it is raised again.
+const TICK = 250, LAG_LIMIT = 250, SEND_LIMIT = 80, LAG_TICKS = 3, MIN_RATE = 500, MAX_RATE = 30000, SLOW_RATE = 3000;
 let rate = 20000, streak = 0, patience = 10, climbed = false, used = 0;
 try { rate = +localStorage.rate || rate; } catch {}
 const BUTTONS = [0x110, 0x112, 0x111, 0x113, 0x114];  // DOM button index -> evdev BTN_*
-const CONTROL = 29;
+const CONTROL = 29, ALT = 56, DELETE = 111;
 // KeyboardEvent.code -> evdev key code; the list is in evdev order starting at 1, "-" marks gaps.
 const KEYS = { MetaLeft: 125, MetaRight: 126, ContextMenu: 127 };
 ('Escape Digit1 Digit2 Digit3 Digit4 Digit5 Digit6 Digit7 Digit8 Digit9 Digit0 Minus Equal Backspace Tab ' +
@@ -81,6 +198,8 @@ let socket, stop;
 const held = new Set();
 const connected = () => document.body.classList.contains('connected');
 const send = (...message) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(message));
+const automatic = () => !settings.bitrate.value;
+const cap = () => +settings.bitrate.value || rate;  // the bitrate limit in force, kbit/s
 
 function key(code, down) {
   down ? held.add(code) : held.delete(code);
@@ -88,14 +207,19 @@ function key(code, down) {
 }
 const releaseAll = () => held.forEach(code => key(code, false));
 
-function setConnected(on, message = '') {
+function setConnected(on, problem = '') {
   document.body.classList.toggle('connected', on);
-  button.textContent = on ? 'Disconnect' : 'Connect';
-  status.textContent = message;
+  if (!on) {
+    document.body.classList.remove('slow', 'panel-open');
+    settings.hidden = true;
+  }
+  const choices = ['bitrate', 'fps', 'cursor'].map(name => settings[name].selectedOptions[0].textContent);
+  $('summary').textContent = problem || choices.join(' · ');
+  $('summary').classList.toggle('problem', !!problem);
 }
 
 // streak counts consecutive checks: negative while lagging, positive while calm. `received` is the recent
-// throughput in kbit/s, which equals the link's capacity whenever video is queueing up behind it.
+// throughput in kbit/s, which equals the link's capacity whenever frames are waiting to be sent.
 function adapt(lagging, received) {
   streak = lagging ? Math.min(streak, 0) - 1 : Math.max(streak, 0) + 1;
   used = Math.max(used, received);
@@ -110,16 +234,17 @@ function adapt(lagging, received) {
   climbed = next > rate;
   rate = next;
   try { localStorage.rate = rate; } catch {}
-  connect();
+  send('bitrate', rate);
 }
 
-// Opens a session with the form's current settings, replacing any existing one.
+// Opens a session with the current settings, replacing any existing one.
 function connect() {
   stop?.();
-  document.body.classList.toggle('remote-cursor', form.cursor.value === 'yes');
+  document.body.classList.toggle('remote-cursor', settings.cursor.value === 'yes');
   const ws = socket = new WebSocket('/ws');
   let pending = new Uint8Array(0), started = false;
   let frames = 0, bytes = 0, decodeTime = 0, roundTrip = 0, pinged = 0, ticks = 0;
+  let encodeTime = 0, sendTime = 0;  // reported by the host, ms per frame
   const recent = [];  // bytes received during each of the last four checks
   const submitted = [];  // when each frame still inside the decoder was handed to it
 
@@ -165,8 +290,27 @@ function connect() {
     pending = started ? stream.slice(at) : stream;
   }
 
+  // Refreshes the pill and the panel once a second.
+  function show(received) {
+    const parts = { encode: encodeTime, send: sendTime, network: roundTrip / 2, decode: decodeTime / (frames || 1) };
+    const delay = Math.round(Object.values(parts).reduce((sum, part) => sum + part));
+    const slow = sendTime > SEND_LIMIT || roundTrip > LAG_LIMIT || (automatic() && rate < SLOW_RATE);
+    const megabits = kbps => (kbps / 1000).toFixed(1);
+    document.body.classList.toggle('slow', slow);
+    $('now-fps').textContent = `${frames} fps`;
+    $('now-delay').textContent = `${delay} ms`;
+    $('now-bitrate').textContent = `${megabits(received)} of ${megabits(cap())}`;
+    $('now-picture').textContent = `${canvas.width} × ${canvas.height}`;
+    $('notice').textContent = `This connection carries about ${megabits(cap())} Mbit/s. The picture is softened so the session stays responsive.`;
+    $('pill-text').textContent = slow ? `Slow link · ${megabits(cap())} Mbit/s` : `${frames} fps · ${delay} ms`;
+    for (const [name, value] of Object.entries(parts)) {
+      settings.querySelector(`.bar .${name}`).style.setProperty('--weight', Math.max(value, 0.5));
+      settings.querySelector(`output.${name}`).textContent = `${value.toFixed(value < 10 ? 1 : 0)} ms`;
+    }
+  }
+
   const report = setInterval(() => {
-    // The ping reply queues behind video on the same connection, so the round trip grows when the link is too slow.
+    // The host answers a ping ahead of any waiting video, so the round trip is close to the network's own.
     if (pinged) roundTrip = performance.now() - pinged;  // still unanswered
     else if (ws.readyState === WebSocket.OPEN) {
       pinged = performance.now();
@@ -176,24 +320,29 @@ function connect() {
     bytes = 0;
     if (recent.length > 4) recent.shift();
     const received = recent.reduce((sum, count) => sum + count) * 8 / (TICK * recent.length);  // kbit/s
-    if (++ticks % 4 === 0) {
-      if (started) status.textContent = `${frames} fps · ${(received / 1000).toFixed(1)} ` +
-        `${form.bitrate.value ? '' : `of ${(rate / 1000).toFixed(1)} `}Mbit/s · ping ${roundTrip.toFixed(0)} ms · ` +
-        `decode ${(decodeTime / (frames || 1)).toFixed(1)} ms`;
+    if (++ticks % 4 === 0 && started) {
+      show(received);
       frames = decodeTime = 0;
     }
-    if (!form.bitrate.value && !document.hidden) adapt(roundTrip > LAG_LIMIT, received);
+    if (automatic() && !document.hidden) adapt(sendTime > SEND_LIMIT || roundTrip > LAG_LIMIT, received);
   }, TICK);
 
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => ws.send(JSON.stringify({ ...Object.fromEntries(new FormData(form)), bitrate: form.bitrate.value || rate }));
+  ws.onopen = () => ws.send(JSON.stringify({ password: login.password.value, ...Object.fromEntries(new FormData(settings)), bitrate: cap() }));
   ws.onmessage = event => {
-    if (typeof event.data === 'string') {  // ping reply
-      roundTrip = performance.now() - pinged;
-      pinged = 0;
+    if (typeof event.data === 'string') {
+      const [kind, first, second] = JSON.parse(event.data);
+      if (kind === 'ping') {
+        roundTrip = performance.now() - pinged;
+        pinged = 0;
+      } else if (kind === 'stats') [encodeTime, sendTime] = [first, second];
       return;
     }
-    if (!started) setConnected(true);
+    if (!started) {
+      setConnected(true);
+      // Kept in this browser so the next visit only needs a click. Anyone using this browser profile can read it.
+      try { localStorage.password = login.password.value; } catch {}
+    }
     bytes += event.data.byteLength;
     demux(event.data);
   };
@@ -208,29 +357,47 @@ function connect() {
     end();
     if (ws !== socket) return;  // replaced by a newer session
     held.clear();
-    setConnected(false, started ? 'Disconnected' : 'Could not connect — wrong password?');
+    if (!started) try { localStorage.removeItem('password'); } catch {}
+    setConnected(false, started ? 'Disconnected' : 'Could not connect. Is the password right?');
     if (document.fullscreenElement) document.exitFullscreen();
   };
 }
 
-form.onsubmit = event => {
+// Keyboard Lock, which sends system shortcuts to the remote side, only takes effect in full screen.
+const enterFullscreen = () => document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock());
+
+login.onsubmit = event => {
   event.preventDefault();
-  if (connected()) return socket.close();
-  // Keyboard Lock only takes effect in fullscreen; hold Esc to leave.
-  if (form.fullscreen.checked) document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock());
+  if (login.fullscreen.checked) enterFullscreen();
   connect();
 };
-form.onchange = () => {
-  try { localStorage.settings = JSON.stringify(Object.fromEntries(SAVED.map(name => [name, form[name].value]))); } catch {}
-  if (connected()) connect();  // settings apply when the capture starts, so restart it
+settings.onsubmit = event => event.preventDefault();
+settings.onchange = event => {
+  try { localStorage.settings = JSON.stringify(Object.fromEntries(SAVED.map(name => [name, settings[name].value]))); } catch {}
+  if (event.target.name === 'bitrate') send('bitrate', cap());  // takes effect in the running stream
+  else connect();                                                // the others apply when the capture starts
 };
 try {
   const saved = JSON.parse(localStorage.settings);
   for (const name of SAVED) {
-    if (name in saved) form[name].value = saved[name];
-    if (form[name].selectedIndex < 0) form[name].selectedIndex = 0;  // a saved choice that no longer exists
+    if (name in saved) settings[name].value = saved[name];
+    if (settings[name].selectedIndex < 0) settings[name].selectedIndex = 0;  // a saved choice that no longer exists
   }
 } catch {}
+try { login.password.value = localStorage.password ?? ''; } catch {}
+login.password.required = !document.documentElement.classList.contains('open');
+$('host').textContent = location.hostname.replace(/\.local$/, '') || 'Remote Desktop';
+setConnected(false);
+
+$('pill').onclick = () => {
+  settings.hidden = !settings.hidden;
+  document.body.classList.toggle('panel-open', !settings.hidden);
+};
+$('leave').onclick = () => socket.close();
+$('fullscreen').onclick = () => document.fullscreenElement ? document.exitFullscreen() : enterFullscreen();
+$('attention').onclick = () => {
+  for (const down of [1, 0]) for (const code of [CONTROL, ALT, DELETE]) send('key', code, down);
+};
 
 function onKey(event) {
   const code = KEYS[event.code];

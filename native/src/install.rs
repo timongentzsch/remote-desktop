@@ -126,6 +126,13 @@ pub fn set_password() {
     write_private(&password_path(), password.as_bytes()).unwrap_or_else(|error| fail(&error));
 }
 
+/// `remote-desktop password --none`: lets anyone who can reach this machine's port control it.
+pub fn remove_password() {
+    write_private(&password_path(), b"").unwrap_or_else(|error| fail(&error));
+    println!("No password is needed any more: anyone who can reach port {} on this machine can see and control", crate::PORT);
+    println!("this desktop. Restart the service to apply: systemctl --user restart remote-desktop");
+}
+
 /// Writes a file only its owner can read, creating the directory it lives in.
 pub fn write_private(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
     fs::create_dir_all(path.parent().unwrap())

@@ -14,6 +14,7 @@ unsafe extern "C" {
     fn encoder_plane(encoder: *mut Raw, index: c_int, stride: *mut c_int) -> *mut u8;
     fn encoder_headers(encoder: *mut Raw, sps: *mut *mut u8, sps_size: *mut c_int, pps: *mut *mut u8, pps_size: *mut c_int) -> c_int;
     fn encoder_encode(encoder: *mut Raw, data: *mut *mut u8, keyframe: *mut c_int) -> c_int;
+    fn encoder_set_bitrate(encoder: *mut Raw, kbps: c_int) -> c_int;
     fn encoder_close(encoder: *mut Raw);
 }
 
@@ -21,6 +22,16 @@ unsafe extern "C" {
 pub struct Plane<'a> {
     pub bytes: &'a mut [u8],
     pub stride: usize,
+}
+
+/// One encoded frame.
+pub struct Encoded<'a> {
+    /// The access unit, as length-prefixed NAL units.
+    pub unit: &'a [u8],
+    pub keyframe: bool,
+    /// The frame is so small that it can only say "nothing changed". Under a bitrate cap such frames also occur
+    /// between ones that add detail, so a still picture is finished only after a run of them.
+    pub settled: bool,
 }
 
 pub struct Encoder {
@@ -72,12 +83,19 @@ impl Encoder {
         record
     }
 
-    /// Encodes the picture in `planes`. Returns the access unit and whether it is a keyframe.
-    pub fn encode(&mut self) -> Option<(&[u8], bool)> {
+    /// Changes the bitrate cap while running. False if x264 refused, in which case the old cap stays.
+    pub fn set_bitrate(&mut self, kbps: u32) -> bool {
+        unsafe { encoder_set_bitrate(self.raw, kbps as c_int) == 0 }
+    }
+
+    /// Encodes the picture in `planes`.
+    pub fn encode(&mut self) -> Option<Encoded<'_>> {
         let (mut data, mut keyframe) = (ptr::null_mut(), 0);
         let size = unsafe { encoder_encode(self.raw, &mut data, &mut keyframe) };
         // The access unit stays valid until the next call into the encoder, which needs `&mut self`.
-        (size > 0).then(|| (unsafe { slice::from_raw_parts(data, size as usize) }, keyframe != 0))
+        // "Nothing changed" costs a few bytes per row of blocks; anything bigger carried picture detail.
+        let settled = (size as usize) < 64 + self.width * self.height / 4096;
+        (size > 0).then(|| Encoded { unit: unsafe { slice::from_raw_parts(data, size as usize) }, keyframe: keyframe != 0, settled })
     }
 }
 
@@ -104,10 +122,38 @@ mod tests {
                 for plane in encoder.planes() {
                     plane.bytes.fill(100 + frame * 50);
                 }
-                let (unit, keyframe) = encoder.encode().expect("a frame in gives a frame out");
-                assert!(!unit.is_empty());
-                assert_eq!(keyframe, expect_keyframe);
+                let encoded = encoder.encode().expect("a frame in gives a frame out");
+                assert!(!encoded.unit.is_empty());
+                assert_eq!(encoded.keyframe, expect_keyframe);
             }
+            assert!(encoder.set_bitrate(500), "the bitrate cap can change mid-stream");
+            assert!(encoder.encode().is_some_and(|encoded| !encoded.keyframe), "and the stream simply continues");
+        }
+    }
+
+    /// A bitrate cap forces a detailed picture out coarse at first. Encoding it again and again must improve it
+    /// and then come to rest, or a still screen would either stay blurry or be re-sent forever.
+    #[test]
+    fn a_still_picture_is_refined_and_then_settles() {
+        let (width, height) = (640, 480);
+        for full_chroma in [false, true] {
+            let mut encoder = Encoder::open(width, height, 60, 300, full_chroma).expect("x264 opens");
+            for (index, plane) in encoder.planes().into_iter().enumerate() {
+                for (i, byte) in plane.bytes.iter_mut().enumerate() {
+                    let (x, y) = (i % plane.stride, i / plane.stride);
+                    *byte = ((x * 7) ^ (y * 13) ^ (index * 90)) as u8;
+                }
+            }
+            let (mut frames, mut bytes, mut settled_in_a_row) = (0, 0, 0);
+            while settled_in_a_row < crate::capture::SETTLED_FRAMES {
+                let encoded = encoder.encode().expect("a frame in gives a frame out");
+                settled_in_a_row = if encoded.settled { settled_in_a_row + 1 } else { 0 };
+                frames += 1;
+                bytes += encoded.unit.len();
+                assert!(frames < 3000, "the picture never settled (full_chroma={full_chroma})");
+            }
+            println!("full_chroma={full_chroma}: settled after {frames} frames and {} kB", bytes / 1024);
+            assert!(frames > 16, "a detailed picture at 300 kbit/s cannot be finished at once");
         }
     }
 }

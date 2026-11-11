@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <x264.h>
 
+/* The constant-quality target (x264's "rate factor"; lower is better). */
+#define QUALITY 20
+
 struct encoder {
     x264_t *x264;
     x264_picture_t picture;
@@ -26,7 +29,7 @@ struct encoder *encoder_open(int width, int height, int fps, int kbps, int full_
     param.b_annexb = 0; /* length-prefixed NAL units, as FLV carries them */
     /* Constant quality, capped: a still screen costs almost nothing and motion cannot outrun the link. */
     param.rc.i_rc_method = X264_RC_CRF;
-    param.rc.f_rf_constant = 20;
+    param.rc.f_rf_constant = QUALITY;
     param.rc.i_vbv_max_bitrate = kbps;
     param.rc.i_vbv_buffer_size = kbps / 5;
     param.vui.b_fullrange = 1;
@@ -90,6 +93,16 @@ int encoder_encode(struct encoder *encoder, uint8_t **data, int *keyframe)
         *keyframe = out.b_keyframe;
     }
     return size;
+}
+
+/* Changes the bitrate cap of a running encoder. Returns 0 on success. */
+int encoder_set_bitrate(struct encoder *encoder, int kbps)
+{
+    x264_param_t param;
+    x264_encoder_parameters(encoder->x264, &param);
+    param.rc.i_vbv_max_bitrate = kbps;
+    param.rc.i_vbv_buffer_size = kbps / 5;
+    return x264_encoder_reconfig(encoder->x264, &param);
 }
 
 void encoder_close(struct encoder *encoder)
