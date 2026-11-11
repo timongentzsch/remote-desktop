@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#000">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<title>Remote Desktop</title>
+<style>
+  :root { --bg: #000; --fg: #ddd; --panel: #000c; --gap: .75rem; --radius: .5rem; --idle-opacity: .4; color-scheme: dark; }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: var(--bg); color: var(--fg); font: 1rem system-ui; }
+  canvas { display: none; width: 100%; height: 100%; object-fit: contain; }
+  .remote-cursor canvas { cursor: none; }
+  form { position: fixed; inset: 0; display: flex; flex-wrap: wrap; gap: var(--gap); align-items: center; align-content: center; justify-content: center; }
+  output { flex-basis: 100%; text-align: center; font-variant-numeric: tabular-nums; }
+
+  /* Once connected the same form shrinks into a status bar: statistics always, controls on hover. */
+  .connected canvas { display: block; }
+  .connected form { inset: auto auto 0 50%; translate: -50%; padding: calc(var(--gap) / 2) var(--gap); border-radius: var(--radius) var(--radius) 0 0; background: var(--panel); font-size: .8rem; opacity: var(--idle-opacity); }
+  .connected form:hover { opacity: 1; }
+  .connected form > :not(output) { display: none; }
+  .connected form:hover > :is(select, button) { display: initial; }
+</style>
+<canvas></canvas>
+<form>
+  <input type="password" name="password" placeholder="Password" autocomplete="current-password" autofocus required>
+  <select name="bitrate" title="Video bitrate. Auto follows what the connection can carry.">
+    <option value="">Auto bitrate</option>
+    <option value="2000">2 Mbit/s</option>
+    <option value="5000">5 Mbit/s</option>
+    <option value="10000">10 Mbit/s</option>
+    <option value="20000">20 Mbit/s</option>
+    <option value="40000">40 Mbit/s</option>
+  </select>
+  <select name="fps" title="Frame rate">
+    <option value="60">60 fps</option>
+    <option value="30">30 fps</option>
+    <option value="15">15 fps</option>
+  </select>
+  <select name="size" title="Resolution">
+    <option value="native">Native size</option>
+    <option value="half">Half size</option>
+  </select>
+  <select name="chroma" title="Sharp keeps full colour detail in text and thin lines. It costs more processing on both ends and is not used when the picture is scaled down.">
+    <option value="420">Standard colour</option>
+    <option value="444">Sharp colour</option>
+  </select>
+  <select name="cursor" title="Local: instant but always an arrow. Remote: true shape but drawn in the video.">
+    <option value="no">Local cursor</option>
+    <option value="yes">Remote cursor</option>
+  </select>
+  <label><input type="checkbox" name="fullscreen" checked> Fullscreen (captures system shortcuts)</label>
+  <button>Connect</button>
+  <output></output>
+</form>
+<script>
+const canvas = document.querySelector('canvas'), form = document.querySelector('form');
+const status = form.querySelector('output'), button = form.querySelector('button');
+const context = canvas.getContext('2d', { alpha: false, desynchronized: true });  // skip compositor queueing where supported
+const SAVED = ['bitrate', 'fps', 'size', 'chroma', 'cursor'];
+// Auto bitrate, in kbit/s. The stream is checked every TICK ms: after LAG_TICKS checks in a row with a round trip
+// above LAG_LIMIT ms the rate is cut to what the link actually delivered; after `patience` calm seconds it is raised.
+const TICK = 250, LAG_LIMIT = 250, LAG_TICKS = 3, MIN_RATE = 500, MAX_RATE = 30000;
+let rate = 20000, streak = 0, patience = 10, climbed = false, used = 0;
+try { rate = +localStorage.rate || rate; } catch {}
+const BUTTONS = [0x110, 0x112, 0x111, 0x113, 0x114];  // DOM button index -> evdev BTN_*
+const CONTROL = 29;
+// KeyboardEvent.code -> evdev key code; the list is in evdev order starting at 1, "-" marks gaps.
+const KEYS = { MetaLeft: 125, MetaRight: 126, ContextMenu: 127 };
+('Escape Digit1 Digit2 Digit3 Digit4 Digit5 Digit6 Digit7 Digit8 Digit9 Digit0 Minus Equal Backspace Tab ' +
+ 'KeyQ KeyW KeyE KeyR KeyT KeyY KeyU KeyI KeyO KeyP BracketLeft BracketRight Enter ControlLeft ' +
+ 'KeyA KeyS KeyD KeyF KeyG KeyH KeyJ KeyK KeyL Semicolon Quote Backquote ShiftLeft Backslash ' +
+ 'KeyZ KeyX KeyC KeyV KeyB KeyN KeyM Comma Period Slash ShiftRight NumpadMultiply AltLeft Space CapsLock ' +
+ 'F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 NumLock ScrollLock Numpad7 Numpad8 Numpad9 NumpadSubtract ' +
+ 'Numpad4 Numpad5 Numpad6 NumpadAdd Numpad1 Numpad2 Numpad3 Numpad0 NumpadDecimal - - IntlBackslash F11 F12 ' +
+ '- - - - - - - NumpadEnter ControlRight NumpadDivide PrintScreen AltRight - ' +
+ 'Home ArrowUp PageUp ArrowLeft ArrowRight End ArrowDown PageDown Insert Delete'
+).split(' ').forEach((code, i) => KEYS[code] = i + 1);
+
+let socket, stop;
+const held = new Set();
+const connected = () => document.body.classList.contains('connected');
+const send = (...message) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(message));
+
+function key(code, down) {
+  down ? held.add(code) : held.delete(code);
+  send('key', code, +down);
+}
+const releaseAll = () => held.forEach(code => key(code, false));
+
+function setConnected(on, message = '') {
+  document.body.classList.toggle('connected', on);
+  button.textContent = on ? 'Disconnect' : 'Connect';
+  status.textContent = message;
+}
+
+// streak counts consecutive checks: negative while lagging, positive while calm. `received` is the recent
+// throughput in kbit/s, which equals the link's capacity whenever video is queueing up behind it.
+function adapt(lagging, received) {
+  streak = lagging ? Math.min(streak, 0) - 1 : Math.max(streak, 0) + 1;
+  used = Math.max(used, received);
+  let next;
+  if (streak <= -LAG_TICKS) next = Math.max(MIN_RATE, rate / 4, 0.7 * Math.min(rate, received));
+  else if (streak >= patience * 1000 / TICK && used > 0.6 * rate) next = Math.min(MAX_RATE, rate * 1.5);  // only once the current rate was really used
+  else return;
+  streak = used = 0;
+  next = Math.round(next);
+  if (next === rate) return;
+  if (next < rate && climbed) patience = Math.min(patience * 2, 300);  // the rate just tried did not hold: retry later
+  climbed = next > rate;
+  rate = next;
+  try { localStorage.rate = rate; } catch {}
+  connect();
+}
+
+// Opens a session with the form's current settings, replacing any existing one.
+function connect() {
+  stop?.();
+  document.body.classList.toggle('remote-cursor', form.cursor.value === 'yes');
+  const ws = socket = new WebSocket('/ws');
+  let pending = new Uint8Array(0), started = false;
+  let frames = 0, bytes = 0, decodeTime = 0, roundTrip = 0, pinged = 0, ticks = 0;
+  const recent = [];  // bytes received during each of the last four checks
+  const submitted = [];  // when each frame still inside the decoder was handed to it
+
+  const decoder = new VideoDecoder({
+    output(frame) {
+      decodeTime += performance.now() - submitted.shift();
+      frames++;
+      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        canvas.width = frame.displayWidth;
+        canvas.height = frame.displayHeight;
+      }
+      context.drawImage(frame, 0, 0);
+      frame.close();
+    },
+    error: () => ws.close(),
+  });
+
+  // The stream is FLV: a 13-byte header, then tags of [type, size:3, time:3+1, stream:3, data, back-pointer:4].
+  // Video tag data is [frame type | codec, packet type, composition time:3, payload].
+  function demux(chunk) {
+    const stream = new Uint8Array(pending.length + chunk.byteLength);
+    stream.set(pending);
+    stream.set(new Uint8Array(chunk), pending.length);
+    let at = started ? 0 : 13;
+    for (;;) {
+      const size = stream[at + 1] << 16 | stream[at + 2] << 8 | stream[at + 3];
+      if (stream.length < at + 11 + size + 4) break;  // also true while the tag header itself is incomplete
+      const data = stream.subarray(at + 11, at + 11 + size);
+      if (stream[at] === 9 && data[1] === 0) {         // H.264 decoder configuration (avcC)
+        const profile = [...data.subarray(6, 9)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+        decoder.configure({ codec: 'avc1.' + profile, description: data.slice(5), optimizeForLatency: true });
+      } else if (stream[at] === 9) {
+        submitted.push(performance.now());
+        decoder.decode(new EncodedVideoChunk({
+          type: data[0] >> 4 === 1 ? 'key' : 'delta',
+          timestamp: (stream[at + 4] << 16 | stream[at + 5] << 8 | stream[at + 6]) * 1000,
+          data: data.subarray(5),
+        }));
+      }
+      at += 11 + size + 4;
+      started = true;
+    }
+    pending = started ? stream.slice(at) : stream;
+  }
+
+  const report = setInterval(() => {
+    // The ping reply queues behind video on the same connection, so the round trip grows when the link is too slow.
+    if (pinged) roundTrip = performance.now() - pinged;  // still unanswered
+    else if (ws.readyState === WebSocket.OPEN) {
+      pinged = performance.now();
+      send('ping', 0, 0);
+    }
+    recent.push(bytes);
+    bytes = 0;
+    if (recent.length > 4) recent.shift();
+    const received = recent.reduce((sum, count) => sum + count) * 8 / (TICK * recent.length);  // kbit/s
+    if (++ticks % 4 === 0) {
+      if (started) status.textContent = `${frames} fps · ${(received / 1000).toFixed(1)} ` +
+        `${form.bitrate.value ? '' : `of ${(rate / 1000).toFixed(1)} `}Mbit/s · ping ${roundTrip.toFixed(0)} ms · ` +
+        `decode ${(decodeTime / (frames || 1)).toFixed(1)} ms`;
+      frames = decodeTime = 0;
+    }
+    if (!form.bitrate.value && !document.hidden) adapt(roundTrip > LAG_LIMIT, received);
+  }, TICK);
+
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => ws.send(JSON.stringify({ ...Object.fromEntries(new FormData(form)), bitrate: form.bitrate.value || rate }));
+  ws.onmessage = event => {
+    if (typeof event.data === 'string') {  // ping reply
+      roundTrip = performance.now() - pinged;
+      pinged = 0;
+      return;
+    }
+    if (!started) setConnected(true);
+    bytes += event.data.byteLength;
+    demux(event.data);
+  };
+  // Closing can take a while on a congested link, so a replaced session is silenced at once rather than in onclose.
+  const end = stop = () => {
+    clearInterval(report);
+    ws.onmessage = null;
+    ws.close();
+    if (decoder.state !== 'closed') decoder.close();
+  };
+  ws.onclose = () => {
+    end();
+    if (ws !== socket) return;  // replaced by a newer session
+    held.clear();
+    setConnected(false, started ? 'Disconnected' : 'Could not connect — wrong password?');
+    if (document.fullscreenElement) document.exitFullscreen();
+  };
+}
+
+form.onsubmit = event => {
+  event.preventDefault();
+  if (connected()) return socket.close();
+  // Keyboard Lock only takes effect in fullscreen; hold Esc to leave.
+  if (form.fullscreen.checked) document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock());
+  connect();
+};
+form.onchange = () => {
+  try { localStorage.settings = JSON.stringify(Object.fromEntries(SAVED.map(name => [name, form[name].value]))); } catch {}
+  if (connected()) connect();  // settings apply when the capture starts, so restart it
+};
+try {
+  const saved = JSON.parse(localStorage.settings);
+  for (const name of SAVED) {
+    if (name in saved) form[name].value = saved[name];
+    if (form[name].selectedIndex < 0) form[name].selectedIndex = 0;  // a saved choice that no longer exists
+  }
+} catch {}
+
+function onKey(event) {
+  const code = KEYS[event.code];
+  if (!connected() || !code) return;
+  event.preventDefault();
+  if (event.repeat) return;  // the remote side generates its own repeats
+  key(code, event.type === 'keydown');
+  // macOS never reports keyup for keys released while Cmd is down, so let go of everything with it.
+  if (event.type === 'keyup' && event.key === 'Meta') releaseAll();
+}
+addEventListener('keydown', onKey);
+addEventListener('keyup', onKey);
+addEventListener('blur', releaseAll);
+
+// Raw updates are delivered as they happen; ordinary move events wait for the next animation frame.
+canvas.addEventListener('onpointerrawupdate' in canvas ? 'pointerrawupdate' : 'pointermove', event => {
+  // The picture is letterboxed inside the canvas element; map to its visible area, normalised to 0..65535.
+  const scale = Math.min(canvas.clientWidth / canvas.width, canvas.clientHeight / canvas.height);
+  const normalise = (position, client, size) =>
+    Math.round(Math.min(1, Math.max(0, (position - (client - size * scale) / 2) / (size * scale))) * 65535);
+  send('move', normalise(event.clientX, canvas.clientWidth, canvas.width),
+               normalise(event.clientY, canvas.clientHeight, canvas.height));
+});
+canvas.onmousedown = event => key(BUTTONS[event.button], true);
+addEventListener('mouseup', event => held.has(BUTTONS[event.button]) && key(BUTTONS[event.button], false));
+canvas.oncontextmenu = event => event.preventDefault();
+canvas.addEventListener('wheel', event => {
+  event.preventDefault();
+  // A trackpad pinch arrives as a wheel event with ctrlKey set although Ctrl is not held; forward it as Ctrl+scroll.
+  const pinch = event.ctrlKey && !held.has(CONTROL);
+  const scale = pinch ? 10 : 1;
+  if (pinch) send('key', CONTROL, 1);
+  send('scroll', Math.round(event.deltaX * scale), Math.round(-event.deltaY * scale));
+  if (pinch) send('key', CONTROL, 0);
+}, { passive: false });
+</script>

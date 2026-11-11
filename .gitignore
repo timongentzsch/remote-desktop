@@ -1,0 +1,4 @@
+native/target/
+__pycache__/
+password
+.DS_Store
