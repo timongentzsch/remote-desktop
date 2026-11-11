@@ -1,14 +1,30 @@
 # Remote desktop
 
-A Linux remote-desktop host in one binary, with a client that runs in the browser. It streams the screen as
-H.264 and the sound as Opus, shares the clipboard, and injects keyboard and pointer input.
+Your running Linux desktop in a browser tab. One file on the host, nothing on the other device, any desktop.
 
-- **One file on the host**, for x86_64 and aarch64. Nothing to install on the client: open the address in
-  Chrome, or install the page as an app from there.
+- **Nothing to install where you sit.** Open the address in Chrome, or install the page as an app from
+  there. There is no client program.
+- **One file on the host, for the session you are already using.** The same binary serves GNOME, KDE,
+  Hyprland, Sway and X11 desktops, on x86_64 and aarch64, and sets itself up with one command.
+- **Complete without configuration.** The screen as H.264, the sound as Opus, the clipboard, keyboard and
+  pointer, all encrypted. An NVIDIA card's hardware encoder is used where there is one (driver 470 or
+  newer, one viewer at a time), the built-in x264 everywhere else.
+- **Nobody in between.** The browser talks to your machine directly: no account, no relay, no vendor's
+  server.
 - **Made to feel local.** A still screen costs nothing, a busy one is encoded in a few milliseconds, the
   pointer is drawn by the client, and the bitrate follows the connection.
-- **GPU encoding** on NVIDIA cards with a hardware encoder (driver 470 or newer), for one viewer at a time;
-  the built-in x264 everywhere else. Nothing to configure.
+
+## How it compares
+
+It is for reaching your own desktop from any computer with Chrome, with nothing to set up there. The usual
+tools need a program on that computer, and each is ahead in something else:
+
+| | On the other device | Ahead of this project in |
+| --- | --- | --- |
+| RDP (GNOME's and KDE's servers, xrdp) | An RDP program | GNOME's shows the login screen. Mature clients, sharing files and drives |
+| VNC (wayvnc, x11vnc) | A VNC program, or noVNC set up beside the server | Clients for every system, small and long proven |
+| RustDesk | Its program | Reaches machines behind a router without a VPN. File transfer, phone apps, Windows and macOS hosts |
+| Sunshine with Moonlight | Moonlight | Delay and picture quality, over UDP with any vendor's hardware encoder. Gamepads, HDR |
 
 ## What it runs on
 
