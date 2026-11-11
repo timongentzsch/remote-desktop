@@ -86,3 +86,28 @@ impl Drop for Encoder {
         unsafe { encoder_close(self.raw) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every frame must come out of the encoder at once: capture only delivers a frame when the screen changes,
+    /// so one held back would not be shown until the next change.
+    #[test]
+    fn each_frame_is_encoded_immediately() {
+        for full_chroma in [false, true] {
+            let mut encoder = Encoder::open(64, 64, 60, 1000, full_chroma).expect("x264 opens");
+            let configuration = encoder.configuration();
+            assert_eq!(configuration[0], 1, "an avcC record");
+            assert_eq!(configuration[1], if full_chroma { 244 } else { 66 }, "the stream's profile");
+            for (frame, expect_keyframe) in [(0, true), (1, false)] {
+                for plane in encoder.planes() {
+                    plane.bytes.fill(100 + frame * 50);
+                }
+                let (unit, keyframe) = encoder.encode().expect("a frame in gives a frame out");
+                assert!(!unit.is_empty());
+                assert_eq!(keyframe, expect_keyframe);
+            }
+        }
+    }
+}

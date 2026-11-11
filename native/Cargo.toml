@@ -13,3 +13,6 @@ yuv = "0.8"
 
 [build-dependencies]
 cc = "1"
+
+[profile.release]
+strip = true
