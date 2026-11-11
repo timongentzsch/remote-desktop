@@ -1,4 +1,4 @@
-# Tests every push and pull request, and builds the portable binaries.
+# Checks and tests every push and pull request, and builds the portable binaries.
 # Pushing a tag such as v0.1.0 also publishes them as a release, which is what the install line in the
 # README downloads: releases/latest/download/remote-desktop-<architecture>.
 name: Build
@@ -24,11 +24,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          components: clippy, rustfmt
       - name: Install nasm (x264's x86 assembly) and cargo-zigbuild (brings zig)
         run: |
           sudo apt-get update
           sudo apt-get install --yes nasm
           pip install cargo-zigbuild
+      - run: cargo fmt --check
+      - run: cargo clippy --release --all-targets -- --deny warnings
       - run: cargo test --release
       - name: Build for glibc 2.28 and newer
         run: |

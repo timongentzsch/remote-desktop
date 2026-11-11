@@ -104,7 +104,7 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
             }
             Some("move") => host.input.move_to(number(1) as i32, number(2) as i32),
             Some("scroll") => host.input.scroll(number(1) as i32, number(2) as i32),
-            Some("bitrate") => shared.kbps.store(kbps(number(1) as u64), Ordering::Relaxed),
+            Some("bitrate") => shared.kbps.store(kbps(number(1)), Ordering::Relaxed),
             Some("clipboard") => {
                 if let (Some(inbox), Some(text)) = (&inbox, parts.get(1).and_then(Value::as_str)) {
                     inbox.put(text.to_string());
@@ -130,7 +130,7 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
 fn settings(login: &Value) -> Settings {
     let bitrate = &login["bitrate"];
     Settings {
-        kbps: kbps(bitrate.as_u64().or_else(|| bitrate.as_str()?.parse().ok()).unwrap_or(20000)),
+        kbps: kbps(bitrate.as_i64().or_else(|| bitrate.as_str()?.parse().ok()).unwrap_or(20000)),
         fps: match login["fps"].as_str() {
             Some("30") => 30,
             Some("15") => 15,
@@ -143,7 +143,7 @@ fn settings(login: &Value) -> Settings {
 }
 
 /// A bitrate cap the client asked for, held to what makes sense.
-fn kbps(wanted: u64) -> u32 {
+fn kbps(wanted: i64) -> u32 {
     wanted.clamp(500, 50000) as u32
 }
 

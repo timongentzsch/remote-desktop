@@ -87,9 +87,6 @@ struct Pixels {
     _memory: OwnedFd,
 }
 
-// The mapping is only read, and only by the thread that owns the capture.
-unsafe impl Send for Pixels {}
-
 impl Pixels {
     fn new(
         shm: &WlShm,
