@@ -14,17 +14,16 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
 - **Made to feel local.** A still screen costs nothing, a busy one is encoded in a few milliseconds, the
   pointer is drawn by the client, and the bitrate follows the connection.
 
-## How it compares
+## What it is not
 
-It is for reaching your own desktop from any computer with Chrome, with nothing to set up there. The usual
-tools need a program on that computer, and each is ahead in something else:
-
-| | On the other device | Ahead of this project in |
-| --- | --- | --- |
-| RDP (GNOME's and KDE's servers, xrdp) | An RDP program | GNOME's shows the login screen. Mature clients, sharing files and drives |
-| VNC (wayvnc, x11vnc) | A VNC program, or noVNC set up beside the server | Clients for every system, small and long proven |
-| RustDesk | Its program | Reaches machines behind a router without a VPN. File transfer, phone apps, Windows and macOS hosts |
-| Sunshine with Moonlight | Moonlight | Delay and picture quality, over UDP with any vendor's hardware encoder. Gamepads, HDR |
+- **Not a way around routers.** The other device has to be able to reach the machine: on the same network,
+  over a VPN such as Tailscale, or through a port you open. There is no relay service.
+- **Not a game streamer.** It is made for desktop work, over TCP and into a browser. There are no gamepads
+  and no HDR, and fast action over a lossy link will stutter.
+- **Not a remote login.** It shows the session that is already running, not the login screen and not a
+  session of its own.
+- **Not file transfer or device sharing.** Text goes through the clipboard; files, drives, printers and USB
+  devices are not passed on.
 
 ## What it runs on
 
@@ -100,7 +99,8 @@ Whoever logs in controls the desktop session, so treat the address and password 
 - Only the first screen is captured.
 - The pointer is drawn by the client, always as an arrow, or painted into the video by the host.
 - "Sharp" colour (4:4:4) is decoded in software by Chrome.
-- After a slow connection the automatic bitrate climbs back only while the picture is moving.
+- When a connection that was slow gets faster, the bitrate follows at the next try: ten seconds after it was
+  cut, then at growing intervals of up to a minute. Each try costs a moment of padding.
 - The client is made for a keyboard and a mouse or trackpad, not for touch.
 - On X11, clipboard texts of some hundred kilobytes are not passed on, and the host needs `DISPLAY` in the
   environment it is started from.
@@ -131,6 +131,7 @@ builds them and publishes them when a version tag is pushed.
       main.rs, install.rs      the command line; install, uninstall, password
       server.rs, session.rs    HTTPS and the client page; one client's login, threads and input
       outbox.rs, ws.rs         what waits to be sent to a client; WebSocket framing
+      rate.rs                  the bitrate a connection is given, from how well frames get through
       tls.rs, certificate.rs   the encrypted connection; the certificate behind it
       capture/                 the screen's picture, one module per way of getting it
       stream/                  pictures to video: pacing, colour conversion, the encoders

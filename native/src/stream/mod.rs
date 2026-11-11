@@ -142,7 +142,7 @@ impl Stream {
     /// Encodes the picture currently in the encoder's planes, as one of `fps` frames a second, and sends it.
     fn encode(&mut self, started: Instant, fps: u32) {
         let Some(encoder) = &mut self.encoder else { return };
-        // The client may have asked for another bitrate cap, and refining goes at another pace than the screen.
+        // The session may allow another bitrate by now, and refining goes at another pace than the screen.
         let wanted = match self.shared.kbps.load(Ordering::Relaxed) {
             0 => self.settings.kbps,
             kbps => kbps,

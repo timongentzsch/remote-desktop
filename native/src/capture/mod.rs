@@ -29,7 +29,7 @@ pub struct Settings {
 pub struct Shared {
     /// Set by the session to end the capture.
     pub stop: AtomicBool,
-    /// The bitrate cap in kbit/s the client now wants; 0 until it asks for a change.
+    /// The bitrate in kbit/s the session now allows; 0 until it sets one.
     pub kbps: AtomicU32,
     /// How long converting and encoding the latest frame took, in microseconds.
     pub encode_micros: AtomicU32,
