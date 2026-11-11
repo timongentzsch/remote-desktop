@@ -4,3 +4,7 @@
 [submodule "native/nv-codec-headers"]
 	path = native/nv-codec-headers
 	url = https://github.com/FFmpeg/nv-codec-headers
+[submodule "native/pipewire"]
+	path = native/pipewire
+	url = https://github.com/PipeWire/pipewire
+	shallow = true

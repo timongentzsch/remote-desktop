@@ -23,6 +23,7 @@ use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_captu
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1;
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_v1::{self as power, ZwlrOutputPowerV1};
 
+use crate::mutter;
 use crate::stream::Stream;
 
 pub struct Settings {
@@ -53,6 +54,11 @@ pub type Sink = Box<dyn FnMut(&[u8]) -> bool + Send>;
 pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), String> {
     let connection = Connection::connect_to_env().map_err(|error| format!("no Wayland display: {error}"))?;
     let (globals, mut events) = registry_queue_init::<Capture>(&connection).map_err(|error| error.to_string())?;
+    let offered = globals.contents().with_list(|list| list.iter().any(|global| global.interface == "ext_image_copy_capture_manager_v1"));
+    if !offered {
+        // Not a compositor that offers capture as a Wayland protocol. GNOME has its own way.
+        return mutter::run(Stream::new(settings, shared, sink));
+    }
     let queue = events.handle();
     let missing = |error| format!("the compositor lacks a protocol this needs: {error}");
     let shm: WlShm = globals.bind(&queue, 1..=1, ()).map_err(missing)?;

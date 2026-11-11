@@ -18,6 +18,8 @@ mod convert;
 mod encode;
 mod input;
 mod install;
+mod mutter;
+mod pipewire;
 mod server;
 mod stream;
 mod tls;
