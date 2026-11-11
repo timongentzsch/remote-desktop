@@ -1,4 +1,4 @@
-/* Receives a screen-cast stream from PipeWire, which is how GNOME hands out the screen's picture.
+/* Receives a screen-cast stream from PipeWire, which is how GNOME and KDE hand out the screen's picture.
    PipeWire's library is loaded at run time, so the binary starts on machines that do not have it. */
 #include <dlfcn.h>
 #include <pthread.h>

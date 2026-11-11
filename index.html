@@ -389,7 +389,7 @@ async function offerClipboard() {
     const message = JSON.stringify(['clipboard', text, 0]);
     if (!text || text === clipboard || new TextEncoder().encode(message).length > 60000) return;  // the host reads messages up to 64 kB
     clipboard = text;
-    if (socket?.readyState === WebSocket.OPEN) socket.send(message);
+    send('clipboard', text, 0);
   } catch {}  // not permitted, or the window is not focused
 }
 addEventListener('focus', () => connected() && offerClipboard());

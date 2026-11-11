@@ -1,4 +1,4 @@
-//! `remote-desktop install` and `remote-desktop password`: the binary sets itself up, so nothing else ships.
+//! The commands that set the host up and take it away again. The binary does this itself, so nothing else ships.
 
 use std::fs;
 use std::io::{self, Write};

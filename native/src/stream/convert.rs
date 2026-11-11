@@ -1,7 +1,7 @@
-//! Colour conversion from the compositor's BGRx pixels to planar YUV.
+//! Colour conversion from the screen's BGRx pixels to planar YUV.
 //!
-//! H.264 that browsers decode in hardware is YUV, and the compositor only hands out RGB, so every changed frame
-//! goes through here. The matrix and range (BT.709, full) are the ones the encoders announce in the stream.
+//! H.264 that browsers decode in hardware is YUV, and the screen comes as RGB, so every changed frame goes
+//! through here. The matrix and range (BT.709, full) are the ones the encoders announce in the stream.
 
 use yuv::{BufferStoreMut, YuvConversionMode, YuvPlanarImageMut, YuvRange, YuvStandardMatrix};
 

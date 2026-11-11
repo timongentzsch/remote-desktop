@@ -1,7 +1,7 @@
 //! Builds x264 from the pinned sources in x264/ and links it statically, so the binary carries its encoder
 //! instead of depending on whichever x264 version a distribution ships. Needs nasm when targeting x86.
-//! The GPU encoder needs only the headers in nv-codec-headers/, and receiving GNOME's screen cast only those
-//! in pipewire/; the libraries of both are loaded at run time.
+//! The GPU encoder needs only the headers in nv-codec-headers/, and receiving the screen casts of GNOME and
+//! KDE only those in pipewire/; the libraries of both are loaded at run time.
 
 use std::env;
 use std::ffi::OsString;

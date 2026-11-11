@@ -5,7 +5,10 @@
 /* Opens the GPU's encoder if `gpu` is set, x264 otherwise. NULL if that one cannot be used. */
 struct encoder *encoder_open(int width, int height, int fps, int kbps, int full_chroma, int gpu)
 {
-    return (gpu ? nvenc_open : software_open)(width, height, fps, kbps, full_chroma);
+    struct encoder *encoder = (gpu ? nvenc_open : software_open)(width, height, fps, kbps, full_chroma);
+    if (encoder)
+        encoder->fps = fps;
+    return encoder;
 }
 
 /* A plane of the picture to encode, for the caller to fill; it stays valid while the encoder is open. */
@@ -28,10 +31,11 @@ int encoder_encode(struct encoder *encoder, uint8_t **data, int *keyframe)
 }
 
 /* Tells a running encoder the bitrate cap and how many frames a second it will be given from now on, which
-   together say how much each frame may take. Returns 0 on success. */
+   together say how much each frame may take. The encoders are told a frame rate only when opened, so fewer
+   frames a second are expressed as a higher bitrate at that rate. Returns 0 on success. */
 int encoder_set_rate(struct encoder *encoder, int kbps, int fps)
 {
-    return encoder->ops->set_rate(encoder, kbps, fps);
+    return encoder->ops->set_rate(encoder, (int)((int64_t)kbps * encoder->fps / fps), BUFFER_KBITS(kbps));
 }
 
 void encoder_close(struct encoder *encoder)

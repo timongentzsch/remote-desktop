@@ -76,13 +76,10 @@ static void load(void)
     loaded = 1;
 }
 
-/* The encoder is told one frame rate at the start, so fewer frames a second are expressed as a higher bitrate
-   at that rate: each frame's share of the cap stays right. The buffer, which bounds one frame, is a fifth of a
-   second at the cap, as for x264. */
-static void set_rate(NV_ENC_RC_PARAMS *rate, int kbps, int fps, int configured_fps)
+static void set_rate(NV_ENC_RC_PARAMS *rate, int kbps, int buffer_kbits)
 {
-    rate->averageBitRate = rate->maxBitRate = (uint32_t)((int64_t)kbps * 1000 * configured_fps / fps);
-    rate->vbvBufferSize = rate->vbvInitialDelay = kbps * 1000 / 5;
+    rate->averageBitRate = rate->maxBitRate = (uint32_t)kbps * 1000;
+    rate->vbvBufferSize = rate->vbvInitialDelay = (uint32_t)buffer_kbits * 1000;
 }
 
 static int width_of(const struct nvenc *encoder, int plane)
@@ -195,7 +192,7 @@ struct encoder *nvenc_open(int width, int height, int fps, int kbps, int full_ch
         config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
         config->rcParams.targetQuality = QUALITY;
         config->rcParams.zeroReorderDelay = 1;
-        set_rate(&config->rcParams, kbps, fps, fps);
+        set_rate(&config->rcParams, kbps, BUFFER_KBITS(kbps));
         NV_ENC_CONFIG_H264 *h264 = &config->encodeCodecConfig.h264Config;
         h264->idrPeriod = NVENC_INFINITE_GOPLENGTH;
         h264->disableSPSPPS = 1; /* the parameter sets travel in the stream's configuration record instead */
@@ -374,11 +371,11 @@ done:
     return size;
 }
 
-static int nvenc_set_rate(struct encoder *base, int kbps, int fps)
+static int nvenc_set_rate(struct encoder *base, int kbps, int buffer_kbits)
 {
     struct nvenc *encoder = (struct nvenc *)base;
     NV_ENC_RC_PARAMS before = encoder->config.rcParams;
-    set_rate(&encoder->config.rcParams, kbps, fps, encoder->setup.frameRateNum);
+    set_rate(&encoder->config.rcParams, kbps, buffer_kbits);
     NV_ENC_RECONFIGURE_PARAMS change = { .version = NV_ENC_RECONFIGURE_PARAMS_VER, .reInitEncodeParams = encoder->setup };
     enter();
     NVENCSTATUS status = api.nvEncReconfigureEncoder(encoder->session, &change);

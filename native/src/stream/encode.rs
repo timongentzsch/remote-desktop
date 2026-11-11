@@ -32,7 +32,6 @@ pub struct Plane<'a> {
     pub stride: usize,
 }
 
-/// One encoded frame.
 pub struct Encoded<'a> {
     /// The access unit, as length-prefixed NAL units.
     pub unit: &'a [u8],
