@@ -7,6 +7,7 @@
 #include <ffnvcodec/dynlink_loader.h>
 #include <pthread.h>
 #include <string.h>
+#include <time.h>
 #include "encoder.h"
 
 /* P1 is the fastest preset and P7 the best; P3 costs about a millisecond per frame more than P1. */
@@ -41,6 +42,19 @@ static NV_ENCODE_API_FUNCTION_LIST api;
 static CUcontext context;
 static int loaded;
 
+/* Every call into the driver's encoder happens between enter() and leave(), which make the shared context
+   current on the calling thread for that long. */
+static void enter(void)
+{
+    cuda->cuCtxPushCurrent(context);
+}
+
+static void leave(void)
+{
+    CUcontext unused;
+    cuda->cuCtxPopCurrent(&unused);
+}
+
 static void load(void)
 {
     NvencFunctions *library = NULL; /* the loader frees whatever a non-null pointer holds */
@@ -52,13 +66,14 @@ static void load(void)
         return;
     api.version = NV_ENCODE_API_FUNCTION_LIST_VER;
     CUdevice device;
-    CUcontext unused;
     /* Blocking rather than spinning while the GPU works keeps the processor free. */
-    loaded = library->NvEncodeAPICreateInstance(&api) == NV_ENC_SUCCESS
-        && cuda->cuInit(0) == CUDA_SUCCESS
-        && cuda->cuDeviceGet(&device, 0) == CUDA_SUCCESS
-        && cuda->cuCtxCreate(&context, CU_CTX_SCHED_BLOCKING_SYNC, device) == CUDA_SUCCESS
-        && cuda->cuCtxPopCurrent(&unused) == CUDA_SUCCESS; /* creating it made it current on this thread */
+    if (library->NvEncodeAPICreateInstance(&api) != NV_ENC_SUCCESS
+        || cuda->cuInit(0) != CUDA_SUCCESS
+        || cuda->cuDeviceGet(&device, 0) != CUDA_SUCCESS
+        || cuda->cuCtxCreate(&context, CU_CTX_SCHED_BLOCKING_SYNC, device) != CUDA_SUCCESS)
+        return;
+    leave(); /* creating the context made it current on this thread */
+    loaded = 1;
 }
 
 /* The encoder is told one frame rate at the start, so fewer frames a second are expressed as a higher bitrate
@@ -80,12 +95,11 @@ static int rows_of(const struct nvenc *encoder, int plane)
     return plane == 0 || encoder->full_chroma ? encoder->height : encoder->height / 2;
 }
 
-static void nvenc_close(struct encoder *base)
+/* Takes an encoder apart and frees it. */
+static void destroy(struct nvenc *encoder)
 {
-    struct nvenc *encoder = (struct nvenc *)base;
-    CUcontext unused;
     if (encoder->session) {
-        cuda->cuCtxPushCurrent(context);
+        enter();
         if (encoder->frames) {
             /* The driver must be told that the stream has ended before its encoder is taken apart. */
             NV_ENC_PIC_PARAMS end = { .version = NV_ENC_PIC_PARAMS_VER, .encodePicFlags = NV_ENC_PIC_FLAG_EOS };
@@ -96,7 +110,7 @@ static void nvenc_close(struct encoder *base)
         if (encoder->input)
             api.nvEncDestroyInputBuffer(encoder->session, encoder->input);
         api.nvEncDestroyEncoder(encoder->session);
-        cuda->cuCtxPopCurrent(&unused);
+        leave();
     }
     for (int plane = 0; plane < 3; plane++)
         free(encoder->planes[plane]);
@@ -104,14 +118,55 @@ static void nvenc_close(struct encoder *base)
     free(encoder);
 }
 
+/* The driver (seen with version 580) crashes, a moment later and on a thread of its own, when one of several
+   encoders is destroyed while another is still in use. So this process has one encoder at a time. A second
+   one is asked for when a client reconnects before its old session has wound down, and then the wait is
+   short. If the encoder stays taken, because someone else is watching, the newcomer gets none and the caller
+   encodes with x264. */
+static pthread_mutex_t turn = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t released = PTHREAD_COND_INITIALIZER;
+static int taken;
+#define TURN_WAIT_SECONDS 1
+
+static int take_turn(void)
+{
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += TURN_WAIT_SECONDS;
+    pthread_mutex_lock(&turn);
+    while (taken && pthread_cond_timedwait(&released, &turn, &deadline) == 0)
+        ;
+    int mine = !taken;
+    if (mine)
+        taken = 1;
+    pthread_mutex_unlock(&turn);
+    return mine;
+}
+
+static void give_turn(void)
+{
+    pthread_mutex_lock(&turn);
+    taken = 0;
+    pthread_cond_signal(&released);
+    pthread_mutex_unlock(&turn);
+}
+
+static void nvenc_close(struct encoder *base)
+{
+    destroy((struct nvenc *)base);
+    give_turn();
+}
+
 struct encoder *nvenc_open(int width, int height, int fps, int kbps, int full_chroma)
 {
     pthread_once(&once, load);
-    if (!loaded)
+    if (!loaded || !take_turn())
         return NULL;
     struct nvenc *encoder = calloc(1, sizeof *encoder);
-    if (!encoder)
+    if (!encoder) {
+        give_turn();
         return NULL;
+    }
     encoder->base.ops = &nvenc_ops;
     encoder->width = width;
     encoder->height = height;
@@ -120,15 +175,14 @@ struct encoder *nvenc_open(int width, int height, int fps, int kbps, int full_ch
         if (!(encoder->planes[plane] = malloc((size_t)width_of(encoder, plane) * rows_of(encoder, plane))))
             goto failed;
 
-    CUcontext unused;
-    cuda->cuCtxPushCurrent(context);
+    enter();
+    NV_ENC_PRESET_CONFIG preset = { .version = NV_ENC_PRESET_CONFIG_VER, .presetCfg.version = NV_ENC_CONFIG_VER };
     NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS session = {
         .version = NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER,
         .deviceType = NV_ENC_DEVICE_TYPE_CUDA,
         .device = context,
         .apiVersion = NVENCAPI_VERSION,
     };
-    NV_ENC_PRESET_CONFIG preset = { .version = NV_ENC_PRESET_CONFIG_VER, .presetCfg.version = NV_ENC_CONFIG_VER };
     int opened = api.nvEncOpenEncodeSessionEx(&session, &encoder->session) == NV_ENC_SUCCESS
         && api.nvEncGetEncodePresetConfigEx(encoder->session, NV_ENC_CODEC_H264_GUID, PRESET, TUNING, &preset) == NV_ENC_SUCCESS;
     if (opened) {
@@ -184,7 +238,7 @@ struct encoder *nvenc_open(int width, int height, int fps, int kbps, int full_ch
         encoder->input = input.inputBuffer;
         encoder->output = output.bitstreamBuffer;
     }
-    cuda->cuCtxPopCurrent(&unused);
+    leave();
     if (opened)
         return &encoder->base;
 failed:
@@ -223,7 +277,6 @@ static int nal_unit(const uint8_t *bytes, int size, int code, int *begin, int *n
 static int nvenc_headers(struct encoder *base, uint8_t **sps, int *sps_size, uint8_t **pps, int *pps_size)
 {
     struct nvenc *encoder = (struct nvenc *)base;
-    CUcontext unused;
     uint32_t size = 0;
     NV_ENC_SEQUENCE_PARAM_PAYLOAD payload = {
         .version = NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER,
@@ -231,9 +284,9 @@ static int nvenc_headers(struct encoder *base, uint8_t **sps, int *sps_size, uin
         .spsppsBuffer = encoder->headers,
         .outSPSPPSPayloadSize = &size,
     };
-    cuda->cuCtxPushCurrent(context);
+    enter();
     NVENCSTATUS status = api.nvEncGetSequenceParams(encoder->session, &payload);
-    cuda->cuCtxPopCurrent(&unused);
+    leave();
     if (status != NV_ENC_SUCCESS)
         return -1;
     for (int code = start_code(encoder->headers, size, 0), begin, next; code < (int)size; code = next) {
@@ -280,9 +333,8 @@ static int length_prefixed(struct nvenc *encoder, const uint8_t *bytes, int size
 static int nvenc_encode(struct encoder *base, uint8_t **data, int *keyframe)
 {
     struct nvenc *encoder = (struct nvenc *)base;
-    CUcontext unused;
     int size = -1;
-    cuda->cuCtxPushCurrent(context);
+    enter();
 
     NV_ENC_LOCK_INPUT_BUFFER input = { .version = NV_ENC_LOCK_INPUT_BUFFER_VER, .inputBuffer = encoder->input };
     if (api.nvEncLockInputBuffer(encoder->session, &input) != NV_ENC_SUCCESS)
@@ -318,20 +370,19 @@ static int nvenc_encode(struct encoder *base, uint8_t **data, int *keyframe)
     *keyframe = stream.pictureType == NV_ENC_PIC_TYPE_IDR;
     api.nvEncUnlockBitstream(encoder->session, encoder->output);
 done:
-    cuda->cuCtxPopCurrent(&unused);
+    leave();
     return size;
 }
 
 static int nvenc_set_rate(struct encoder *base, int kbps, int fps)
 {
     struct nvenc *encoder = (struct nvenc *)base;
-    CUcontext unused;
     NV_ENC_RC_PARAMS before = encoder->config.rcParams;
     set_rate(&encoder->config.rcParams, kbps, fps, encoder->setup.frameRateNum);
     NV_ENC_RECONFIGURE_PARAMS change = { .version = NV_ENC_RECONFIGURE_PARAMS_VER, .reInitEncodeParams = encoder->setup };
-    cuda->cuCtxPushCurrent(context);
+    enter();
     NVENCSTATUS status = api.nvEncReconfigureEncoder(encoder->session, &change);
-    cuda->cuCtxPopCurrent(&unused);
+    leave();
     if (status != NV_ENC_SUCCESS)
         encoder->config.rcParams = before;
     return status == NV_ENC_SUCCESS ? 0 : -1;

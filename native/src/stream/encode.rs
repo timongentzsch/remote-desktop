@@ -162,8 +162,13 @@ impl Drop for Encoder {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::super::{REFINE_FPS, SETTLED_FRAMES};
     use super::*;
+
+    /// Held by a test while it uses the GPU's encoder, which only one can have at a time.
+    static GPU: Mutex<()> = Mutex::new(());
 
     /// The encoders to test: x264 always, and the GPU's if this machine has one.
     fn encoders(width: usize, height: usize, kbps: u32, full_chroma: bool) -> Vec<Encoder> {
@@ -180,6 +185,7 @@ mod tests {
     /// so one held back would not be shown until the next change.
     #[test]
     fn each_frame_is_encoded_immediately() {
+        let _alone = GPU.lock();
         for full_chroma in [false, true] {
             // The GPU's encoder has a minimum picture size well above x264's.
             for mut encoder in encoders(256, 256, 1000, full_chroma) {
@@ -206,10 +212,23 @@ mod tests {
         }
     }
 
+    /// The GPU encodes for one session at a time (nvenc.c says why): a second encoder is refused while the first
+    /// is open and granted once it is closed.
+    #[test]
+    fn the_gpu_encodes_for_one_session_at_a_time() {
+        let _alone = GPU.lock();
+        let open = || Encoder::open_on(true, 640, 480, 60, 2000, false);
+        let Some(first) = open() else { return }; // this machine's GPU cannot encode
+        assert!(open().is_none(), "a second encoder while the first is open");
+        drop(first);
+        assert!(open().is_some(), "an encoder once the first is closed");
+    }
+
     /// A bitrate cap forces a detailed picture out coarse at first. Encoding it again at the pace of refinement
     /// must improve it and then come to rest, or a still screen would either stay blurry or be re-sent forever.
     #[test]
     fn a_still_picture_is_refined_and_then_settles() {
+        let _alone = GPU.lock();
         let (width, height, kbps) = (640, 480, 2000);
         for mut encoder in [false, true].into_iter().flat_map(|full_chroma| encoders(width, height, kbps, full_chroma))
         {
