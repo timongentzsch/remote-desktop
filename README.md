@@ -12,14 +12,16 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
 - **Nobody in between.** The browser talks to your machine directly: no account, no relay, no vendor's
   server.
 - **Made to feel local.** A still screen costs nothing, a busy one is encoded in a few milliseconds, the
-  pointer is drawn by the client, and the bitrate follows the connection.
+  pointer is drawn by the client, and the bitrate follows the connection. Video travels over UDP with spare
+  packets, so that a lost one costs no wait: with one packet in twenty lost, frames still arrived on time.
 
 ## What it is not
 
 - **Not a way around routers.** The other device has to be able to reach the machine: on the same network,
   over a VPN such as Tailscale, or through a port you open. There is no relay service.
-- **Not a game streamer.** It is made for desktop work, over TCP and into a browser. There are no gamepads
-  and no HDR, and fast action over a lossy link will stutter.
+- **Not a game streamer.** It is made for desktop work and into a browser. There are no gamepads and no
+  HDR. Sound and input travel over TCP, and so does the video where UDP does not get through, which shows
+  on a link that loses packets.
 - **Not a session of its own.** It shows what the machine's own screen shows: the login screen, then the
   desktop of whoever logs in there. It starts no separate sessions for remote users.
 - **Not file transfer or device sharing.** Text goes through the clipboard; files, drives, printers and USB
@@ -36,7 +38,8 @@ Any Linux distribution, with any desktop, on Wayland or X11. The exceptions:
 - Without PipeWire or PulseAudio there is no sound.
 
 The client needs WebCodecs, and Keyboard Lock to send system shortcuts such as Alt+Tab to the remote side,
-which works in full screen. It is developed and tested with Chrome.
+which works in full screen. Video over UDP needs WebTransport; without it, or where the network lets no UDP
+through, the video takes the same connection as everything else. It is developed and tested with Chrome.
 
 ## Install
 
@@ -48,7 +51,7 @@ In a terminal of the desktop session you want to control:
 
 - copies the binary to `/usr/local/bin/remote-desktop`,
 - lets the user at the machine create input devices (a udev rule for `/dev/uinput`),
-- opens TCP port 8765 if ufw or firewalld is active,
+- opens port 8765 if ufw or firewalld is active: TCP, and UDP for the video,
 - creates a certificate, kept with the password in `~/.config/remote-desktop/`,
 - starts the host with the desktop session: as a systemd user service, or through the desktop's autostart
   where there is no systemd,
@@ -91,7 +94,8 @@ the two it is.
 
 Whoever logs in controls the desktop session, so treat the address and password like an SSH login.
 
-- Everything goes over TLS. After a wrong password no login is accepted for a second, whichever connection
+- Everything goes over TLS, the video over UDP included (as QUIC). The UDP port answers anyone who can reach
+  it, but carries nothing without a token that only a logged-in session's page is given. After a wrong password no login is accepted for a second, whichever connection
   it came from. Use a long password where the port is reachable from networks you do not trust, or better,
   reach the host through Tailscale or another VPN.
 - The client keeps the password in the browser's local storage after a successful login. Anyone with access
@@ -128,6 +132,7 @@ builds them and publishes them when a version tag is pushed.
       server.rs, session.rs    HTTPS and the client page; one client's login, threads and input
       greeter.rs               the same host at the login screen, as the display manager's user
       outbox.rs, ws.rs         what waits to be sent to a client; WebSocket framing
+      quic.rs, fec.rs          the UDP side that video takes; its spare datagrams against loss
       rate.rs                  the bitrate a connection is given, from how well frames get through
       screen.rs                the desktop's screens, and where the pointer goes on the one shown
       tls.rs, certificate.rs   the encrypted connection; the certificate behind it

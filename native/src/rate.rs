@@ -5,8 +5,9 @@
 //! there is. A screen that needs no more is not probed for more, which would cost traffic and, on a full
 //! link, a gap in the sound.
 //!
-//! Only the client's own count and round trip are gone by. What the connection itself knows ends where the
-//! connection does, which behind a proxy or in a tunnel is not at the client.
+//! Over TCP only the client's own count and round trip are gone by. What that connection itself knows ends
+//! where the connection does, which behind a proxy or in a tunnel is not at the client. Over UDP the
+//! connection ends in the client's browser, and its own count of what arrived is the one gone by.
 
 use std::time::{Duration, Instant};
 
@@ -33,6 +34,9 @@ const LATE_LIMIT: Duration = Duration::from_millis(250);
 /// A round trip this far above where it was means a queue is building up along the way. A probe ends early
 /// then, and none starts.
 const QUEUE_LIMIT: Duration = Duration::from_millis(80);
+/// And it carries less than it is given when it loses more than this share: something on the way drops what
+/// is too much for it, where another would queue it. Loss by chance stays below this on any link worth using.
+const HEAVY_LOSS: f64 = 0.1;
 /// After lag, the share of what the link delivered that the video may take.
 const SHARE: f64 = 0.85;
 
@@ -88,6 +92,9 @@ pub struct Reading {
     /// reported them.
     pub received: Option<Mark>,
     pub round_trip: Option<Duration>,
+    /// The share of what was sent in the last second that got lost, where the connection itself counts what
+    /// arrives, as over UDP. Its count is then exact, and tells what the link carries better than anything.
+    pub lost: Option<f64>,
     /// How many frames have left for the client since the last reading, how many the encoder made coarser
     /// than they should be because of the rate,
     pub frames: u32,
@@ -272,19 +279,27 @@ impl Controller {
         self.wanting = written >= USED * self.kbps as f64 || window.coarse * 2 > window.frames;
         // Without frames the round trip says nothing about what the video does to the link.
         let late = window.frames > 0 && rose(reading.round_trip, self.fastest.get(), LATE_LIMIT);
-        if !backed_up && !late {
+        let dropping = window.frames > 0 && reading.lost.is_some_and(|lost| lost > HEAVY_LOSS);
+        if !backed_up && !late && !dropping {
             return;
         }
         // Frames held up means the connection took no more than it did, so what was written is what the link
-        // carries. A round trip grown long means a queue further along, where only the client can say what
-        // arrived. It counts whole messages and may have sent little, so there the rate is at most halved.
-        let (link_rate, least) = if backed_up {
-            (written, LOWEST)
-        } else {
-            (carried(window.arrived, reading.received).unwrap_or(0.0), (self.kbps / 2).max(LOWEST))
+        // carries. A round trip grown long means a queue further along, and heavy loss that the surplus is
+        // dropped there: then only what arrived says what the link carries. The client counts whole messages
+        // and may have sent little, so going by its count the rate is at most halved. The connection's own
+        // count is gone by wherever there is one: frames that were held up while a queue drained say too little.
+        let arrived = carried(window.arrived, reading.received);
+        let (link_rate, least) = match arrived {
+            Some(arrived) if reading.lost.is_some() => (arrived, LOWEST),
+            _ if backed_up => (written, LOWEST),
+            _ => (arrived.unwrap_or(0.0), (self.kbps / 2).max(LOWEST)),
         };
         self.kbps = ((SHARE * link_rate) as u32).clamp(least, self.kbps);
         self.limited = true;
+        if dropping {
+            // The loss is that of a second past, and goes on being told until one has passed at the new rate.
+            self.settled_at = reading.now + SETTLING;
+        }
         let blamed_on_raise = self.raised.is_some_and(|at| reading.now.duration_since(at) < TRIAL);
         self.rest(reading.now, blamed_on_raise);
     }
@@ -470,6 +485,7 @@ mod tests {
                     written: self.written,
                     received: self.report,
                     round_trip: Some(self.round_trip + delay),
+                    lost: None,
                     frames,
                     coarse: 0,
                     held_up,
@@ -552,6 +568,7 @@ mod tests {
                 written: 0,
                 received: Some((at, 0)),
                 round_trip: Some(ROUND_TRIP),
+                lost: None,
                 frames: 1,
                 coarse: 1,
                 held_up: Duration::ZERO,
@@ -584,6 +601,7 @@ mod tests {
                 written: 0,
                 received: None,
                 round_trip: None,
+                lost: None,
                 frames: 1,
                 coarse: 0,
                 held_up: Duration::ZERO,
@@ -591,6 +609,29 @@ mod tests {
             });
             assert_eq!((verdict.kbps, verdict.padding), (start(HIGHEST), 0));
         }
+    }
+
+    #[test]
+    fn a_link_that_drops_what_it_does_not_carry_is_held_to_what_arrives() {
+        // 4000 kbit/s are sent, half of it gets lost, and nothing is held up or late.
+        let (start, mut controller) = (Instant::now(), Controller::new(Instant::now(), HIGHEST));
+        let mut kbps = 0;
+        for tick in 1..=600u64 {
+            let (now, written) = (start + TICK * tick as u32, tick * 2500);
+            let verdict = controller.step(&Reading {
+                now,
+                written,
+                received: Some((now, written / 2)),
+                round_trip: Some(ROUND_TRIP),
+                lost: Some(0.5),
+                frames: 1,
+                coarse: 0,
+                held_up: Duration::ZERO,
+                ceiling: HIGHEST,
+            });
+            kbps = verdict.kbps;
+        }
+        assert!((1500..=1800).contains(&kbps), "left at {kbps}");
     }
 
     #[test]

@@ -205,7 +205,7 @@ const context = canvas.getContext('2d', { alpha: false, desynchronized: true });
 
 // Decodes the stream and draws it. `failed` is called if the decoder gives up.
 function videoPlayer(failed) {
-  let pending = new Uint8Array(0), started = false, frames = 0, decodeTime = 0;
+  let pending = new Uint8Array(0), frames = 0, decodeTime = 0;
   const submitted = [];  // when each frame still inside the decoder was handed to it
   const decoder = new VideoDecoder({
     output(frame) {
@@ -222,14 +222,14 @@ function videoPlayer(failed) {
     error: failed,
   });
   return {
-    // Takes the next piece of the stream, however the network cut it up. The stream is FLV: a 13-byte header,
-    // then tags of [type, size:3, time:3+1, stream:3, data, back-pointer:4]. Video tag data is
-    // [frame type | codec, packet type, composition time:3, payload].
+    // Takes the next piece of the stream, however the network cut it up. The stream is FLV: a 13-byte header
+    // that begins with "F", then tags of [type, size:3, time:3+1, stream:3, data, back-pointer:4]. Video tag
+    // data is [frame type | codec, packet type, composition time:3, payload].
     feed(chunk) {
       const stream = new Uint8Array(pending.length + chunk.byteLength);
       stream.set(pending);
       stream.set(new Uint8Array(chunk), pending.length);
-      let at = started ? 0 : 13;
+      let at = stream[0] === 0x46 ? 13 : 0;
       for (;;) {
         const size = stream[at + 1] << 16 | stream[at + 2] << 8 | stream[at + 3];
         if (stream.length < at + 11 + size + 4) break;  // also true while the tag header itself is incomplete
@@ -246,9 +246,8 @@ function videoPlayer(failed) {
           }));
         }
         at += 11 + size + 4;
-        started = true;
       }
-      pending = started ? stream.slice(at) : stream;
+      pending = stream.slice(at);
     },
     // How many frames were drawn since the last call, and how long decoding one took on average, in ms.
     measure() {
@@ -257,6 +256,173 @@ function videoPlayer(failed) {
       return measured;
     },
     close: () => decoder.state !== 'closed' && decoder.close(),
+  };
+}
+
+// ---- Video over UDP ----
+
+// Where the host has a UDP side, video comes as datagrams, which do not wait behind a lost one as everything
+// on the WebSocket does. The host cuts each piece of the stream into shards of equal length, in blocks of k,
+// and adds m spares to each block (see fec.rs in the host); any k of a block's k + m datagrams give it back.
+// A datagram is: 9, the piece's number (4 bytes), its length (3), how many of the piece's shards come before
+// this block (2), k, m, which of the block's k + m this is, then the shard.
+const HEAD = 13, NOTHING = 0xFFFFFFFF;
+
+// The spares are sums of the shards, each times a factor, calculated byte by byte in the field of 256 elements,
+// where adding is exclusive or and multiplying goes by logarithms.
+const POWER = new Uint8Array(510), LOGARITHM = new Uint8Array(256);
+for (let exponent = 0, value = 1; exponent < 510; exponent++) {
+  POWER[exponent] = value;
+  if (exponent < 255) LOGARITHM[value] = exponent;
+  value <<= 1;
+  if (value > 255) value ^= 0x11D;
+}
+const times = (a, b) => a && b ? POWER[LOGARITHM[a] + LOGARITHM[b]] : 0;
+const inverse = a => POWER[255 - LOGARITHM[a]];
+const factor = (spare, shard) => inverse(shard ^ (255 - spare));
+function add(to, from, by) {  // adds `by` times `from` to `to`
+  const shift = LOGARITHM[by];
+  if (by) for (let i = 0; i < to.length; i++) if (from[i]) to[i] ^= POWER[LOGARITHM[from[i]] + shift];
+}
+
+// Fills in the shards missing among a block's first k, given at least k of all its datagrams. Each spare, less
+// what the shards that are there add to it, is a sum of the missing ones: as many equations as unknowns, solved
+// by elimination.
+function rebuild(shards, k) {
+  const missing = [], spares = [];
+  for (let index = 0; index < k; index++) if (!shards[index]) missing.push(index);
+  for (let index = k; index < shards.length && spares.length < missing.length; index++) if (shards[index]) spares.push(index - k);
+  const sums = spares.map(spare => {
+    const sum = shards[k + spare].slice();
+    for (let index = 0; index < k; index++) if (shards[index]) add(sum, shards[index], factor(spare, index));
+    return sum;
+  });
+  const factors = spares.map(spare => Uint8Array.from(missing, index => factor(spare, index)));
+  for (let column = 0; column < missing.length; column++) {
+    const pivot = factors.findIndex((row, at) => at >= column && row[column]);
+    [factors[column], factors[pivot]] = [factors[pivot], factors[column]];
+    [sums[column], sums[pivot]] = [sums[pivot], sums[column]];
+    const scale = inverse(factors[column][column]);
+    factors[column] = factors[column].map(value => times(value, scale));
+    sums[column] = sums[column].map(value => times(value, scale));
+    for (let row = 0; row < missing.length; row++) {
+      const by = factors[row][column];
+      if (row === column || !by) continue;
+      add(factors[row], factors[column], by);
+      add(sums[row], sums[column], by);
+    }
+  }
+  missing.forEach((index, at) => shards[index] = sums[at]);
+}
+
+// Whether a piece of the stream says how to decode what follows, which is where a decoder can begin.
+const begins = piece => piece[0] === 9 && piece[12] === 0;
+
+// Puts pieces back together from their datagrams and hands them to `use` in order. When a piece cannot be had,
+// those after it are of no use either: `ask` is called for the host to be told, which then sends a frame to
+// begin with, and the stream goes on from the next piece that says how to decode. A piece counts as lost when
+// one after it is under way and it is still not whole GRACE ms later.
+const GRACE = 8, MOST_OPEN = 512;
+function pieceJoiner(use, ask) {
+  const open = new Map();  // by number: the pieces under way and those whole but not yet due
+  let due = null;          // the number of the piece to hand on next; null until the stream has begun
+  let from = 0;            // pieces before this one are from a way the video has left since
+  let used = NOTHING, missing = NOTHING, timer = 0;
+  function lose() {
+    [timer, missing] = [0, due];
+    ask();
+    advance();
+  }
+  function advance() {
+    if (due === null || missing !== NOTHING) {
+      const whole = [...open].filter(([, piece]) => piece.bytes);
+      const start = whole.filter(([, piece]) => begins(piece.bytes)).map(([number]) => number).sort((a, b) => a - b)[0];
+      if (start === undefined) return whole.forEach(([number]) => open.delete(number));
+      [due, missing] = [start, NOTHING];
+    }
+    for (let piece; (piece = open.get(due))?.bytes; due++) {
+      open.delete(due);
+      used = due;
+      use(piece.bytes);
+    }
+    for (const number of open.keys()) if (number < due) open.delete(number);
+    clearTimeout(timer);
+    timer = [...open.keys()].some(number => number > due) ? setTimeout(lose, GRACE) : 0;
+  }
+  return {
+    take(datagram) {
+      const view = new DataView(datagram.buffer, datagram.byteOffset);
+      const number = view.getUint32(1), length = view.getUint32(4) & 0xFFFFFF, base = view.getUint16(8);
+      const k = datagram[10], index = datagram[12], size = datagram.length - HEAD;
+      if (number < from || number < (missing !== NOTHING ? missing : due ?? 0)) return;
+      if (open.size > MOST_OPEN) open.clear();
+      let piece = open.get(number);
+      if (!piece) open.set(number, piece = { blocks: new Map(), shards: 0, data: new Uint8Array(Math.max(1, Math.ceil(length / size)) * size) });
+      if (due !== null && missing === NOTHING && number > due && !timer) timer = setTimeout(lose, GRACE);
+      if (piece.bytes) return;
+      let block = piece.blocks.get(base);
+      if (!block) piece.blocks.set(base, block = { shards: [], have: 0 });
+      if (!block.shards || block.shards[index]) return;
+      block.shards[index] = datagram.subarray(HEAD);
+      if (++block.have < k) return;
+      rebuild(block.shards, k);
+      for (let shard = 0; shard < k; shard++) piece.data.set(block.shards[shard], (base + shard) * size);
+      block.shards = null;  // whole
+      piece.shards += k;
+      if (piece.shards * size < length) return;
+      piece.bytes = piece.data.subarray(0, length);
+      advance();
+    },
+    // The video has gone another way and comes back, if it does, with piece `number`.
+    restart(number) {
+      clearTimeout(timer);
+      open.clear();
+      [from, due, missing, timer] = [number, null, NOTHING, 0];
+    },
+    // The last piece handed on and the first that is missing, as the host wants to know them.
+    status: () => [used, missing],
+    close: () => clearTimeout(timer),
+  };
+}
+
+// The session to the host's UDP side: a WebTransport session, which the host's certificate is good for by its
+// fingerprint alone. Datagrams that arrive go to `take`. Where the browser or the network will not have it,
+// nothing arrives and video stays on the WebSocket; it is tried again every AGAIN ms.
+const AGAIN = 3000;
+function datagramPath(port, fingerprint, token, take) {
+  if (!window.WebTransport) return null;
+  const bytes = hex => Uint8Array.from(hex.match(/../g), pair => parseInt(pair, 16));
+  let transport, writer, closed = false, timer = 0;
+  (async function open() {
+    try {
+      const pinned = { serverCertificateHashes: [{ algorithm: 'sha-256', value: bytes(fingerprint) }] };
+      transport = new WebTransport(`https://${location.hostname}:${port}/`, pinned);
+      await transport.ready;
+      transport.datagrams.incomingHighWaterMark = 4096;  // a frame's datagrams arrive together, and none is to be dropped
+      writer = transport.datagrams.writable.getWriter();
+      for (const reader = transport.datagrams.readable.getReader(); ;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        take(value);
+      }
+    } catch {}
+    writer = null;
+    if (!closed) timer = setTimeout(open, AGAIN);
+  })();
+  return {
+    // Tells the host who this is and how the video fares: the last piece used and the first missing.
+    say(used, missing) {
+      const message = new Uint8Array(24), view = new DataView(message.buffer);
+      message.set(bytes(token));
+      view.setUint32(16, used);
+      view.setUint32(20, missing);
+      writer?.write(message).catch(() => {});
+    },
+    close() {
+      closed = true;
+      clearTimeout(timer);
+      try { transport?.close(); } catch {}
+    },
   };
 }
 
@@ -338,14 +504,14 @@ function setConnected(on, problem = '') {
 // the video's bitrate as `received` of what the host `allowed`, in kbit/s, and whether the link is what holds
 // it there. Below SLOW_RATE that shows in the picture, and is said.
 const SLOW_RATE = 3000;
-function showStatistics(frames, parts, received, allowed, heldBack) {
+function showStatistics(frames, parts, received, allowed, heldBack, way) {
   const delay = Math.round(Object.values(parts).reduce((sum, part) => sum + part));
   const slow = heldBack && allowed < SLOW_RATE;
   const megabits = kbps => (kbps / 1000).toFixed(1);
   document.body.classList.toggle('slow', slow);
   $('now-fps').textContent = `${frames} fps`;
   $('now-delay').textContent = `${delay} ms`;
-  $('now-bitrate').textContent = `${megabits(received)} of ${megabits(allowed)}`;
+  $('now-bitrate').textContent = `${megabits(received)} of ${megabits(allowed)}, ${way}`;
   $('now-picture').textContent = `${canvas.width} × ${canvas.height}`;
   $('notice').textContent = `This connection carries about ${megabits(allowed)} Mbit/s. Moving pictures are softened so the session stays responsive.`;
   $('pill-text').textContent = slow ? `Slow link · ${megabits(allowed)} Mbit/s` : `${frames} fps · ${delay} ms`;
@@ -382,6 +548,7 @@ const TICK = 250;  // ms between looks at the stream
 const PING = 100;  // ms between pings
 // A binary message from the host is video, unless its first byte is one of these.
 const PADDING = 0, POINTER = 7, SOUND = 8;
+const STATUS = 50;  // ms between words to the host on how video over UDP fares
 
 // The remote pointer's shape, which the pointer over the picture takes on where the host tells it: 16-bit width,
 // height and place of its tip, then rows of red, green, blue and alpha. It is drawn as large as the picture's
@@ -412,6 +579,23 @@ function connect() {
   let live = false;  // whether the stream has begun, which is what shows that the login was accepted
   let bytes = 0, received = 0, roundTrip = 0, ticks = 0;  // `received` counts all that arrived
   let host = { encode: 0, send: 0, kbps: 0, heldBack: false };  // what the host reports once a second
+  // Video comes over the WebSocket until the host is reached over UDP, and from then on as datagrams. When it
+  // changes its way it begins anew, with a piece that says how to decode: `awaited` while that is still to
+  // come on the WebSocket.
+  let path = null, byUdp = false, awaited = false;
+  const joiner = pieceJoiner(piece => { byUdp = true; show(piece); }, () => path?.say(...joiner.status()));
+  const status = setInterval(() => path?.say(...joiner.status()), STATUS);
+  function show(piece) {
+    if (!live) {
+      live = true;
+      retryUntil = 0;
+      setConnected(true);
+      // Kept in this browser so the next visit only needs a click. Anyone using this browser profile can read it.
+      try { localStorage.password = login.password.value; } catch {}
+      offerClipboard();
+    }
+    video.feed(piece);
+  }
   const recent = [];  // bytes of video received during each of the last four checks
 
   // The host sends each ping back ahead of any waiting video, so the time it took is close to the network's
@@ -427,7 +611,7 @@ function connect() {
     const received = recent.reduce((sum, count) => sum + count) * 8 / (TICK * recent.length);  // kbit/s
     if (++ticks % 4 === 0 && live && host.kbps) {  // once the host has reported
       const { frames, decode } = video.measure();
-      showStatistics(frames, { encode: host.encode, send: host.send, network: roundTrip / 2, decode }, received, host.kbps, host.heldBack);
+      showStatistics(frames, { encode: host.encode, send: host.send, network: roundTrip / 2, decode }, received, host.kbps, host.heldBack, byUdp ? 'UDP' : 'TCP');
     }
   }, TICK);
 
@@ -442,6 +626,16 @@ function connect() {
       settings.screen.value = shown;
       settings.screen.parentElement.hidden = names.length < 2;
     },
+    // Where to reach the host's UDP side, and the token that says there which session this is.
+    udp(port, fingerprint, token) {
+      path = datagramPath(port, fingerprint, token, datagram => {
+        if (datagram[0] !== 9) return;  // padding is only there to show the host what the link carries
+        bytes += datagram.length;
+        joiner.take(datagram);
+      });
+    },
+    // Video is back on the WebSocket; over UDP it would go on with piece `next`.
+    path(way, next) { [byUdp, awaited] = [false, true]; joiner.restart(next); },
   };
   const carried = {
     [SOUND](data) { sound?.play(new Uint8Array(data, 1)); },
@@ -463,21 +657,18 @@ function connect() {
     }
     const kind = new Uint8Array(event.data, 0, 1)[0];
     if (Object.hasOwn(carried, kind)) return carried[kind](event.data);
-    if (!live) {
-      live = true;
-      retryUntil = 0;
-      setConnected(true);
-      // Kept in this browser so the next visit only needs a click. Anyone using this browser profile can read it.
-      try { localStorage.password = login.password.value; } catch {}
-      offerClipboard();
-    }
+    if (byUdp || awaited && !begins(new Uint8Array(event.data))) return;
+    awaited = false;
     bytes += event.data.byteLength;
-    video.feed(event.data);
+    show(event.data);
   };
   // Closing can take a while on a congested link, so a replaced session is silenced at once rather than in onclose.
   const end = stop = () => {
     clearInterval(ping);
     clearInterval(report);
+    clearInterval(status);
+    path?.close();
+    joiner.close();
     showPointer(shape = null);
     ws.onmessage = null;
     ws.close();

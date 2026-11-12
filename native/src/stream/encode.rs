@@ -29,7 +29,13 @@ unsafe extern "C" {
         pps: *mut *mut u8,
         pps_size: *mut c_int,
     ) -> c_int;
-    fn encoder_encode(encoder: *mut Raw, data: *mut *mut u8, keyframe: *mut c_int, coarse: *mut c_int) -> c_int;
+    fn encoder_encode(
+        encoder: *mut Raw,
+        fresh: c_int,
+        data: *mut *mut u8,
+        keyframe: *mut c_int,
+        coarse: *mut c_int,
+    ) -> c_int;
     fn encoder_set_rate(encoder: *mut Raw, kbps: c_int, fps: c_int) -> c_int;
     fn encoder_close(encoder: *mut Raw);
 }
@@ -157,10 +163,10 @@ impl Encoder {
         unsafe { encoder_set_rate(self.raw, kbps as c_int, fps as c_int) == 0 }
     }
 
-    /// Encodes the picture in `planes`.
-    pub fn encode(&mut self) -> Option<Encoded<'_>> {
+    /// Encodes the picture in `planes`; as a frame that needs none before it, if `fresh`.
+    pub fn encode(&mut self, fresh: bool) -> Option<Encoded<'_>> {
         let (mut data, mut keyframe, mut coarse) = (ptr::null_mut(), 0, 0);
-        let size = unsafe { encoder_encode(self.raw, &mut data, &mut keyframe, &mut coarse) };
+        let size = unsafe { encoder_encode(self.raw, fresh as c_int, &mut data, &mut keyframe, &mut coarse) };
         // The access unit stays valid until the next call into the encoder, which needs `&mut self`.
         (size > 0).then(|| Encoded {
             unit: unsafe { slice::from_raw_parts(data, size as usize) },
@@ -229,13 +235,16 @@ mod tests {
                     for plane in encoder.planes() {
                         plane.bytes.fill(100 + frame * 50);
                     }
-                    let encoded = encoder.encode().expect("a frame in gives a frame out");
+                    let encoded = encoder.encode(false).expect("a frame in gives a frame out");
                     let length = u32::from_be_bytes(encoded.unit[..4].try_into().unwrap()) as usize;
                     assert!(length > 0 && 4 + length <= encoded.unit.len(), "NAL units carry their length in front");
                     assert_eq!(encoded.keyframe, expect_keyframe);
                 }
                 assert!(encoder.set_rate(500, 60), "the bitrate cap can change mid-stream");
-                assert!(encoder.encode().is_some_and(|encoded| !encoded.keyframe), "and the stream simply continues");
+                assert!(
+                    encoder.encode(false).is_some_and(|encoded| !encoded.keyframe),
+                    "and the stream simply continues"
+                );
             }
         }
     }
@@ -261,7 +270,7 @@ mod tests {
             let coarse_after = |frames, kbps| {
                 let mut encoder = Encoder::open_on(false, 640, 480, 60, kbps, false, effort).expect("x264 opens");
                 draw_detail(&mut encoder);
-                (0..frames).map(|_| encoder.encode().expect("a frame in gives a frame out").coarse).last().unwrap()
+                (0..frames).map(|_| encoder.encode(false).expect("a frame in gives a frame out").coarse).last().unwrap()
             };
             assert!(coarse_after(3, 200), "under a low cap the picture stays coarse (effort {effort})");
             // A first frame is held to a part of what the cap allows at once, so it may be coarse even here.
@@ -277,12 +286,12 @@ mod tests {
         {
             let (full_chroma, gpu) = (encoder.full_chroma, encoder.gpu);
             draw_detail(&mut encoder);
-            let first = encoder.encode().expect("a frame in gives a frame out").unit.len();
+            let first = encoder.encode(false).expect("a frame in gives a frame out").unit.len();
             assert!(encoder.set_rate(kbps, REFINE_FPS));
             let (mut sizes, mut still) = (Vec::new(), Still::default());
             still.finished(first, Still::share(kbps));
             loop {
-                sizes.push(encoder.encode().expect("a frame in gives a frame out").unit.len());
+                sizes.push(encoder.encode(false).expect("a frame in gives a frame out").unit.len());
                 if still.finished(*sizes.last().unwrap(), Still::share(kbps)) {
                     break;
                 }

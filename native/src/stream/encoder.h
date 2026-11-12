@@ -6,7 +6,7 @@ struct encoder;
 struct encoder_ops {
     uint8_t *(*plane)(struct encoder *encoder, int index, int *stride);
     int (*headers)(struct encoder *encoder, uint8_t **sps, int *sps_size, uint8_t **pps, int *pps_size);
-    int (*encode)(struct encoder *encoder, uint8_t **data, int *keyframe, int *coarse);
+    int (*encode)(struct encoder *encoder, int fresh, uint8_t **data, int *keyframe, int *coarse);
     /* The bitrate at the frame rate the encoder was opened with, and the most one frame may take. */
     int (*set_rate)(struct encoder *encoder, int kbps, int buffer_kbits);
     void (*close)(struct encoder *encoder);

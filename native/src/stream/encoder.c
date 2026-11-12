@@ -26,11 +26,12 @@ int encoder_headers(struct encoder *encoder, uint8_t **sps, int *sps_size, uint8
 
 /* Encodes the picture in the planes. Returns the size of the access unit at *data (length-prefixed NAL
    units, valid until the next call), or 0 or less if there is none. *coarse is set where the encoder can tell
-   that the bitrate cap, not the quality target, decided how good the frame is. */
-int encoder_encode(struct encoder *encoder, uint8_t **data, int *keyframe, int *coarse)
+   that the bitrate cap, not the quality target, decided how good the frame is. With `fresh` the frame is one
+   that needs none before it, for a client that lost its place in the stream. */
+int encoder_encode(struct encoder *encoder, int fresh, uint8_t **data, int *keyframe, int *coarse)
 {
     *coarse = 0;
-    return encoder->ops->encode(encoder, data, keyframe, coarse);
+    return encoder->ops->encode(encoder, fresh, data, keyframe, coarse);
 }
 
 /* Tells a running encoder the bitrate cap and how many frames a second it will be given from now on, which

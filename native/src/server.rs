@@ -3,7 +3,7 @@
 use std::fs;
 use std::io::{self, ErrorKind, Read};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,7 +11,7 @@ use rustls::ServerConfig;
 
 use crate::input::Input;
 use crate::tls::Connection;
-use crate::{certificate, fail, install, session, ws};
+use crate::{certificate, fail, install, quic, session, ws};
 
 /// The client, compiled into the binary: path, content type, body.
 const PAGES: [(&str, &str, &[u8]); 3] = [
@@ -34,6 +34,8 @@ pub struct Host {
     pub password: Vec<u8>,
     /// Replaced once a day, so that a renewed certificate is picked up without a restart.
     tls: Mutex<Arc<ServerConfig>>,
+    /// The UDP side, once the port is taken and if its UDP twin could be had.
+    pub udp: OnceLock<quic::Endpoint>,
 }
 
 impl Host {
@@ -47,7 +49,7 @@ impl Host {
             fail(&format!("cannot create input devices through /dev/uinput ({error}); run `remote-desktop install`"))
         });
         let tls = certificate::configuration().unwrap_or_else(|error| fail(&error));
-        Arc::new(Self { input, password, tls: Mutex::new(tls) })
+        Arc::new(Self { input, password, tls: Mutex::new(tls), udp: OnceLock::new() })
     }
 }
 
@@ -64,15 +66,22 @@ pub fn run(address: &str) -> ! {
             }
         }
     });
-    serve(listen(address), host)
+    serve(listen(address, &host), host)
 }
 
-/// Takes the port, waiting a while if another host still has it.
-pub fn listen(address: &str) -> TcpListener {
+/// Takes the port, waiting a while if another host still has it, and then the UDP port of the same number for
+/// the host's UDP side. Without that one, video stays on TCP.
+pub fn listen(address: &str, host: &Host) -> TcpListener {
     let began = Instant::now();
     loop {
         match TcpListener::bind(address) {
-            Ok(listener) => return listener,
+            Ok(listener) => {
+                match quic::Endpoint::open(address) {
+                    Ok(udp) => drop(host.udp.set(udp)),
+                    Err(error) => eprintln!("remote-desktop: no UDP on {address}, video stays on TCP: {error}"),
+                }
+                return listener;
+            }
             Err(error) if error.kind() == ErrorKind::AddrInUse && began.elapsed() < PORT_PATIENCE => {
                 thread::sleep(Duration::from_millis(250))
             }

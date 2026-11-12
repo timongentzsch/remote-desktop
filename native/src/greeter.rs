@@ -38,7 +38,7 @@ pub fn run(address: &str) -> ! {
     let greeter = wait();
     // What only root may: the owner's password and certificate, the input devices. Then root is given up.
     let host = server::Host::open();
-    let listener = server::listen(address);
+    let listener = server::listen(address, &host);
     if let Err(error) = greeter.become_its_user() {
         fail(&format!("cannot become the login screen's user: {error}"));
     }

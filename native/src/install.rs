@@ -166,9 +166,10 @@ pub fn install(tailscale: bool) {
     show_certificate();
 }
 
-/// Opens or closes the service's port where a firewall this knows how to configure is active.
+/// Opens or closes the service's port where a firewall this knows how to configure is active: TCP for the page
+/// and the session, and UDP of the same number, which video takes where it can (see quic.rs).
 fn firewall(open: bool) {
-    let port = format!("{}/tcp", crate::PORT);
+    let ports = ["tcp", "udp"].map(|protocol| format!("{}/{protocol}", crate::PORT));
     let active = |program: &str, arguments: &[&str], marker: &str| {
         Command::new("sudo")
             .arg(program)
@@ -176,16 +177,18 @@ fn firewall(open: bool) {
             .output()
             .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(marker))
     };
-    let done = if open { "Opened" } else { "Closed" };
+    let (done, both) = (if open { "Opened" } else { "Closed" }, ports.join(" and "));
     if active("ufw", &["status"], "Status: active") {
         let rule: &[&str] = if open { &["ufw", "allow"] } else { &["ufw", "delete", "allow"] };
-        run("sudo", &[rule, &[&port]].concat());
-        println!("{done} port {port} in the firewall (ufw).");
+        for port in &ports {
+            run("sudo", &[rule, &[port.as_str()]].concat());
+        }
+        println!("{done} ports {both} in the firewall (ufw).");
     } else if active("firewall-cmd", &["--state"], "running") {
-        let change = format!("--{}-port={port}", if open { "add" } else { "remove" });
-        run("sudo", &["firewall-cmd", "--quiet", "--permanent", &change]);
+        let changes = ports.each_ref().map(|port| format!("--{}-port={port}", if open { "add" } else { "remove" }));
+        run("sudo", &["firewall-cmd", "--quiet", "--permanent", &changes[0], &changes[1]]);
         run("sudo", &["firewall-cmd", "--quiet", "--reload"]);
-        println!("{done} port {port} in the firewall (firewalld).");
+        println!("{done} ports {both} in the firewall (firewalld).");
     }
 }
 

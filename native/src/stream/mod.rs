@@ -204,9 +204,13 @@ impl Stream {
     }
 
     /// Encodes the latest picture once more if the screen has stood still long enough and the picture is not
-    /// yet as good as it should be.
+    /// yet as good as it should be, or if the client needs a frame to begin with.
     pub fn refine(&mut self) {
-        if self.refinements_left > 0 && self.encoded.elapsed() >= REFINE_INTERVAL {
+        if self.shared.fresh.load(Ordering::Relaxed) && self.encoder.is_some() {
+            // A client waits for a frame to begin with: the latest picture again, refined from there.
+            (self.refinements_left, self.still) = (REFINE_SECONDS * REFINE_FPS, Still::default());
+            self.encode(Instant::now(), REFINE_FPS);
+        } else if self.refinements_left > 0 && self.encoded.elapsed() >= REFINE_INTERVAL {
             self.refinements_left -= 1;
             self.encode(Instant::now(), REFINE_FPS);
         }
@@ -241,6 +245,12 @@ impl Stream {
     /// Encodes the picture currently in the encoder's planes, as one of `fps` frames a second, and sends it.
     /// Says how long that took since `started`, sending apart, and whether the frame came out coarse.
     fn encode(&mut self, started: Instant, fps: u32) -> Option<(Duration, bool)> {
+        // A client that lost its place in the stream is told again how to decode, and begins anew with this frame.
+        let fresh = self.shared.fresh.swap(false, Ordering::Relaxed);
+        if fresh {
+            let configuration = self.encoder.as_mut()?.configuration();
+            self.send_tag(true, 0, &configuration);
+        }
         let encoder = self.encoder.as_mut()?;
         // The session may allow another bitrate by now, and refining goes at another pace than the screen.
         let wanted = match self.shared.kbps.load(Ordering::Relaxed) {
@@ -251,7 +261,7 @@ impl Stream {
             self.rate = (wanted, fps);
             self.settings.kbps = wanted;
         }
-        let encoded = encoder.encode()?;
+        let encoded = encoder.encode(fresh)?;
         let (unit, keyframe, coarse) = (encoded.unit.to_vec(), encoded.keyframe, encoded.coarse);
         let took = started.elapsed();
         self.shared.encode_micros.store(took.as_micros() as u32, Ordering::Relaxed);

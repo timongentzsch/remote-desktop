@@ -22,6 +22,7 @@ Beside the regression there are tools for looking at one thing closely. They sta
     rate-test.sh      the bitrate on a link whose speed changes (serve-rate.sh, rateclient.py, relay.py)
     video-test.sh     a video with sound, watched through the real client in a browser (serve-video.sh)
     loss-test.sh      how late frames are drawn on a link that delays and loses packets (late-check.mjs)
+    udp-test.sh       the video's way back to TCP when UDP is cut off, and to UDP when it returns
     page-check.mjs    drives the client page in headless Chrome and prints what it shows
     serve-screens.sh, serve-x11.sh            desktops to point page-check.mjs at
     delay-check.mjs   the delay from moving the pointer to seeing it moved, on a real connection

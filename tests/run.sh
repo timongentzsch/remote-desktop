@@ -44,6 +44,9 @@ echo "== X11: clipboard";               run rd-test-x11 ./x11-clipboard.sh | gre
 echo "== X11: resize";                  run rd-test-x11 ./x11-resize.sh | grep "$keep"
 echo "== X11: three monitors";          run rd-test-x11 ./screens-test.sh x11 | grep "$screens"
 echo "== X11: pointer shapes";          run rd-test-x11 ./pointer-test.sh x11 | grep "pointer\|shapes"
+# The clients so far speak TCP only. These watch through the real client in a browser, where video takes UDP.
+echo "== browser: video over UDP, 2% of the packets lost";  ./loss-test.sh bbr 30 2 15
+echo "== browser: UDP cut off and back";                    ./udp-test.sh 6 12 | awk 'NR % 3 == 0' | cut -c1-75
 if [ -n "$gpu" ]; then
   echo "== GPU, sway: bursts";               run $gpu rd-test-sway ./burst-test.sh 3000 10 "" | grep "$keep"
   echo "== GPU, sway: motion, sharp colour"; run $gpu rd-test-sway ./motion-test.sh 3000 8 '"chroma":"444",' | grep "$keep"

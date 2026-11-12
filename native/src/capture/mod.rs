@@ -31,6 +31,8 @@ pub struct Settings {
 pub struct Shared {
     /// Set by the session to end the capture.
     pub stop: AtomicBool,
+    /// Set by the session when its client needs a frame it can decode without any before it.
+    pub fresh: AtomicBool,
     /// The bitrate in kbit/s the session now allows; 0 until it sets one.
     pub kbps: AtomicU32,
     /// Set while that bitrate is still on its way up to what the link carries or the client wants.

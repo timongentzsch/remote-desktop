@@ -327,7 +327,7 @@ static int length_prefixed(struct nvenc *encoder, const uint8_t *bytes, int size
     return written;
 }
 
-static int nvenc_encode(struct encoder *base, uint8_t **data, int *keyframe, int *coarse)
+static int nvenc_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *coarse)
 {
     (void)coarse; /* stays unset: this encoder does not say */
     struct nvenc *encoder = (struct nvenc *)base;
@@ -358,6 +358,7 @@ static int nvenc_encode(struct encoder *base, uint8_t **data, int *keyframe, int
         .bufferFmt = encoder->full_chroma ? NV_ENC_BUFFER_FORMAT_YUV444 : NV_ENC_BUFFER_FORMAT_IYUV,
         .pictureStruct = NV_ENC_PIC_STRUCT_FRAME,
         .inputTimeStamp = encoder->frames++,
+        .encodePicFlags = fresh ? NV_ENC_PIC_FLAG_FORCEIDR : 0,
     };
     NV_ENC_LOCK_BITSTREAM stream = { .version = NV_ENC_LOCK_BITSTREAM_VER, .outputBitstream = encoder->output };
     /* Locking the output waits until the frame is encoded. */
