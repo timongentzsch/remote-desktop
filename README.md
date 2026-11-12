@@ -99,24 +99,6 @@ Whoever logs in controls the desktop session, so treat the address and password 
 - The udev rule lets every program of the user at the machine create input devices, not only this one.
 - The host listens on all network interfaces unless started with `--listen`.
 
-## Known limitations
-
-- One screen is shown at a time; with several, the settings offer the choice. That was tried with virtual
-  screens only: whether the pointer lands on the chosen one of several real monitors is untried, and a
-  rotated screen is not turned upright.
-- Drawn by the client, the pointer takes on the remote pointer's shape on X11, GNOME and KDE; Hyprland and
-  Sway do not tell it, so there it stays an arrow. KDE's was not seen working: its test desktop has no pointer.
-  Painted into the video by the host it always has its true shape.
-- "Sharp" colour (4:4:4) is decoded in software by Chrome.
-- When a connection that was slow gets faster, the bitrate follows at the next try: ten seconds after it was
-  cut, then at growing intervals of up to a minute. Each try costs a moment of padding.
-- The client is made for a keyboard and a mouse or trackpad, not for touch.
-- On X11, clipboard texts of some hundred kilobytes are not passed on, and the host needs `DISPLAY` in the
-  environment it is started from.
-- It was developed on a real Hyprland session. Sway, GNOME, KDE and X11 were only run headless in test
-  environments, so their login and lock screens, and input on them, are untried; so are aarch64 and GPUs
-  other than an RTX 4090.
-
 ## Build
 
 Needs Rust, a C compiler, `make` and, for x86, `nasm`. Clone with `--recurse-submodules`: x264 is built from
