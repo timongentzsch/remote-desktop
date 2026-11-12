@@ -38,7 +38,7 @@ pub fn run(address: &str) -> ! {
     let greeter = wait();
     // What only root may: the owner's password and certificate, the input devices. Then root is given up.
     let host = server::Host::open();
-    let listener = server::listen(address, &host);
+    let listener = server::listen(address);
     if let Err(error) = greeter.become_its_user() {
         fail(&format!("cannot become the login screen's user: {error}"));
     }
@@ -49,6 +49,15 @@ pub fn run(address: &str) -> ! {
         std::process::exit(0) // someone logged in, or the display manager stopped
     });
     server::serve(listener, host)
+}
+
+/// The user of a session as logind describes it in its directory, if the session is a login screen's. Only
+/// logind's word counts for whose processes are looked at: what a process has in its environment is its
+/// owner's to say, and this service hands whoever it takes for the login screen the port and the password.
+fn greeter_user(session: &str) -> Option<u32> {
+    let value = |name: &str| session.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix('='));
+    let user = value("UID")?.parse().ok().filter(|&user| user != 0)?;
+    (value("CLASS")? == GREETER.1).then_some(user)
 }
 
 /// Sleeps until there is a login screen.
@@ -82,13 +91,19 @@ fn wait() -> Greeter {
 /// The login screen, if a process says it belongs to one and knows a display. A Wayland one is preferred: a
 /// login screen on Wayland has an X server as well, for old programs.
 fn find() -> Option<Greeter> {
+    let users: Vec<u32> = fs::read_dir(SESSIONS)
+        .ok()?
+        .flatten()
+        .filter_map(|session| greeter_user(&fs::read_to_string(session.path()).ok()?))
+        .collect();
     let mut found: Vec<Greeter> = fs::read_dir("/proc")
         .ok()?
         .flatten()
         .filter_map(|entry| {
             let process = entry.file_name().to_str()?.parse().ok()?;
-            let desktop = desktop_of(&fs::read(entry.path().join("environ")).ok()?)?;
             let owner = entry.metadata().ok()?;
+            let desktop =
+                desktop_of(&fs::read(entry.path().join("environ")).ok().filter(|_| users.contains(&owner.uid()))?)?;
             Some(Greeter { process, user: owner.uid(), group: owner.gid(), desktop })
         })
         .collect();
@@ -151,5 +166,16 @@ mod tests {
         assert!(desktop_of(b"XDG_SESSION_CLASS=greeter\0XDG_RUNTIME_DIR=/run/user/961\0").is_none(), "no display");
         assert!(desktop_of(b"XDG_SESSION_CLASS=user\0WAYLAND_DISPLAY=wayland-1\0").is_none(), "a user's session");
         assert!(desktop_of(b"XDG_SESSION_CLASS=greeter\0DISPLAY=:0\0XAUTHORITY=/run/sddm/xauth\0").is_some(), "X11");
+    }
+
+    #[test]
+    fn only_a_login_screen_s_session_names_its_user() {
+        let session = |class: &str, user: u32| {
+            format!("# This is private data.\nUID={user}\nUSER=sddm\nACTIVE=1\nCLASS={class}\nLEADER=1203\n")
+        };
+        assert_eq!(greeter_user(&session("greeter", 961)), Some(961));
+        assert_eq!(greeter_user(&session("user", 1000)), None);
+        assert_eq!(greeter_user(&session("greeter", 0)), None, "root is never given up for root");
+        assert_eq!(greeter_user("CLASS=greeter\n"), None);
     }
 }

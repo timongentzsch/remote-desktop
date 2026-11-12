@@ -32,10 +32,15 @@ const PADDING_PIECE: usize = 16 * 1024;
 /// Over UDP a piece of video gets spare datagrams for what the link loses (see fec.rs). The link is taken to
 /// lose at least this share, however little it lost lately: loss comes in runs.
 const LEAST_LOSS: f64 = 0.01;
-/// The link has room for more when all that it was given up to a round trip and this long ago has arrived or
-/// is given up as lost. The round trip is the shortest there has been: one that a queue has made longer would
-/// make room for that queue.
-const AHEAD: Duration = Duration::from_millis(50);
+/// Over UDP the link has room for more when all that it was given up to a round trip and the client's patience
+/// ago has arrived or is given up as lost. The round trip is the shortest of late: one that a queue has made
+/// longer would make room for that queue. What the rate sends in this many milliseconds may be older and
+/// still under way: packets that are lost count as under way until the connection gives them up, which it
+/// takes its time over.
+const STRAGGLERS: u64 = 30;
+/// On a way whose round trip swings by itself, the patience is at least this many times the usual swing: a
+/// round trip of 45 to 210 ms, as a relay showed, would else look like a full link most of the time.
+const SWINGS: u32 = 4;
 /// How long a client that is behind may stand still, a round trip apart, before it is given a frame to begin
 /// with.
 const STUCK: Duration = Duration::from_millis(300);
@@ -44,6 +49,8 @@ const STUCK: Duration = Duration::from_millis(300);
 struct FromClient {
     /// The highest bitrate it wants, in kbit/s.
     ceiling: AtomicU32,
+    /// For how long it would rather have video fall behind than see the picture made coarser, in milliseconds.
+    patience: AtomicU32,
     /// The round trip it last measured, in milliseconds; 0 while it has none to report.
     round_trip: AtomicU32,
     /// How many bytes it said had arrived, and when it said so.
@@ -73,16 +80,20 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
         outbox.push_control(ws::frame(ws::TEXT, message.as_bytes()));
     }
     // Where the host has a UDP side, the client is told how to open its end of a link.
-    let link = host.udp.get().map(|udp| {
-        let link = udp.link();
+    let link = host.udp.get().map(|udp| udp.link());
+    let way_by_udp = || {
+        let (udp, link) = (host.udp.get()?, link.as_ref()?);
         let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
         let message = serde_json::json!(["udp", udp.port, hex(&udp.fingerprint()), hex(&link.token)]).to_string();
-        outbox.push_control(ws::frame(ws::TEXT, message.as_bytes()));
-        link
-    });
+        Some(ws::frame(ws::TEXT, message.as_bytes()))
+    };
+    if let Some(message) = way_by_udp() {
+        outbox.push_control(message);
+    }
     let shared = Arc::new(Shared::default());
     let told = Arc::new(FromClient {
         ceiling: ceiling(&login["bitrate"]).into(),
+        patience: patience(&login["patience"]).into(),
         round_trip: 0.into(),
         received: None.into(),
     });
@@ -168,6 +179,14 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
             }
             Some("scroll") => host.input.scroll(number(1) as i32, number(2) as i32),
             Some("bitrate") => told.ceiling.store(ceiling(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed),
+            Some("patience") => told.patience.store(patience(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed),
+            // The page asks again how to reach the UDP side when it could not: the certificate there is renewed
+            // every day, and the fingerprint it was told may be yesterday's.
+            Some("udp") => {
+                if let Some(message) = way_by_udp() {
+                    outbox.push_control(message);
+                }
+            }
             Some("clipboard") => {
                 if let (Some(inbox), Some(text)) = (&inbox, parts.get(1).and_then(Value::as_str)) {
                     inbox.put(text.to_string());
@@ -213,6 +232,12 @@ fn settings(login: &Value) -> Settings {
         half_size: login["size"] == "half",
         screen: login["screen"].as_str().filter(|name| !name.is_empty()).map(str::to_owned),
     }
+}
+
+/// For how long a client would rather have video fall behind than see the picture made coarser, in
+/// milliseconds: from response first to quality first. Nothing means the middle.
+fn patience(wanted: &Value) -> u32 {
+    wanted.as_i64().or_else(|| wanted.as_str()?.parse().ok()).map_or(100, |patience| patience.clamp(25, 400) as u32)
 }
 
 /// The highest bitrate a client asks for, in kbit/s. Nothing or zero leaves the choice to the host.
@@ -302,22 +327,24 @@ impl<'a> Datagrams<'a> {
         if now.duration_since(at) >= Duration::from_secs(1)
             && let Some(fared) = self.link.fared(now)
         {
-            let lately = (fared.lost - lost) as f64 / ((fared.sent - sent) as f64).max(1.0);
+            // Another connection may have taken the link, whose counts begin anew.
+            let (more_sent, more_lost) = (fared.sent.saturating_sub(sent), fared.lost.saturating_sub(lost));
+            let lately = more_lost as f64 / (more_sent as f64).max(1.0);
             (self.loss, self.lately) = (lately.max(0.8 * self.loss), lately);
             self.counted = (now, fared.sent, fared.lost);
         }
     }
 
-    /// Whether the link has taken what it was given, but for the latest (see `AHEAD`).
-    fn has_room(&mut self, now: Instant) -> bool {
+    /// Whether the link has taken what it was given, but for the latest and for stragglers.
+    fn has_room(&mut self, now: Instant, kbps: u32, patience: Duration) -> bool {
         let Some(fared) = self.link.fared(now) else { return true };
         self.given.push_back((now, self.written));
         // Of the moments noted, the latest that is long enough ago says what should be done with by now.
-        let long_ago = |at: Instant| now.duration_since(at) >= fared.shortest + AHEAD;
+        let long_ago = |at: Instant| now.duration_since(at) >= fared.shortest + patience.max(SWINGS * fared.swing);
         while self.given.get(1).is_some_and(|&(at, _)| long_ago(at)) {
             self.given.pop_front();
         }
-        let done = self.written.saturating_sub(fared.under_way);
+        let done = self.written.saturating_sub(fared.under_way) + kbps as u64 * 125 * STRAGGLERS / 1000;
         self.given.front().is_none_or(|&(at, given)| !long_ago(at) || done >= given)
     }
 
@@ -350,7 +377,7 @@ impl<'a> Datagrams<'a> {
 /// link while the client can be reached that way, and over the connection otherwise.
 fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromClient, link: Option<&Link>) {
     let mut congestion = connection.congestion();
-    let mut controller = Controller::new(Instant::now(), told.ceiling.load(Ordering::Relaxed));
+    let mut controller = Controller::new(Instant::now(), told.ceiling.load(Ordering::Relaxed), 0);
     let (mut written, mut patience, mut noise) = (0, LOOK, 0x9E37_79B9_7F4A_7C15);
     let (mut reported, mut frames, mut sending, mut send) = (Instant::now(), 0, Duration::ZERO, 0.0);
     let mut datagrams = link.map(Datagrams::new);
@@ -374,19 +401,18 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
         // Over UDP nothing holds the writer up as a full connection does. So video waits there while the link
         // has not taken what it was given: the capture skips frames meanwhile, as it does over TCP, and the
         // bitrate goes by that.
-        let room = match &mut datagrams {
-            Some(datagrams) if by_udp => datagrams.has_room(Instant::now()),
-            _ => true,
-        };
+        let mut udp = datagrams.as_mut().filter(|_| by_udp); // the link, while video takes it
+        let patient = Duration::from_millis(told.patience.load(Ordering::Relaxed).into());
+        let room = udp.as_mut().is_none_or(|udp| udp.has_room(Instant::now(), kbps, patient));
         if !room {
             patience = patience.min(PROBE_LOOK);
         }
         let mut left = 0; // frames that leave in this round
-        match (outbox.next(patience, room), &mut datagrams) {
+        match (outbox.next(patience, room), &mut udp) {
             (Next::Closed, _) => break,
             (Next::Nothing, _) => {}
-            (Next::Send(piece, Some(ready)), Some(datagrams)) if by_udp => {
-                datagrams.piece(&piece, kbps);
+            (Next::Send(piece, Some(ready)), Some(udp)) => {
+                udp.piece(&piece, kbps);
                 (left, sending) = (1, sending + ready.elapsed());
             }
             (Next::Send(bytes, ready), _) => {
@@ -405,15 +431,12 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
         let now = Instant::now();
         congestion.review(now);
         let (coarse, held_up) = (shared.coarse.swap(0, Ordering::Relaxed), outbox.take_held_up());
-        if let Some(datagrams) = &mut datagrams {
-            datagrams.measure(now);
+        if let Some(udp) = &mut udp {
+            udp.measure(now);
         }
         let ceiling = told.ceiling.load(Ordering::Relaxed);
         // Over UDP the connection itself says what arrived and how long the way is; over TCP the client does.
-        let fared = datagrams
-            .as_ref()
-            .filter(|_| by_udp)
-            .and_then(|datagrams| Some((datagrams.written, datagrams.link.fared(now)?)));
+        let fared = udp.as_ref().and_then(|udp| Some((udp.written, udp.link.fared(now)?)));
         let (sent, received, round_trip) = match fared {
             Some((sent, fared)) => (sent, Some(fared.arrived), Some(fared.round_trip)),
             None => {
@@ -422,22 +445,31 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
             }
         };
         let round_trip = round_trip.filter(|round_trip| !round_trip.is_zero());
-        let lost = datagrams.as_ref().filter(|_| by_udp).map(|datagrams| datagrams.lately);
-        let reading =
-            Reading { now, written: sent, received, round_trip, lost, frames: left, coarse, held_up, ceiling };
+        let lost = udp.as_ref().map(|udp| udp.lately);
+        let reading = Reading {
+            now,
+            written: sent,
+            received,
+            round_trip,
+            lost,
+            frames: left,
+            coarse,
+            held_up,
+            ceiling,
+            patience: patient,
+        };
         if switched {
             // What was measured on the way so far says nothing about this one: the rate is found anew.
-            controller = Controller::new(now, ceiling);
+            controller = Controller::new(now, ceiling, sent);
         }
         let verdict = controller.step(&reading);
         kbps = verdict.kbps;
         // Over UDP the spare datagrams take their share of the rate.
-        let share = datagrams.as_ref().filter(|_| by_udp).map_or(1.0, Datagrams::share);
+        let share = udp.as_ref().map_or(1.0, |udp| udp.share());
         shared.kbps.store((kbps as f64 * share) as u32, Ordering::Relaxed);
         shared.climbing.store(verdict.climbing, Ordering::Relaxed);
-        if by_udp
-            && let Some(datagrams) = &mut datagrams
-            && datagrams.needs_fresh(now, reading.round_trip.unwrap_or_default())
+        if let Some(udp) = &mut udp
+            && udp.needs_fresh(now, reading.round_trip.unwrap_or_default())
         {
             shared.fresh.store(true, Ordering::Relaxed);
         }
@@ -454,17 +486,17 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
         // Padding waits for room as video does, or it would keep the link full and the video out.
         if verdict.padding > 0 && room {
             let due = verdict.padding.min(PADDING_PIECE);
-            match &mut datagrams {
-                Some(datagrams) if by_udp => {
-                    let room = datagrams.link.room();
-                    let pieces = (0..due.div_ceil(room)).map(|_| {
-                        let mut piece = padding(room, &mut noise);
-                        piece.truncate(room);
+            match &mut udp {
+                Some(udp) => {
+                    let size = udp.link.room();
+                    let pieces = (0..due.div_ceil(size)).map(|_| {
+                        let mut piece = padding(size, &mut noise);
+                        piece.truncate(size);
                         piece
                     });
-                    datagrams.send(pieces.collect(), kbps);
+                    udp.send(pieces.collect(), kbps);
                 }
-                _ => {
+                None => {
                     let piece = ws::frame(ws::BINARY, &padding(due, &mut noise));
                     if connection.write(&piece).is_err() {
                         break;

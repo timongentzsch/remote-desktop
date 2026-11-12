@@ -142,7 +142,7 @@ pub fn install(tailscale: bool) {
         run("systemctl", &["--user", "daemon-reload"]);
         run("systemctl", &["--user", "enable", "remote-desktop.service"]);
         run("systemctl", &["--user", "restart", "remote-desktop.service"]);
-        let draft = std::env::temp_dir().join(LOGIN_UNIT);
+        let draft = config_directory().join("remote-desktop").join(LOGIN_UNIT); // where no one else writes
         write(draft.clone(), &login_unit());
         run("sudo", &["install", "-m644", &draft.to_string_lossy(), LOGIN_UNIT_PATH]);
         let _ = fs::remove_file(draft);

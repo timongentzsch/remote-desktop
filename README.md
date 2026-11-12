@@ -5,7 +5,7 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
 - **Nothing to install where you sit.** Open the address in Chrome, or install the page as an app from
   there. There is no client program.
 - **One file on the host, for the session you are already using.** The same binary serves GNOME, KDE,
-  Hyprland, Sway and X11 desktops, on x86_64 and aarch64, and sets itself up with one command.
+  Hyprland, Sway and X11 desktops, and sets itself up with one command. It is built for x86_64 and aarch64.
 - **Complete without configuration.** The screen as H.264, the sound as Opus, the clipboard, keyboard and
   pointer, all encrypted. An NVIDIA card's hardware encoder is used where there is one (driver 470 or
   newer, one viewer at a time), the built-in x264 everywhere else.
@@ -14,6 +14,8 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
 - **Made to feel local.** A still screen costs nothing, a busy one is encoded in a few milliseconds, the
   pointer is drawn by the client, and the bitrate follows the connection. Video travels over UDP with spare
   packets, so that a lost one costs no wait: with one packet in twenty lost, frames still arrived on time.
+- **Yours to weigh.** One control says what gives way when the connection is not enough, response or
+  quality, and takes effect at once. Frame rate, delay and bitrate can be pinned to a corner of the picture.
 
 ## What it is not
 
@@ -61,9 +63,10 @@ and prints the address to open. `remote-desktop uninstall` undoes all of it exce
 certificate.
 
 While the machine shows its login screen, the system service shows it too, under the same address and
-password, and the page carries on by itself into the desktop once you have logged in there. This was seen
-working with SDDM. A login at a text console has no picture to show, and without systemd there is no such
-service: there, let the display manager log the user in automatically and lock the session at once.
+password. When you log in there it leaves the port to the desktop's own host, and the page, which takes up a
+session that ended unasked for half a minute, connects to that one. The login screen was seen working with
+SDDM. A login at a text console has no picture to show, and without systemd there is no such service: there,
+let the display manager log the user in automatically and lock the session at once.
 
     remote-desktop password                  change the login password
     remote-desktop password --none           allow access without a password
@@ -95,9 +98,10 @@ the two it is.
 Whoever logs in controls the desktop session, so treat the address and password like an SSH login.
 
 - Everything goes over TLS, the video over UDP included (as QUIC). The UDP port answers anyone who can reach
-  it, but carries nothing without a token that only a logged-in session's page is given. After a wrong password no login is accepted for a second, whichever connection
-  it came from. Use a long password where the port is reachable from networks you do not trust, or better,
-  reach the host through Tailscale or another VPN.
+  it, but carries nothing without a token that only a logged-in session's page is given.
+- After a wrong password no login is accepted for a second, whichever connection it came from. Use a long
+  password where the port is reachable from networks you do not trust, or better, reach the host through
+  Tailscale or another VPN.
 - The client keeps the password in the browser's local storage after a successful login. Anyone with access
   to that browser profile can read it.
 - With `password --none`, anyone who can reach port 8765 controls the desktop. Other web sites cannot do so
@@ -142,6 +146,7 @@ builds them and publishes them when a version tag is pushed.
       audio.rs, input.rs       sound as Opus; keyboard and pointer through uinput
       compositor.rs, gnome.rs, xserver.rs
                                the display servers' connections that the above share
+    tests/                     the regression on every kind of desktop, and tools for measuring
 
 To extend it: another way of capturing a screen is a module in `capture/` with one function, `run`, that
 feeds a `Stream`; another encoder implements `encoder_ops` in `stream/encoder.h`; another desktop's

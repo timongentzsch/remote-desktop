@@ -23,11 +23,10 @@ const FIRST_REST: Duration = Duration::from_secs(1);
 
 /// Frames are judged over this long at a time.
 const WINDOW: Duration = Duration::from_millis(750);
-/// The link is too slow for the rate when in that time frames are held up for longer than this in all, each
-/// waiting for the one before it to leave. Frames that are merely large keep the link busy without holding
-/// any up. Once it has happened the window is judged at once, if it has lasted long enough to tell what the
-/// link delivered.
-const HELD_UP_LIMIT: Duration = Duration::from_millis(75);
+/// The link is too slow for the rate when in that time frames are held up for longer than the client has
+/// patience for (see `Reading::patience`), each waiting for the one before it to leave. Frames that are merely
+/// large keep the link busy without holding any up. Once it has happened the window is judged at once, if it
+/// has lasted long enough to tell what the link delivered.
 const SHORTEST_WINDOW: Duration = Duration::from_millis(250);
 /// It also lags when the client's round trip is this far above its shortest.
 const LATE_LIMIT: Duration = Duration::from_millis(250);
@@ -101,8 +100,10 @@ pub struct Reading {
     pub coarse: u32,
     /// and for how long the capture could not hand its next frame over because the one before had not left.
     pub held_up: Duration,
-    /// The highest bitrate the client wants, in kbit/s.
+    /// The highest bitrate the client wants, in kbit/s, and for how long it would rather have video fall behind
+    /// than see the picture made coarser.
     pub ceiling: u32,
+    pub patience: Duration,
 }
 
 pub struct Verdict {
@@ -215,13 +216,14 @@ fn carried(from: Option<Mark>, to: Option<Mark>) -> Option<f64> {
 }
 
 impl Controller {
-    pub fn new(now: Instant, ceiling: u32) -> Self {
+    /// A controller for a connection that has been given `written` bytes so far.
+    pub fn new(now: Instant, ceiling: u32, written: u64) -> Self {
         Self {
             kbps: start(ceiling),
             ceiling,
             limited: false,
             wanting: false,
-            window: Window { since: now, written: 0, arrived: None, frames: 0, coarse: 0, held_up: Duration::ZERO },
+            window: Window { since: now, written, arrived: None, frames: 0, coarse: 0, held_up: Duration::ZERO },
             probe: None,
             resting_until: now + FIRST_REST,
             settled_at: now,
@@ -270,7 +272,7 @@ impl Controller {
             return;
         }
         let lasted = reading.now.duration_since(self.window.since);
-        let backed_up = self.window.held_up > HELD_UP_LIMIT;
+        let backed_up = self.window.held_up > reading.patience;
         if lasted < if backed_up { SHORTEST_WINDOW } else { WINDOW } {
             return;
         }
@@ -338,7 +340,7 @@ impl Controller {
         let explained = (pace * (reading.round_trip.unwrap_or_default() + REPORT + QUEUE_LIMIT).as_secs_f64()) as u64;
         let under_way = sent.saturating_sub(arrived.1.saturating_sub(probe.arrived.1));
         let full = rose(reading.round_trip, probe.round_trip, QUEUE_LIMIT) || under_way > explained + UNDER_WAY;
-        let holding_up = self.window.held_up > HELD_UP_LIMIT;
+        let holding_up = self.window.held_up > reading.patience;
         if elapsed < probe.length && !full && !holding_up {
             if probe.halfway.is_none() && arrived.0 >= probe.since + probe.length / 2 {
                 probe.halfway = Some(arrived);
@@ -394,6 +396,7 @@ mod tests {
 
     const TICK: Duration = Duration::from_millis(5);
     const ROUND_TRIP: Duration = Duration::from_millis(20);
+    const PATIENCE: Duration = Duration::from_millis(75);
 
     /// A session on a made-up link that carries `capacity` kbit/s, with a client that reports ten times a
     /// second. A link that `queues` takes everything at once and delivers it late, as a path with a large
@@ -428,7 +431,7 @@ mod tests {
         fn new(capacity: u32) -> Self {
             let now = Instant::now();
             Self {
-                controller: Controller::new(now, HIGHEST),
+                controller: Controller::new(now, HIGHEST, 0),
                 now,
                 capacity,
                 queues: false,
@@ -490,6 +493,7 @@ mod tests {
                     coarse: 0,
                     held_up,
                     ceiling: self.ceiling,
+                    patience: PATIENCE,
                 });
                 let padding = (verdict.padding as u64).min(room);
                 self.written += padding;
@@ -559,7 +563,7 @@ mod tests {
     #[test]
     fn coarse_frames_ask_for_more_even_where_the_rate_is_not_used() {
         let now = Instant::now();
-        let mut controller = Controller::new(now, HIGHEST);
+        let mut controller = Controller::new(now, HIGHEST, 0);
         let mut probed = false;
         for tick in 0..600 {
             let at = now + tick * TICK;
@@ -573,6 +577,7 @@ mod tests {
                 coarse: 1,
                 held_up: Duration::ZERO,
                 ceiling: HIGHEST,
+                patience: PATIENCE,
             });
             probed |= verdict.probing;
         }
@@ -594,7 +599,7 @@ mod tests {
     #[test]
     fn a_client_that_reports_nothing_keeps_its_rate() {
         let now = Instant::now();
-        let mut controller = Controller::new(now, HIGHEST);
+        let mut controller = Controller::new(now, HIGHEST, 0);
         for tick in 0..2000 {
             let verdict = controller.step(&Reading {
                 now: now + tick * TICK,
@@ -606,6 +611,7 @@ mod tests {
                 coarse: 0,
                 held_up: Duration::ZERO,
                 ceiling: HIGHEST,
+                patience: PATIENCE,
             });
             assert_eq!((verdict.kbps, verdict.padding), (start(HIGHEST), 0));
         }
@@ -614,7 +620,7 @@ mod tests {
     #[test]
     fn a_link_that_drops_what_it_does_not_carry_is_held_to_what_arrives() {
         // 4000 kbit/s are sent, half of it gets lost, and nothing is held up or late.
-        let (start, mut controller) = (Instant::now(), Controller::new(Instant::now(), HIGHEST));
+        let (start, mut controller) = (Instant::now(), Controller::new(Instant::now(), HIGHEST, 0));
         let mut kbps = 0;
         for tick in 1..=600u64 {
             let (now, written) = (start + TICK * tick as u32, tick * 2500);
@@ -628,6 +634,7 @@ mod tests {
                 coarse: 0,
                 held_up: Duration::ZERO,
                 ceiling: HIGHEST,
+                patience: PATIENCE,
             });
             kbps = verdict.kbps;
         }

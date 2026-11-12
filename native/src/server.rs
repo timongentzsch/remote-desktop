@@ -34,7 +34,7 @@ pub struct Host {
     pub password: Vec<u8>,
     /// Replaced once a day, so that a renewed certificate is picked up without a restart.
     tls: Mutex<Arc<ServerConfig>>,
-    /// The UDP side, once the port is taken and if its UDP twin could be had.
+    /// The UDP side, once the host serves and if the UDP port could be had.
     pub udp: OnceLock<quic::Endpoint>,
 }
 
@@ -66,22 +66,15 @@ pub fn run(address: &str) -> ! {
             }
         }
     });
-    serve(listen(address, &host), host)
+    serve(listen(address), host)
 }
 
-/// Takes the port, waiting a while if another host still has it, and then the UDP port of the same number for
-/// the host's UDP side. Without that one, video stays on TCP.
-pub fn listen(address: &str, host: &Host) -> TcpListener {
+/// Takes the port, waiting a while if another host still has it.
+pub fn listen(address: &str) -> TcpListener {
     let began = Instant::now();
     loop {
         match TcpListener::bind(address) {
-            Ok(listener) => {
-                match quic::Endpoint::open(address) {
-                    Ok(udp) => drop(host.udp.set(udp)),
-                    Err(error) => eprintln!("remote-desktop: no UDP on {address}, video stays on TCP: {error}"),
-                }
-                return listener;
-            }
+            Ok(listener) => return listener,
             Err(error) if error.kind() == ErrorKind::AddrInUse && began.elapsed() < PORT_PATIENCE => {
                 thread::sleep(Duration::from_millis(250))
             }
@@ -90,8 +83,13 @@ pub fn listen(address: &str, host: &Host) -> TcpListener {
     }
 }
 
-/// Answers every connection, each on a thread of its own.
+/// Answers every connection, each on a thread of its own. First it takes the UDP port of the listener's number
+/// for the host's UDP side; without that one, video stays on TCP.
 pub fn serve(listener: TcpListener, host: Arc<Host>) -> ! {
+    match listener.local_addr().and_then(|address| quic::Endpoint::open(&address.to_string())) {
+        Ok(udp) => drop(host.udp.set(udp)),
+        Err(error) => eprintln!("remote-desktop: no UDP side, video stays on TCP: {error}"),
+    }
     for socket in listener.incoming().flatten() {
         let host = host.clone();
         thread::spawn(move || {

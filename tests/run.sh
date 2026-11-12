@@ -46,7 +46,7 @@ echo "== X11: three monitors";          run rd-test-x11 ./screens-test.sh x11 | 
 echo "== X11: pointer shapes";          run rd-test-x11 ./pointer-test.sh x11 | grep "pointer\|shapes"
 # The clients so far speak TCP only. These watch through the real client in a browser, where video takes UDP.
 echo "== browser: video over UDP, 2% of the packets lost";  ./loss-test.sh bbr 30 2 15
-echo "== browser: UDP cut off and back";                    ./udp-test.sh 6 12 | awk 'NR % 3 == 0' | cut -c1-75
+echo "== browser: UDP cut off and back";                    ./udp-test.sh 6 12 | awk 'NR % 3 == 0' | cut -c1-110
 if [ -n "$gpu" ]; then
   echo "== GPU, sway: bursts";               run $gpu rd-test-sway ./burst-test.sh 3000 10 "" | grep "$keep"
   echo "== GPU, sway: motion, sharp colour"; run $gpu rd-test-sway ./motion-test.sh 3000 8 '"chroma":"444",' | grep "$keep"
@@ -54,5 +54,6 @@ if [ -n "$gpu" ]; then
   echo "== GPU, X11: motion";                run $gpu rd-test-x11 ./x11-test.sh 8 "" motion | grep "$keep"
   echo "== GPU: 60 overlapping sessions";    run $gpu rd-test-sway ./sessions-test.sh 60 "" 0.6 | grep "host exited\|encoding" | sort | uniq -c
   echo "== GPU: two viewers";                run $gpu rd-test-sway ./two-viewers.sh | grep "$keep"
+  echo "== GPU, browser: UDP cut off and back"; GPU="$gpu" ./udp-test.sh 6 12 | awk 'NR % 3 == 0 || /encoding/' | cut -c1-110
 fi
 echo "== done"

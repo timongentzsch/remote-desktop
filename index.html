@@ -2,47 +2,48 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#0B0C0E">
+<meta name="theme-color" content="#000000">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg">
 <title>Remote Desktop</title>
 <style>
+  /* White on black, square, one typeface: JetBrains Mono where the device has it, as itself or among the Nerd
+     Fonts, and the system's own otherwise. The page is served by the host alone, so it brings no font along. */
   :root {
-    --ground: #0B0C0E; --surface: #15171A; --raised: #1D2024; --line: #2A2E34;
-    --text: #ECEEF1; --muted: #A3A9B3; --accent: #6AA5FF; --on-accent: #0B0C0E;
-    --warn: #F2A65A; --warn-text: #F2C48D; --warn-ground: #2B2118; --warn-line: #5A4630;
-    --part-encode: #9CC3FF; --part-send: #6AA5FF; --part-network: #3F7FE0; --part-decode: #737B87;
-    --sans: Inter, system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, monospace;
-    --control: 44px; --radius: 10px; --gap: 12px;
-    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23A3A9B3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    --ground: #000; --text: #fff; --muted: #a6a6a6; --dim: #8c8c8c; --line: #333;
+    --mono: "JetBrains Mono", "JetBrainsMono Nerd Font", "JetBrainsMono NF", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    --control: 32px; --field: 48px; --inset: 12px; --edge: 16px;
     color-scheme: dark;
   }
-  html, body { height: 100%; margin: 0; overflow: hidden; background: var(--ground); color: var(--text); font: 14px/1.5 var(--sans); }
-  button, input, select { font: inherit; color: inherit; }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: var(--ground); color: var(--text); font: 13px/1.4 var(--mono); }
+  button, input, select { font: inherit; color: inherit; border-radius: 0; }
   button { cursor: pointer; }
   [hidden] { display: none !important; }
+  :focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+  /* In the panel everything sits edge to edge, so what has the focus is marked inside its own edges. */
+  .panel :focus-visible { outline-offset: -2px; }
 
   /* Connect screen */
-  .connect { position: fixed; inset: 0; box-sizing: border-box; padding: 24px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 40px; }
-  .card { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 28px; }
-  .host { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
-  .mark rect:last-child { fill: var(--accent); }
-  .host h1 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
-  .field { display: flex; flex-direction: column; gap: var(--gap); }
-  .field label, .setting, .stat span, .delay > span { font-size: 12px; color: var(--muted); }
-  .field label { font-size: 13px; font-weight: 500; }
-  .field input { height: 48px; box-sizing: border-box; padding: 0 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); font-size: 16px; outline-color: var(--accent); }
-  .primary { height: 48px; border: 0; border-radius: var(--radius); background: var(--accent); color: var(--on-accent); font-size: 16px; font-weight: 600; }
-  .option { display: flex; align-items: flex-start; gap: var(--gap); min-height: var(--control); cursor: pointer; }
-  .option input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); }
-  .option small { display: block; font-size: 13px; color: var(--muted); }
-  .summary { margin: 0; min-height: 1.5em; font: 12px var(--mono); color: var(--muted); text-align: center; }
-  .problem { color: var(--warn-text); }
+  .connect { position: fixed; inset: 0; box-sizing: border-box; padding: 24px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 32px; }
+  .card { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 32px; }
+  .host { display: flex; align-items: center; gap: var(--edge); }
+  .host h1 { margin: 0; font-size: 16px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; }
+  .field { display: grid; grid-template-columns: 1fr auto; row-gap: 8px; }
+  .field label { grid-column: 1 / -1; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .field input { min-width: 0; height: var(--field); box-sizing: border-box; padding: 0 14px; border: 1px solid var(--text); border-right: 0; background: var(--ground); font-size: 16px; letter-spacing: .2em; }
+  .primary { height: var(--field); padding: 0 22px; border: 1px solid var(--text); background: var(--text); color: var(--ground); font-weight: 500; letter-spacing: .08em; text-transform: uppercase; }
+  .open .field { grid-template-columns: 1fr; }
   .open .field label, .open .field input { display: none; }
+  .option { display: flex; align-items: flex-start; gap: 14px; cursor: pointer; }
+  .option input { appearance: none; flex: none; width: 18px; height: 18px; margin: 0; border: 1px solid var(--text); background: var(--ground); }
+  .option input:checked { background: var(--text); box-shadow: inset 0 0 0 4px var(--ground); }
+  .option small { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); }
+  .summary { margin: 0; min-height: 1.4em; font-size: 12px; color: var(--muted); text-align: center; }
+  .problem { color: var(--text); }
 
   /* Session */
   canvas { display: none; width: 100%; height: 100%; object-fit: contain; background: #000; }
-  .overlay { display: none; position: fixed; left: 0; right: 0; bottom: 16px; box-sizing: border-box; padding: 0 16px; flex-direction: column; align-items: center; gap: var(--gap); pointer-events: none; }
+  .overlay { display: none; position: fixed; left: 0; right: 0; bottom: var(--edge); box-sizing: border-box; padding: 0 var(--edge); flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
   .overlay > * { pointer-events: auto; }
   .connected .connect { display: none; }
   .connected canvas { display: block; }
@@ -50,51 +51,82 @@
   canvas { cursor: var(--pointer, default); }
   .remote-cursor canvas { cursor: none; }
 
-  .pill { height: var(--control); padding: 0 16px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 22px; background: var(--surface); font: 500 13px var(--mono); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
-  .slow .dot { background: var(--warn); }
+  .pill { height: var(--control); padding: 0 var(--inset); display: flex; align-items: center; gap: 10px; border: 1px solid var(--text); background: var(--ground); }
+  .dot { width: 8px; height: 8px; background: currentColor; }
+  .slow .pill { background: var(--text); color: var(--ground); font-weight: 500; }
+  /* While a session that ended is being taken up again, the pill stays in sight, hollow and dashed. */
+  .waiting .pill { translate: none; border-style: dashed; }
+  .waiting .dot { box-sizing: border-box; border: 1px solid currentColor; background: none; }
   .pill svg { transition: rotate .15s; }
   /* The pill waits below the bottom edge and slides in when asked for; it lingers a moment before leaving. */
-  .pill { translate: 0 calc(100% + 2 * var(--gap)); transition: translate .25s ease .4s; }
+  .pill { translate: 0 calc(100% + 2 * var(--edge)); transition: translate .25s ease .4s; }
   .pill-shown .pill, .panel-open .pill, .pill:focus-visible { translate: none; transition-delay: 0s; }
   @media (hover: none) { .pill { translate: none; } }
   @media (prefers-reduced-motion: reduce) { .pill { transition-duration: 0s; } }
   .panel-open .pill svg { rotate: 180deg; }
 
-  .panel { width: 100%; max-width: 760px; box-sizing: border-box; padding: 20px; display: flex; flex-direction: column; gap: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
-  .notice { display: none; margin: 0; padding: 10px 14px; border-radius: var(--radius); background: var(--warn-ground); color: var(--warn-text); }
+  /* The numbers, pinned to a corner of the picture where that is chosen. */
+  .readout { display: none; position: fixed; padding: 6px 10px; gap: 14px; background: var(--ground); font-size: 12px; pointer-events: none; }
+  .connected[data-pin]:not([data-pin="off"]) .readout { display: flex; }
+  [data-pin^="top"] .readout { top: var(--inset); }
+  [data-pin^="bottom"] .readout { bottom: var(--inset); }
+  [data-pin$="left"] .readout { left: var(--inset); }
+  [data-pin$="right"] .readout { right: var(--inset); }
+
+  .panel { width: 100%; max-width: 400px; box-sizing: border-box; display: flex; flex-direction: column; border: 1px solid var(--text); background: var(--ground); }
+  .panel > * { border-bottom: 1px solid var(--line); }
+  .notice { display: none; margin: 0; padding: 8px var(--inset); background: var(--text); color: var(--ground); }
   .slow .notice { display: block; }
-  .stats, .settings, .actions, .legend { display: flex; flex-wrap: wrap; gap: var(--gap); }
-  .stats { gap: 16px 24px; }
-  .stat { flex: 1 1 130px; display: flex; flex-direction: column; gap: 4px; }
-  .stat output { font: 500 20px var(--mono); white-space: nowrap; }
-  .delay { display: flex; flex-direction: column; gap: 10px; }
-  .bar { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; }
-  .bar i { flex: var(--weight, 1) 1 0; background: var(--part); transition: flex-grow .8s ease; }
+  .stats, .delay { padding: 10px var(--inset) 8px; display: flex; flex-direction: column; gap: 2px; }
+  .now { display: flex; gap: 18px; font-size: 16px; font-weight: 500; white-space: nowrap; }
+  .stats small, .says { font-size: 12px; color: var(--muted); }
+  .delay { gap: 6px; }
+  .bar { display: flex; gap: 2px; height: 6px; }
+  .bar i { flex: var(--weight, 1) 1 0; min-width: 2px; background: var(--text); transition: flex-grow .8s ease; }
+  .bar i:nth-child(even) { background: var(--dim); }
   @media (prefers-reduced-motion: reduce) { .bar i { transition: none; } }
-  .legend { gap: 6px 18px; font-size: 12px; color: var(--muted); }
-  .legend span { display: flex; align-items: center; gap: 6px; }
-  .legend i { width: 8px; height: 8px; border-radius: 2px; background: var(--part); }
-  .legend output { font-family: var(--mono); color: var(--text); }
-  .encode { --part: var(--part-encode); } .send { --part: var(--part-send); } .network { --part: var(--part-network); } .decode { --part: var(--part-decode); }
-  .slow .network, .slow .send { --part: var(--warn); }
-  .settings { display: grid; grid-template-columns: repeat(3, 1fr); }
-  @media (max-width: 480px) { .settings { grid-template-columns: repeat(2, 1fr); } }
-  .setting { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-  .setting select, .actions button { height: var(--control); padding: 0 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raised); color: var(--text); font-size: 14px; }
-  /* The browser's own arrow sits flush against the edge and cannot be moved, so the select draws one. */
-  .setting select { appearance: none; padding-right: 40px; background: var(--raised) var(--chevron) no-repeat right 14px center / 14px; text-overflow: ellipsis; }
-  .actions button { padding: 0 16px; font-weight: 500; }
-  .actions .spacer { flex: 1 1 0; }
-  .actions .leave { border-color: var(--warn-line); background: transparent; color: var(--warn-text); }
+  .legend { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+  .legend span:nth-child(even) { color: var(--muted); }
+  .priority { padding: 0 var(--inset) 8px; display: flex; flex-direction: column; }
+  .steps { display: flex; align-items: center; }
+  .steps span { flex: 1 1 0; }
+  .steps span:last-child { text-align: right; }
+  .steps label { width: 28px; height: var(--control); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .steps input { appearance: none; width: 12px; height: 12px; margin: 0; border: 1px solid var(--text); background: none; cursor: pointer; }
+  .steps input:checked { background: var(--text); }
+  .steps input:focus-visible { outline-offset: 2px; }
+  /* The lines between the settings are the grid's own ground showing through its gaps. */
+  .settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line); border-bottom-color: var(--text); }
+  .setting { min-width: 0; height: var(--control); padding: 0 var(--inset); display: flex; align-items: center; gap: 8px; background: var(--ground); color: var(--muted); white-space: nowrap; }
+  .setting.wide { grid-column: 1 / -1; }
+  .setting select { appearance: none; flex: 1 1 0; min-width: 0; height: 100%; margin-right: calc(-1 * var(--inset)); padding: 0 var(--inset) 0 0; border: 0; background: var(--ground); color: var(--text); text-align: right; text-align-last: right; text-overflow: ellipsis; cursor: pointer; }
+  /* A setting is marked as a whole, its name included, while its select has the focus or its list is open. */
+  .setting:has(select:focus-visible), .setting:has(select:open) { outline: 2px solid var(--text); outline-offset: -2px; }
+  .setting select:focus-visible { outline: none; }
+  /* Where the browser lets a select's list be drawn by the page (Chrome), it looks like the panel. Elsewhere it
+     is the system's menu. */
+  @supports (appearance: base-select) {
+    .setting select, .setting select::picker(select) { appearance: base-select; }
+    .setting select { justify-content: flex-end; align-items: center; }
+    .setting select::picker-icon { display: none; }
+    .setting select::picker(select) { margin: 2px 0; padding: 0; border: 1px solid var(--text); border-radius: 0; background: var(--ground); }
+    .setting option { min-height: var(--control); box-sizing: border-box; padding: 0 var(--inset); display: flex; align-items: center; background: var(--ground); color: var(--text); white-space: nowrap; }
+    .setting option::checkmark { display: none; }
+    .setting option:hover, .setting option:focus-visible { background: var(--line); outline: none; }
+    .setting option:checked { background: var(--text); color: var(--ground); }
+  }
+  .actions { display: flex; border-bottom: 0; }
+  .actions button { flex: 1 1 0; height: var(--control); border: 0; background: var(--ground); }
+  .actions button + button { border-left: 1px solid var(--text); }
 </style>
 
 <canvas></canvas>
+<div class="readout" aria-hidden="true"><span id="pin-fps"></span><span id="pin-delay"></span><span id="pin-bitrate"></span></div>
 
 <main class="connect">
   <form class="card" id="login">
     <div class="host">
-      <svg class="mark" aria-hidden="true" width="44" height="44" viewBox="0 0 44 44"><rect x="5" y="5" width="34" height="34" rx="9" fill="none" stroke="currentColor" stroke-width="3"/><rect x="14" y="14" width="16" height="16" rx="4"/></svg>
+      <svg class="mark" aria-hidden="true" width="32" height="32" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2"/><rect x="10" y="10" width="12" height="12" fill="currentColor"/></svg>
       <h1 id="host">Remote Desktop</h1>
     </div>
     <div class="field">
@@ -114,22 +146,31 @@
   <form class="panel" id="settings" hidden>
     <p class="notice" id="notice"></p>
     <div class="stats">
-      <div class="stat"><span>Frame rate</span><output id="now-fps">–</output></div>
-      <div class="stat"><span>Delay</span><output id="now-delay">–</output></div>
-      <div class="stat"><span>Bitrate, Mbit/s</span><output id="now-bitrate">–</output></div>
-      <div class="stat"><span>Picture</span><output id="now-picture">–</output></div>
+      <div class="now"><output id="now-fps">–</output><output id="now-delay">–</output><output id="now-bitrate">–</output></div>
+      <small id="now-picture">–</small>
     </div>
-    <div class="delay">
-      <span>Where the measured delay goes (capturing and displaying are not included)</span>
+    <div class="delay" title="Where the measured delay goes. Capturing and displaying are not included.">
       <div class="bar" role="img" aria-label="Delay split into encoding, sending, network and decoding">
         <i class="encode"></i><i class="send"></i><i class="network"></i><i class="decode"></i>
       </div>
       <div class="legend">
-        <span><i class="encode"></i>Encode <output class="encode">–</output></span>
-        <span><i class="send"></i>Send <output class="send">–</output></span>
-        <span><i class="network"></i>Network <output class="network">–</output></span>
-        <span><i class="decode"></i>Decode <output class="decode">–</output></span>
+        <span>Encode <output class="encode">–</output></span>
+        <span>Send <output class="send">–</output></span>
+        <span>Network <output class="network">–</output></span>
+        <span>Decode <output class="decode">–</output> ms</span>
       </div>
+    </div>
+    <div class="priority">
+      <div class="steps" role="radiogroup" aria-label="What gives way when the connection is not enough">
+        <span>Response</span>
+        <label><input type="radio" name="patience" value="25" aria-label="Response first"></label>
+        <label><input type="radio" name="patience" value="50" aria-label="Response"></label>
+        <label><input type="radio" name="patience" value="100" aria-label="Balanced" checked></label>
+        <label><input type="radio" name="patience" value="200" aria-label="Quality"></label>
+        <label><input type="radio" name="patience" value="400" aria-label="Quality first"></label>
+        <span>Quality</span>
+      </div>
+      <span class="says" id="patience-says"></span>
     </div>
     <div class="settings">
       <label class="setting">Bitrate
@@ -149,10 +190,10 @@
           <option value="15">15 fps</option>
         </select>
       </label>
-      <label class="setting">Resolution
+      <label class="setting">Size
         <select name="size">
           <option value="native">Native</option>
-          <option value="half">Half size</option>
+          <option value="half">Half</option>
         </select>
       </label>
       <label class="setting">Colour
@@ -162,9 +203,9 @@
         </select>
       </label>
       <label class="setting">Pointer
-        <select name="cursor" title="Drawn here: instant, in the remote pointer's shape where the desktop tells it. Drawn remotely: always the true shape, but part of the video.">
-          <option value="no">Drawn here</option>
-          <option value="yes">Drawn remotely</option>
+        <select name="cursor" title="Local: drawn here, instant, in the remote pointer's shape where the desktop tells it. Remote: always the true shape, but part of the video.">
+          <option value="no">Local</option>
+          <option value="yes">Remote</option>
         </select>
       </label>
       <label class="setting">Sound
@@ -173,27 +214,35 @@
           <option value="off">Off</option>
         </select>
       </label>
-      <label class="setting" hidden>Screen
+      <label class="setting wide">Pin the numbers
+        <select name="pin" title="Keeps frame rate, delay and bitrate in a corner of the picture.">
+          <option value="off">Off</option>
+          <option value="top-left">Top left</option>
+          <option value="top-right">Top right</option>
+          <option value="bottom-left">Bottom left</option>
+          <option value="bottom-right">Bottom right</option>
+        </select>
+      </label>
+      <label class="setting wide" hidden>Screen
         <select name="screen"></select>
       </label>
     </div>
     <div class="actions">
       <button type="button" id="fullscreen">Full screen</button>
-      <span class="spacer"></span>
-      <button type="button" class="leave" id="leave">Disconnect</button>
+      <button type="button" id="leave">Disconnect</button>
     </div>
   </form>
   <button type="button" class="pill" id="pill">
     <span class="dot" aria-hidden="true"></span>
     <span id="pill-text">Connecting</span>
-    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
+    <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"><path d="M2 8l4-4 4 4"/></svg>
   </button>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
 const canvas = document.querySelector('canvas'), login = $('login'), settings = $('settings');
-const SAVED = ['bitrate', 'fps', 'size', 'chroma', 'cursor', 'sound', 'screen'];
+const SAVED = ['bitrate', 'patience', 'fps', 'size', 'chroma', 'cursor', 'sound', 'pin', 'screen'];
 
 let socket, stop;  // the current session's connection, and what ends it
 const connected = () => document.body.classList.contains('connected');
@@ -387,13 +436,14 @@ function pieceJoiner(use, ask) {
 
 // The session to the host's UDP side: a WebTransport session, which the host's certificate is good for by its
 // fingerprint alone. Datagrams that arrive go to `take`. Where the browser or the network will not have it,
-// nothing arrives and video stays on the WebSocket; it is tried again every AGAIN ms.
+// nothing arrives and video stays on the WebSocket; AGAIN ms after it failed or ended, `failed` is called, for
+// the host to be asked how to reach it now: its certificate is renewed every day.
 const AGAIN = 3000;
-function datagramPath(port, fingerprint, token, take) {
+function datagramPath(port, fingerprint, token, take, failed) {
   if (!window.WebTransport) return null;
   const bytes = hex => Uint8Array.from(hex.match(/../g), pair => parseInt(pair, 16));
   let transport, writer, closed = false, timer = 0;
-  (async function open() {
+  (async () => {
     try {
       const pinned = { serverCertificateHashes: [{ algorithm: 'sha-256', value: bytes(fingerprint) }] };
       transport = new WebTransport(`https://${location.hostname}:${port}/`, pinned);
@@ -407,7 +457,7 @@ function datagramPath(port, fingerprint, token, take) {
       }
     } catch {}
     writer = null;
-    if (!closed) timer = setTimeout(open, AGAIN);
+    if (!closed) timer = setTimeout(failed, AGAIN);
   })();
   return {
     // Tells the host who this is and how the video fares: the last piece used and the first missing.
@@ -492,11 +542,11 @@ function setConnected(on, problem = '') {
     peeking = setTimeout(() => showPill(peeking = 0), PEEK);
     showPill();
   } else {
-    document.body.classList.remove('slow');
+    document.body.classList.remove('slow', 'waiting');
     showPanel(false);
   }
-  const choices = ['bitrate', 'fps', 'cursor'].map(name => settings[name].selectedOptions[0].textContent);
-  $('summary').textContent = problem || choices.join(' · ');
+  const choices = ['bitrate', 'fps'].map(name => settings[name].selectedOptions[0].textContent);
+  $('summary').textContent = problem || choices.join(' / ');
   $('summary').classList.toggle('problem', !!problem);
 }
 
@@ -509,15 +559,16 @@ function showStatistics(frames, parts, received, allowed, heldBack, way) {
   const slow = heldBack && allowed < SLOW_RATE;
   const megabits = kbps => (kbps / 1000).toFixed(1);
   document.body.classList.toggle('slow', slow);
-  $('now-fps').textContent = `${frames} fps`;
-  $('now-delay').textContent = `${delay} ms`;
-  $('now-bitrate').textContent = `${megabits(received)} of ${megabits(allowed)}, ${way}`;
-  $('now-picture').textContent = `${canvas.width} × ${canvas.height}`;
+  // The three numbers stand in the panel and, where they are pinned, in a corner of the picture.
+  $('now-fps').textContent = $('pin-fps').textContent = `${frames} fps`;
+  $('now-delay').textContent = $('pin-delay').textContent = `${delay} ms`;
+  $('now-bitrate').textContent = $('pin-bitrate').textContent = `${megabits(received)} Mbit/s`;
+  $('now-picture').textContent = `${canvas.width} × ${canvas.height}, ${way}, up to ${megabits(allowed)} Mbit/s`;
   $('notice').textContent = `This connection carries about ${megabits(allowed)} Mbit/s. Moving pictures are softened so the session stays responsive.`;
-  $('pill-text').textContent = slow ? `Slow link · ${megabits(allowed)} Mbit/s` : `${frames} fps · ${delay} ms`;
+  $('pill-text').textContent = slow ? `Slow link / ${megabits(allowed)} Mbit/s` : `${frames} fps / ${delay} ms / ${way}`;
   for (const [name, value] of Object.entries(parts)) {
     settings.querySelector(`.bar .${name}`).style.setProperty('--weight', Math.max(value, 0.5));
-    settings.querySelector(`output.${name}`).textContent = `${value.toFixed(value < 10 ? 1 : 0)} ms`;
+    settings.querySelector(`output.${name}`).textContent = value.toFixed(value < 10 ? 1 : 0);
   }
 }
 
@@ -584,11 +635,14 @@ function connect() {
   // come on the WebSocket.
   let path = null, byUdp = false, awaited = false;
   const joiner = pieceJoiner(piece => { byUdp = true; show(piece); }, () => path?.say(...joiner.status()));
-  const status = setInterval(() => path?.say(...joiner.status()), STATUS);
+  // A hidden page is let run so seldom that its word would be stale: it says nothing, and the host goes back
+  // to the WebSocket until it is seen again.
+  const status = setInterval(() => document.hidden || path?.say(...joiner.status()), STATUS);
   function show(piece) {
     if (!live) {
       live = true;
       retryUntil = 0;
+      document.body.classList.remove('waiting');
       setConnected(true);
       // Kept in this browser so the next visit only needs a click. Anyone using this browser profile can read it.
       try { localStorage.password = login.password.value; } catch {}
@@ -628,14 +682,15 @@ function connect() {
     },
     // Where to reach the host's UDP side, and the token that says there which session this is.
     udp(port, fingerprint, token) {
+      path?.close();
       path = datagramPath(port, fingerprint, token, datagram => {
         if (datagram[0] !== 9) return;  // padding is only there to show the host what the link carries
         bytes += datagram.length;
         joiner.take(datagram);
-      });
+      }, () => send('udp'));
     },
-    // Video is back on the WebSocket; over UDP it would go on with piece `next`.
-    path(way, next) { [byUdp, awaited] = [false, true]; joiner.restart(next); },
+    // Video is back on the WebSocket ("tcp"); over UDP it would go on with piece `next`.
+    path(_, next) { [byUdp, awaited] = [false, true]; joiner.restart(next); },
   };
   const carried = {
     [SOUND](data) { sound?.play(new Uint8Array(data, 1)); },
@@ -682,6 +737,7 @@ function connect() {
     if (live && !leaving) retryUntil = performance.now() + RETRY;
     if (!leaving && performance.now() < retryUntil) {
       $('pill-text').textContent = 'Reconnecting';
+      document.body.classList.add('waiting');
       return setTimeout(() => ws === socket && !leaving && connect(), 1000);
     }
     retryUntil = 0;
@@ -763,10 +819,18 @@ login.onsubmit = event => {
   connect();
 };
 settings.onsubmit = event => event.preventDefault();
+// What the choice between response and quality means, in words, and where the numbers are pinned.
+function showChoices() {
+  const chosen = settings.querySelector('[name=patience]:checked');
+  $('patience-says').textContent = `${chosen.ariaLabel}: video may run ${chosen.value} ms behind.`;
+  document.body.dataset.pin = settings.pin.value;
+}
 settings.onchange = event => {
   try { localStorage.settings = JSON.stringify(Object.fromEntries(SAVED.map(name => [name, settings[name].value]))); } catch {}
-  if (event.target.name === 'bitrate') send('bitrate', +settings.bitrate.value);  // takes effect in the running stream
-  else connect();                                                // the others apply when the capture starts
+  const { name } = event.target;
+  showChoices();
+  if (name === 'bitrate' || name === 'patience') send(name, +settings[name].value);  // take effect in the running stream
+  else if (name !== 'pin') connect();                                               // the others when the capture starts
 };
 $('pill').onclick = () => showPanel(settings.hidden);
 $('leave').onclick = () => {
@@ -784,6 +848,8 @@ try {
     if (settings[name].selectedIndex < 0) settings[name].selectedIndex = 0;  // a saved choice that no longer exists
   }
 } catch {}
+if (!settings.patience.value) settings.patience.value = 100;
+showChoices();
 try { login.password.value = localStorage.password ?? ''; } catch {}
 login.password.required = !document.documentElement.classList.contains('open');
 $('host').textContent = location.hostname.replace(/\.local$/, '') || 'Remote Desktop';

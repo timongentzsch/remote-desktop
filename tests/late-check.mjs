@@ -50,7 +50,7 @@ const result = await evaluate(`(async () => {
     took.push(performance.timeOrigin + performance.now() - frame.timestamp / 1000);
   };
   await new Promise(done => setTimeout(done, ${+seconds * 1000}));
-  return JSON.stringify({ took, drawn, bitrate: $('now-bitrate').textContent, pill: $('pill-text').textContent });
+  return JSON.stringify({ took, drawn, bitrate: $('now-bitrate').textContent, picture: $('now-picture').textContent });
 })()`);
 chrome.kill();
 
@@ -63,7 +63,7 @@ const late = took.map(time => time - quickest).sort((a, b) => a - b);
 const at = share => late[Math.min(late.length - 1, Math.floor(share * late.length))].toFixed(0).padStart(4);
 const over = limit => (100 * late.filter(time => time > limit).length / late.length).toFixed(1).padStart(5);
 const gap = Math.max(...drawn.slice(1).map((time, index) => time - drawn[index]));
-console.log(`${(took.length / +seconds).toFixed(0).padStart(3)} fps at ${measured.bitrate.padStart(5)} Mbit/s | late by: half ${at(0.5)} ms, 9 in 10 within ${at(0.9)}, 99 in 100 within ${at(0.99)}, worst ${at(1)} | over 50 ms ${over(50)}%, over 100 ms ${over(100)}% | longest gap ${gap.toFixed(0)} ms`);
+console.log(`${(took.length / +seconds).toFixed(0).padStart(3)} fps at ${measured.bitrate} (${measured.picture.split(', ').slice(1).join(', ')}) | late by: half ${at(0.5)} ms, 9 in 10 within ${at(0.9)}, 99 in 100 within ${at(0.99)}, worst ${at(1)} | over 50 ms ${over(50)}%, over 100 ms ${over(100)}% | longest gap ${gap.toFixed(0)} ms`);
 // With DETAIL set: second by second, how many frames were drawn and how late the latest of them was.
 if (process.env.DETAIL) {
   const seconds = new Map();

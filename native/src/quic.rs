@@ -64,8 +64,12 @@ pub const NOTHING: u32 = u32::MAX;
 /// A client says how it is doing many times a second. One that has said nothing for this long cannot be
 /// reached this way any more, or its page is hidden and its browser lets it do little.
 const SILENCE: Duration = Duration::from_millis(1500);
-/// How long a connection may take to show a token before it is closed.
+/// How long a connection may take to show a token before it is closed, and how many connections there may be
+/// at a time. Further ones go unanswered.
 const STRANGER: Duration = Duration::from_secs(10);
+const MOST_CLIENTS: usize = 64;
+/// A connection that takes no datagrams of at least this size cannot carry video.
+const LEAST_ROOM: usize = 600;
 /// How often a quiet connection is asked whether it is still there, which also keeps it open while its page
 /// is hidden and says nothing.
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
@@ -77,6 +81,9 @@ const PACE: u64 = 4;
 const BURST: f64 = 16.0 * 1024.0;
 /// How much may wait to be sent to one client. More than this is older than is worth sending.
 const WAITING: usize = 4 << 20;
+
+/// How many round trips late a packet is given up as lost.
+const LATE: f32 = 3.0;
 
 /// Larger than any amount under way, and large enough that the connection does not pace by it either.
 const WINDOW: u64 = 1 << 40;
@@ -92,9 +99,11 @@ struct Counts {
     /// How many bytes are sent and neither acknowledged nor given up: the connection's own count as of the
     /// latest acknowledgement, and what was handed to it since.
     flight: AtomicU64,
-    /// The round trip as it is now, and the shortest there has been.
+    /// The round trip as it is now, and the shortest of late.
     round_trip_micros: AtomicU32,
     shortest_micros: AtomicU32,
+    /// How far single round trips lie from the usual one, on average.
+    swing_micros: AtomicU32,
 }
 
 /// QUIC's own congestion control is left out of it: the session decides how much it sends (see rate.rs). This
@@ -102,17 +111,39 @@ struct Counts {
 struct Counting {
     counts: Arc<Counts>,
     started: Instant,
+    /// The shortest round trip since `turned`, and that of the stretch before, in microseconds. Older ones are
+    /// forgotten: the way may have become longer for good, as when a relay takes over from a direct path.
+    recent: u32,
+    earlier: u32,
+    turned: Instant,
+}
+
+/// How long a stretch is of which the shortest round trip is remembered. The one before it counts as well.
+const MEMORY: Duration = Duration::from_secs(10);
+
+impl Counting {
+    fn new(counts: Arc<Counts>, started: Instant, now: Instant) -> Self {
+        Self { counts, started, recent: u32::MAX, earlier: u32::MAX, turned: now }
+    }
 }
 
 impl Controller for Counting {
     fn on_sent(&mut self, _: Instant, bytes: u64, _: u64) {
         self.counts.sent.fetch_add(bytes, Ordering::Relaxed);
     }
-    fn on_ack(&mut self, now: Instant, _: Instant, bytes: u64, _: bool, rtt: &quinn_proto::RttEstimator) {
+    fn on_ack(&mut self, now: Instant, sent: Instant, bytes: u64, _: bool, rtt: &quinn_proto::RttEstimator) {
         self.counts.acknowledged.fetch_add(bytes, Ordering::Relaxed);
         self.counts.acknowledged_at.store(now.duration_since(self.started).as_micros() as u64, Ordering::Relaxed);
         self.counts.round_trip_micros.store(rtt.get().as_micros() as u32, Ordering::Relaxed);
-        self.counts.shortest_micros.store(rtt.min().as_micros() as u32, Ordering::Relaxed);
+        let took = now.duration_since(sent);
+        if now.duration_since(self.turned) >= MEMORY {
+            (self.earlier, self.recent, self.turned) = (self.recent, u32::MAX, now);
+        }
+        self.recent = self.recent.min(took.as_micros() as u32);
+        self.counts.shortest_micros.store(self.recent.min(self.earlier), Ordering::Relaxed);
+        let off = took.abs_diff(rtt.get()).as_micros() as u32;
+        let swing = self.counts.swing_micros.load(Ordering::Relaxed);
+        self.counts.swing_micros.store(swing - swing / 8 + off / 8, Ordering::Relaxed);
     }
     fn on_end_acks(&mut self, _: Instant, in_flight: u64, _: bool, _: Option<u64>) {
         self.counts.flight.store(in_flight, Ordering::Relaxed);
@@ -127,7 +158,7 @@ impl Controller for Counting {
         WINDOW
     }
     fn clone_box(&self) -> Box<dyn Controller> {
-        Box::new(Self { counts: self.counts.clone(), started: self.started })
+        Box::new(Self { counts: self.counts.clone(), ..*self })
     }
     fn initial_window(&self) -> u64 {
         WINDOW
@@ -145,10 +176,10 @@ struct Counters {
 }
 
 impl ControllerFactory for Counters {
-    fn build(self: Arc<Self>, _: Instant, _: u16) -> Box<dyn Controller> {
+    fn build(self: Arc<Self>, now: Instant, _: u16) -> Box<dyn Controller> {
         let counts = Arc::new(Counts::default());
         *self.latest.lock().unwrap() = Some(counts.clone());
-        Box::new(Counting { counts, started: self.started })
+        Box::new(Counting::new(counts, self.started, now))
     }
 }
 
@@ -180,12 +211,25 @@ fn configuration(counters: &Arc<Counters>) -> Result<(Arc<ServerConfig>, [u8; 32
     transport.datagram_receive_buffer_size(Some(1 << 16));
     transport.datagram_send_buffer_size(WAITING);
     transport.keep_alive_interval(Some(KEEP_ALIVE));
+    // A browser opens a handful of streams and says little on them, and nothing here reads them. A stranger is
+    // given no more room than that to fill.
+    transport.max_concurrent_bidi_streams(VarInt::from_u32(4));
+    transport.max_concurrent_uni_streams(VarInt::from_u32(8));
+    transport.stream_receive_window(VarInt::from_u32(1 << 16));
+    transport.receive_window(VarInt::from_u32(1 << 18));
     // Packets stay at the size every path takes. Trying larger ones pays little, and the connection takes
     // lost large packets for a path that drops them, which a link that merely loses packets is not.
     transport.mtu_discovery_config(None);
+    // A packet counts as lost when it is this many round trips late. Nothing is sent again here, so there is
+    // no hurry to know; and on a way whose round trip swings, the usual patience of an eighth more takes
+    // packets for lost that are merely late, which then looks like a link that loses heavily.
+    transport.time_threshold(LATE);
     let mut configuration =
         ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(tls).map_err(|error| error.to_string())?));
     configuration.transport_config(Arc::new(transport));
+    // A client whose address changes opens a new connection (its page tries again by itself). Following it
+    // would make the connection count anew, apart from the link.
+    configuration.migration(false);
     Ok((Arc::new(configuration), fingerprint))
 }
 
@@ -237,15 +281,21 @@ pub struct Fared {
     pub lost: u64,
     pub arrived: Mark,
     pub round_trip: Duration,
-    /// The shortest round trip there has been: the way's own length, with nothing queued along it.
+    /// The shortest round trip of late: the way's own length, with nothing queued along it.
     pub shortest: Duration,
+    /// How far single round trips lie from the usual one, on average: what the way does by itself, as a relay
+    /// or a radio link along it does, with nothing of ours queued.
+    pub swing: Duration,
 }
 
 impl Link {
     /// Whether the client can be reached this way right now.
     pub fn is_up(&self) -> bool {
         let heard = Duration::from_micros(self.heard.load(Ordering::Relaxed));
-        self.counts.lock().unwrap().is_some() && !heard.is_zero() && self.shared.started.elapsed() < heard + SILENCE
+        self.counts.lock().unwrap().is_some()
+            && self.room() >= LEAST_ROOM
+            && !heard.is_zero()
+            && self.shared.started.elapsed() < heard + SILENCE
     }
 
     /// The largest datagram that can be sent, in bytes.
@@ -257,9 +307,12 @@ impl Link {
     pub fn send(&self, datagrams: impl IntoIterator<Item = Vec<u8>>, kbps: u32) {
         self.kbps.store(kbps, Ordering::Relaxed);
         let mut waiting = self.waiting.lock().unwrap();
-        waiting.extend(datagrams);
+        let mut size = self.queued.load(Ordering::Relaxed) as usize;
+        for datagram in datagrams {
+            size += datagram.len();
+            waiting.push_back(datagram);
+        }
         // What the pace does not get out in time is not worth sending any more: the oldest goes.
-        let mut size: usize = waiting.iter().map(Vec::len).sum();
         while size > WAITING {
             size -= waiting.pop_front().map_or(0, |datagram| datagram.len());
         }
@@ -283,6 +336,7 @@ impl Link {
             arrived: (if under_way == 0 { now } else { at }, acknowledged),
             round_trip: Duration::from_micros(counts.round_trip_micros.load(Ordering::Relaxed).into()),
             shortest: Duration::from_micros(counts.shortest_micros.load(Ordering::Relaxed).into()),
+            swing: Duration::from_micros(counts.swing_micros.load(Ordering::Relaxed).into()),
         })
     }
 
@@ -405,12 +459,15 @@ impl Client {
     /// Hands the connection as many of the link's waiting datagrams as the pace allows. Says when the next is
     /// due, if any are left.
     fn pass_on(&mut self, now: Instant) -> Option<Instant> {
+        if self.quic.is_closed() || !self.has_its_link() {
+            return None; // what waits is for the connection that has the link
+        }
         let link = self.link.as_ref()?;
         let pace = (link.kbps.load(Ordering::Relaxed) as u64 * PACE * 125) as f64; // bytes a second
         self.allowance = (self.allowance + pace * now.duration_since(self.paced).as_secs_f64()).min(BURST);
         self.paced = now;
         if let Some(room) = self.quic.datagrams().max_size() {
-            link.room.store(room as u32 - 1, Ordering::Relaxed); // less the byte that names the session
+            link.room.store((room as u32).saturating_sub(1), Ordering::Relaxed); // less the byte that names the session
         }
         let mut waiting = link.waiting.lock().unwrap();
         while let Some(next) = waiting.front() {
@@ -466,6 +523,9 @@ fn serve(
             };
             out.clear();
             match endpoint.handle(now, remote, None, None, BytesMut::from(&packet[..size]), &mut out) {
+                Some(DatagramEvent::NewConnection(incoming)) if clients.len() >= MOST_CLIENTS => {
+                    endpoint.ignore(incoming)
+                }
                 Some(DatagramEvent::NewConnection(incoming)) => match endpoint.accept(incoming, now, &mut out, None) {
                     Ok((handle, quic)) => {
                         // Accepting made the connection's counter, on this thread.

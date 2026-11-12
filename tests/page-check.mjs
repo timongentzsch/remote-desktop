@@ -1,6 +1,7 @@
 // Opens the client page in headless Chrome, connects, and prints once a second what the pill and panel show.
 // Arguments: the page's address, seconds to watch, then optional JavaScript to run in the page at given seconds
-// as "second:code" pairs. With SHOT naming a file, the picture shown in the last second is saved there as JPEG.
+// as "second:code" pairs. With SHOT naming a file, the picture shown in the last second is saved there as JPEG;
+// with PAGE naming one, the whole page as the browser shows it then, panel and all.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,7 +34,7 @@ socket.onmessage = event => {
 };
 const evaluate = expression => new Promise(done => {
   waiting.set(++serial, result => done(result?.result?.value ?? result?.exceptionDetails?.text));
-  socket.send(JSON.stringify({ id: serial, method: 'Runtime.evaluate', params: { expression, returnByValue: true } }));
+  socket.send(JSON.stringify({ id: serial, method: 'Runtime.evaluate', params: { expression, returnByValue: true, userGesture: true } }));
 });
 
 await sleep(1500);
@@ -48,6 +49,13 @@ for (let second = 1; second <= +seconds; second++) {
   if (second === +seconds && process.env.SHOT) {
     const shot = await evaluate(`canvas.toDataURL('image/jpeg', 0.8)`);
     writeFileSync(process.env.SHOT, Buffer.from(shot.split(',')[1], 'base64'));
+  }
+  if (second === +seconds && process.env.PAGE) {
+    const shot = await new Promise(done => {
+      waiting.set(++serial, done);
+      socket.send(JSON.stringify({ id: serial, method: 'Page.captureScreenshot', params: { format: 'jpeg', quality: 85 } }));
+    });
+    writeFileSync(process.env.PAGE, Buffer.from(shot.data, 'base64'));
   }
   console.log(String(second).padStart(3), await evaluate(`[
     document.body.classList.contains('connected') ? 'connected' : 'not connected',
