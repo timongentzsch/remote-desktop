@@ -7,11 +7,12 @@
 <link rel="icon" href="icon.svg">
 <title>Remote Desktop</title>
 <style>
-  /* White on black, square, one typeface: JetBrains Mono where the device has it, as itself or among the Nerd
-     Fonts, and the system's own otherwise. The page is served by the host alone, so it brings no font along. */
+  /* White on black, square, one typeface: JetBrains Mono, which the host serves along with the page. */
+  @font-face { font-family: "JetBrains Mono"; font-weight: 400; font-display: swap; src: url(JetBrainsMono-Regular.woff2) format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: swap; src: url(JetBrainsMono-Medium.woff2) format("woff2"); }
   :root {
     --ground: #000; --text: #fff; --muted: #a6a6a6; --dim: #8c8c8c; --line: #333;
-    --mono: "JetBrains Mono", "JetBrainsMono Nerd Font", "JetBrainsMono NF", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
     --control: 32px; --field: 48px; --inset: 12px; --edge: 16px;
     color-scheme: dark;
   }
@@ -87,8 +88,11 @@
   @media (prefers-reduced-motion: reduce) { .bar i { transition: none; } }
   .legend { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
   .legend span:nth-child(even) { color: var(--muted); }
-  /* The time frames are held shows only where they are (see the Motion setting). */
+  .legend span { white-space: nowrap; }
+  /* The time frames are held shows only where they are: with even pacing on. Five parts do not fit on a line,
+     so each then has its name above its figure. */
   body:not(.even) .hold { display: none; }
+  .even .legend span { display: flex; flex-direction: column; }
   .priority { padding: 0 var(--inset) 8px; display: flex; flex-direction: column; }
   .steps { display: flex; align-items: center; }
   .steps span { flex: 1 1 0; }
@@ -218,10 +222,10 @@
           <option value="off">Off</option>
         </select>
       </label>
-      <label class="setting">Motion
-        <select name="motion" title="Direct shows each frame the moment it arrives. Even holds frames a little to show them at a steady pace, which smooths motion over a connection whose delay swings and costs that much delay.">
-          <option value="direct">Direct</option>
-          <option value="even">Even</option>
+      <label class="setting">Even pacing
+        <select name="motion" title="Off shows each frame the moment it arrives. On holds frames a little to show them at a steady pace, which smooths motion over a connection whose delay swings and costs that much delay.">
+          <option value="direct">Off</option>
+          <option value="even">On</option>
         </select>
       </label>
       <label class="setting">Numbers
@@ -265,7 +269,7 @@ const send = (...message) => socket?.readyState === WebSocket.OPEN && socket.sen
 const context = canvas.getContext('2d', { alpha: false, desynchronized: true });  // skip compositor queueing where supported
 
 // Decodes the stream and draws it. `failed` is called if the decoder gives up.
-// With the Motion setting on Even, a frame is not shown the moment it is decoded. Over a path whose delay swings,
+// With even pacing on, a frame is not shown the moment it is decoded. Over a path whose delay swings,
 // frames that left the host evenly arrive in clumps, and motion shown as they come goes in fits. Each frame
 // says when the host made it, so how late it is compared with the quickest of late is known; frames are then
 // held to be shown as late as nine in ten of the recent ones were, MOST_HOLD ms at the most. That costs as

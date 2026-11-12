@@ -133,6 +133,7 @@ builds them and publishes them when a version tag is pushed.
 ## Layout
 
     index.html                 the client: page, styles and script in one file
+    fonts/                     its typeface, JetBrains Mono, which the host serves along
     native/src/
       main.rs, install.rs      the command line; install, uninstall, password
       server.rs, session.rs    HTTPS and the client page; one client's login, threads and input
@@ -158,4 +159,5 @@ in the client's table of them.
 ## Licence
 
 GNU General Public License, version 2 or (at your option) any later version; see `LICENSE`. x264, which is
-linked into the binary, is under the same terms.
+linked into the binary, is under the same terms. The client's typeface, JetBrains Mono, is under the SIL Open
+Font License; see `fonts/OFL.txt`.

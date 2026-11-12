@@ -14,11 +14,15 @@ use crate::tls::Connection;
 use crate::{certificate, fail, install, quic, session, ws};
 
 /// The client, compiled into the binary: path, content type, body.
-const PAGES: [(&str, &str, &[u8]); 3] = [
+const PAGES: [(&str, &str, &[u8]); 5] = [
     ("/", "text/html", include_bytes!("../../index.html")),
     ("/manifest.json", "application/manifest+json", include_bytes!("../../manifest.json")),
     ("/icon.svg", "image/svg+xml", include_bytes!("../../icon.svg")),
+    ("/JetBrainsMono-Regular.woff2", FONT, include_bytes!("../../fonts/JetBrainsMono-Regular.woff2")),
+    ("/JetBrainsMono-Medium.woff2", FONT, include_bytes!("../../fonts/JetBrainsMono-Medium.woff2")),
 ];
+/// The typeface does not change from one build to the next as the page does, so a browser may keep it.
+const FONT: &str = "font/woff2";
 
 /// How long a client may take over each step before it has logged in. Without a limit, connections that say
 /// nothing would each keep a thread waiting for good.
@@ -141,8 +145,9 @@ fn answer(socket: TcpStream, host: &Arc<Host>) -> io::Result<()> {
                 body.to_vec()
             };
             let length = body.len();
+            let keeping = if *content_type == FONT { "max-age=604800" } else { "no-cache" };
             let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {length}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {length}\r\nCache-Control: {keeping}\r\nConnection: close\r\n\r\n"
             );
             [head.as_bytes(), &body[..]].concat()
         }
