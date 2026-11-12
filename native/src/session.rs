@@ -205,6 +205,7 @@ fn ceiling(wanted: &Value) -> u32 {
 /// for a higher one takes, and tells the client once a second how the stream is doing.
 fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromClient) {
     let mut controller = Controller::new(Instant::now(), told.ceiling.load(Ordering::Relaxed));
+    let mut congestion = connection.congestion();
     let (mut written, mut patience, mut noise) = (0, LOOK, 0x9E37_79B9_7F4A_7C15);
     let (mut reported, mut frames, mut sending, mut send) = (Instant::now(), 0, Duration::ZERO, 0.0);
     loop {
@@ -224,6 +225,7 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
             }
         }
         frames += left;
+        congestion.review(Instant::now());
         let round_trip = told.round_trip.load(Ordering::Relaxed);
         let verdict = controller.step(&Reading {
             now: Instant::now(),
