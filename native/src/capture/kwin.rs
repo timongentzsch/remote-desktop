@@ -28,11 +28,11 @@ struct Cast {
     failed: Option<String>,
 }
 
-/// Captures the first output until the stream is no longer wanted or KDE ends the cast.
+/// Captures the chosen output until the stream is no longer wanted or KDE ends the cast.
 pub fn run(stream: Stream) -> Result<(), String> {
     let (_connection, globals, mut events) = compositor::connect::<Cast>()?;
     let queue = events.handle();
-    let output: WlOutput = bind(&globals, &queue)?;
+    let output = compositor::output(&globals, &queue, stream.settings.screen.as_deref())?;
     let screencast: ZkdeScreencastUnstableV1 = bind(&globals, &queue)?;
     let pointer = if stream.settings.cursor { POINTER_EMBEDDED } else { POINTER_HIDDEN };
     // The cast lasts as long as this object and the connection it belongs to.

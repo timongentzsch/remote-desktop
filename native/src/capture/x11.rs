@@ -11,10 +11,11 @@ use x11rb::protocol::xfixes::{ConnectionExt as _, GetCursorImageReply};
 use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _, EventMask, ImageFormat, ImageOrder};
 
 use super::memory::Memory;
+use crate::screen;
 use crate::stream::Stream;
-use crate::xserver::Events;
+use crate::xserver::{self, Events};
 
-/// Captures the first screen until the stream is no longer wanted.
+/// Captures the chosen screen until the stream is no longer wanted.
 pub fn run(mut stream: Stream) -> Result<(), String> {
     // A screen that changes size is simply captured anew.
     while capture(&mut stream).map_err(|error| format!("no Wayland compositor, and the X server: {error}"))?
@@ -33,7 +34,14 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
     let (x, screen) = x11rb::connect(None)?;
     let setup = x.setup();
     let screen = &setup.roots[screen];
-    let (root, width, height) = (screen.root, screen.width_in_pixels, screen.height_in_pixels);
+    let (root, whole) = (screen.root, (screen.width_in_pixels, screen.height_in_pixels));
+    // The server's screen spans all monitors. The chosen one is a part of it; where the server lists none, the
+    // whole is captured.
+    let monitors = xserver::screens().unwrap_or_default();
+    let (left, top, width, height) = match screen::choose(&monitors, stream.settings.screen.as_deref()) {
+        Some(monitor) => (monitor.x as i16, monitor.y as i16, monitor.width as u16, monitor.height as u16),
+        None => (0, 0, whole.0, whole.1),
+    };
 
     // The stream takes pixels as blue, green, red and a fourth byte, which is how nearly every X server
     // lays out its usual 24-bit visual.
@@ -72,9 +80,7 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
         while let Some(event) = events.next(&x)? {
             match event {
                 Event::DamageNotify(_) => stale = true,
-                Event::ConfigureNotify(change)
-                    if change.window == root && (change.width, change.height) != (width, height) =>
-                {
+                Event::ConfigureNotify(change) if change.window == root && (change.width, change.height) != whole => {
                     return Ok(Ended::Resized);
                 }
                 _ => {}
@@ -94,17 +100,17 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
         if stale && Instant::now() >= due {
             x.damage_subtract(damage, x11rb::NONE, x11rb::NONE)?;
             let copied =
-                x.shm_get_image(root, 0, 0, width, height, !0, ImageFormat::Z_PIXMAP.into(), segment, 0)?.reply();
+                x.shm_get_image(root, left, top, width, height, !0, ImageFormat::Z_PIXMAP.into(), segment, 0)?.reply();
             // A screen that has just shrunk refuses the copy before its announcement of that has been read.
             if copied.is_err() {
                 let now = x.get_geometry(root)?.reply()?;
-                if (now.width, now.height) != (width, height) {
+                if (now.width, now.height) != whole {
                     return Ok(Ended::Resized);
                 }
             }
             copied?;
             if let Some(pointer) = &pointer {
-                paint(pointer, memory.bytes(), width as usize, height as usize);
+                paint(pointer, (left, top), memory.bytes(), width as usize, height as usize);
             }
             stream.picture(memory.bytes(), width as usize * 4, width as usize, height as usize);
             (stale, captured) = (false, Instant::now());
@@ -122,10 +128,12 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
     Ok(Ended::Unwanted)
 }
 
-/// Paints the pointer over the picture. Its image is rows of pixels with alpha, the colours already multiplied
-/// by it; the picture is rows of blue, green, red and a fourth byte.
-fn paint(pointer: &GetCursorImageReply, picture: &mut [u8], width: usize, height: usize) {
-    let (left, top) = (pointer.x as isize - pointer.xhot as isize, pointer.y as isize - pointer.yhot as isize);
+/// Paints the pointer over the picture, whose top left corner is at `origin` on the server's screen. The
+/// pointer's image is rows of pixels with alpha, the colours already multiplied by it; the picture is rows of
+/// blue, green, red and a fourth byte.
+fn paint(pointer: &GetCursorImageReply, origin: (i16, i16), picture: &mut [u8], width: usize, height: usize) {
+    let corner = |at: i16, hot: u16, origin: i16| at as isize - hot as isize - origin as isize;
+    let (left, top) = (corner(pointer.x, pointer.xhot, origin.0), corner(pointer.y, pointer.yhot, origin.1));
     for (index, pixel) in pointer.cursor_image.iter().enumerate() {
         let (x, y) =
             (left + (index % pointer.width as usize) as isize, top + (index / pointer.width as usize) as isize);
@@ -159,16 +167,17 @@ mod tests {
             ..Default::default()
         };
         let mut picture = vec![100; 3 * 2 * 4]; // 3x2 pixels of grey
-        paint(&pointer(1, 0), &mut picture, 3, 2);
+        paint(&pointer(1, 0), (0, 0), &mut picture, 3, 2);
         let pixel = |picture: &[u8], x: usize, y: usize| picture[(y * 3 + x) * 4..][..3].to_vec();
         assert_eq!(pixel(&picture, 0, 0), [100, 100, 100], "untouched beside the pointer");
         assert_eq!(pixel(&picture, 1, 0), [0, 0, 255], "opaque red replaces the picture");
         assert_eq!(pixel(&picture, 2, 0), [177, 177, 177], "half-transparent white lightens it");
         assert_eq!(pixel(&picture, 1, 1), [100, 100, 100], "a transparent pixel leaves it");
         assert_eq!(pixel(&picture, 2, 1), [255, 0, 0], "opaque blue replaces it");
-        // Hanging over the right and bottom edges, only the pointer's first pixel lands in the picture.
+        // Hanging over the right and bottom edges, only the pointer's first pixel lands in the picture. So it
+        // does in a picture of a monitor that begins further right and down on the server's screen.
         let mut picture = vec![100; 3 * 2 * 4];
-        paint(&pointer(2, 1), &mut picture, 3, 2);
+        paint(&pointer(12, 21), (10, 20), &mut picture, 3, 2);
         assert_eq!(pixel(&picture, 2, 1), [0, 0, 255]);
         assert_eq!(picture.iter().filter(|&&byte| byte != 100).count(), 3);
     }

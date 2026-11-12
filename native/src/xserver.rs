@@ -6,7 +6,11 @@ use std::time::Duration;
 use x11rb::connection::Connection;
 use x11rb::errors::ConnectionError;
 use x11rb::protocol::Event;
+use x11rb::protocol::randr::ConnectionExt as _;
+use x11rb::protocol::xproto::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
+
+use crate::screen::Screen;
 
 /// The events of one connection, in the order the server sent them.
 #[derive(Default)]
@@ -37,4 +41,22 @@ impl Events {
         }
         Ok(())
     }
+}
+
+/// The monitors the X server's one large screen is made of, in its own order.
+pub fn screens() -> Result<Vec<Screen>, String> {
+    let list = || -> Result<Vec<Screen>, Box<dyn std::error::Error>> {
+        let (x, screen) = x11rb::connect(None)?;
+        x.randr_query_version(1, 5)?.reply()?;
+        let monitors = x.randr_get_monitors(x.setup().roots[screen].root, true)?.reply()?.monitors;
+        let mut screens = Vec::new();
+        for monitor in monitors {
+            let name = String::from_utf8_lossy(&x.get_atom_name(monitor.name)?.reply()?.name).into_owned();
+            let (x, y, width, height) =
+                (monitor.x.into(), monitor.y.into(), monitor.width.into(), monitor.height.into());
+            screens.push(Screen { name, x, y, width, height });
+        }
+        Ok(screens)
+    };
+    list().map_err(|error| format!("the X server does not list its screens: {error}"))
 }

@@ -172,6 +172,9 @@
           <option value="off">Off</option>
         </select>
       </label>
+      <label class="setting" hidden>Screen
+        <select name="screen"></select>
+      </label>
     </div>
     <div class="actions">
       <button type="button" id="fullscreen">Full screen</button>
@@ -189,7 +192,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const canvas = document.querySelector('canvas'), login = $('login'), settings = $('settings');
-const SAVED = ['bitrate', 'fps', 'size', 'chroma', 'cursor', 'sound'];
+const SAVED = ['bitrate', 'fps', 'size', 'chroma', 'cursor', 'sound', 'screen'];
 
 let socket, stop;  // the current session's connection, and what ends it
 const connected = () => document.body.classList.contains('connected');
@@ -406,6 +409,12 @@ function connect() {
     ping(sent) { roundTrip = performance.now() - sent; },
     stats(encode, send, kbps, heldBack) { host = { encode, send, kbps, heldBack }; },
     clipboard(text) { navigator.clipboard.writeText(clipboard = text).catch(() => {}); },
+    // The host's screens and the one it shows. The choice is only offered where there is one to make.
+    screens(names, shown) {
+      settings.screen.replaceChildren(...names.map(name => new Option(name)));
+      settings.screen.value = shown;
+      settings.screen.parentElement.hidden = names.length < 2;
+    },
   };
   const carried = {
     [SOUND](data) { sound?.play(new Uint8Array(data, 1)); },
@@ -534,6 +543,7 @@ $('fullscreen').onclick = () => document.fullscreenElement ? document.exitFullsc
 
 try {
   const saved = JSON.parse(localStorage.settings);
+  if (saved.screen) settings.screen.add(new Option(saved.screen));  // the host lists its screens once connected
   for (const name of SAVED) {
     if (name in saved) settings[name].value = saved[name];
     if (settings[name].selectedIndex < 0) settings[name].selectedIndex = 0;  // a saved choice that no longer exists

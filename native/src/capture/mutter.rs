@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use super::pipewire;
 use crate::gnome::{self, Service};
+use crate::screen;
 use crate::stream::Stream;
 
 const SERVICE: &str = "org.gnome.Mutter.ScreenCast";
@@ -13,7 +14,7 @@ const SESSION: &str = "org.gnome.Mutter.ScreenCast.Session";
 const CURSOR_HIDDEN: u32 = 0;
 const CURSOR_EMBEDDED: u32 = 1;
 
-/// Captures the primary monitor until the stream is no longer wanted or GNOME ends the cast.
+/// Captures the chosen monitor until the stream is no longer wanted or GNOME ends the cast.
 pub fn run(stream: Stream) -> Result<(), String> {
     let unavailable = "this desktop offers no screen capture this program knows: it needs a Wayland capture protocol, GNOME, KDE or X11";
     let mut mutter = Service::connect(SERVICE).map_err(|_| unavailable)?;
@@ -22,12 +23,15 @@ pub fn run(stream: Stream) -> Result<(), String> {
         .map_err(|_| unavailable)?;
     let session = gnome::path(&session)?;
     let cursor = if stream.settings.cursor { CURSOR_EMBEDDED } else { CURSOR_HIDDEN };
-    // An empty connector name stands for the primary monitor.
+    // Mutter knows a monitor by the name of its connector, which is the name its output goes by. An empty
+    // name stands for the primary monitor.
+    let screens = screen::list();
+    let connector = screen::choose(&screens, stream.settings.screen.as_deref()).map_or("", |screen| &screen.name);
     mutter.call(
         &session,
         SESSION,
         "RecordMonitor",
-        &["".into(), gnome::options(vec![("cursor-mode", cursor.into())])],
+        &[connector.into(), gnome::options(vec![("cursor-mode", cursor.into())])],
     )?;
     mutter.call(&session, SESSION, "Start", &[])?;
 

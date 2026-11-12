@@ -96,7 +96,9 @@ Whoever logs in controls the desktop session, so treat the address and password 
 
 ## Known limitations
 
-- Only the first screen is captured.
+- One screen is shown at a time; with several, the settings offer the choice. That was tried with virtual
+  screens only: whether the pointer lands on the chosen one of several real monitors is untried, and a
+  rotated screen is not turned upright.
 - The pointer is drawn by the client, always as an arrow, or painted into the video by the host.
 - "Sharp" colour (4:4:4) is decoded in software by Chrome.
 - When a connection that was slow gets faster, the bitrate follows at the next try: ten seconds after it was
@@ -132,6 +134,7 @@ builds them and publishes them when a version tag is pushed.
       server.rs, session.rs    HTTPS and the client page; one client's login, threads and input
       outbox.rs, ws.rs         what waits to be sent to a client; WebSocket framing
       rate.rs                  the bitrate a connection is given, from how well frames get through
+      screen.rs                the desktop's screens, and where the pointer goes on the one shown
       tls.rs, certificate.rs   the encrypted connection; the certificate behind it
       capture/                 the screen's picture, one module per way of getting it
       stream/                  pictures to video: pacing, colour conversion, the encoders

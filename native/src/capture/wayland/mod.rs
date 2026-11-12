@@ -29,12 +29,12 @@ pub fn offered(protocols: &[String]) -> bool {
     protocols.iter().any(|name| name == ext::PROTOCOL || name == wlr::PROTOCOL)
 }
 
-/// Captures the first output until the stream is no longer wanted or the compositor ends the capture.
+/// Captures the chosen output until the stream is no longer wanted or the compositor ends the capture.
 pub fn run(stream: Stream) -> Result<(), String> {
     let (_connection, globals, mut events) = compositor::connect::<Capture>()?;
     let queue = events.handle();
     let shm: WlShm = bind(&globals, &queue)?;
-    let output: WlOutput = bind(&globals, &queue)?;
+    let output = compositor::output(&globals, &queue, stream.settings.screen.as_deref())?;
 
     // A sleeping display produces no frames, so it is switched on first where the compositor allows that.
     let power = bind::<ZwlrOutputPowerManagerV1, _>(&globals, &queue)

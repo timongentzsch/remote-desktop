@@ -17,6 +17,7 @@ mod input;
 mod install;
 mod outbox;
 mod rate;
+mod screen;
 mod server;
 mod session;
 mod stream;

@@ -22,6 +22,8 @@ pub struct Settings {
     /// Keep full colour resolution (4:4:4) instead of 4:2:0.
     pub full_chroma: bool,
     pub half_size: bool,
+    /// The screen to capture, by name (see screen.rs). None, or a name no screen has, means the first.
+    pub screen: Option<String>,
 }
 
 /// What a session and its capture exchange while the capture runs.
@@ -40,7 +42,7 @@ pub struct Shared {
 /// Receives each piece of the stream; returns false once nobody is listening any more.
 pub type Sink = Box<dyn FnMut(&[u8]) -> bool + Send>;
 
-/// Captures the first screen until `shared.stop` is set, the sink declines a piece, or the desktop ends it.
+/// Captures the chosen screen until `shared.stop` is set, the sink declines a piece, or the desktop ends it.
 pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), String> {
     let stream = Stream::new(settings, shared, sink);
     if !compositor::available() {

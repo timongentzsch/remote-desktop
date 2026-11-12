@@ -16,7 +16,7 @@ use crate::outbox::{Next, Outbox};
 use crate::rate::{self, Controller, Reading};
 use crate::server::Host;
 use crate::tls::Connection;
-use crate::{audio, clipboard, ws};
+use crate::{audio, clipboard, screen, ws};
 
 /// How long a logged-in client may stay silent. Its page measures the round trip several times a second, and
 /// still once a minute while the browser has put a hidden tab to sleep, so longer means the client has gone.
@@ -52,7 +52,15 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
     connection.set_patience(SILENCE_LIMIT);
     wake_displays(&host.input);
 
+    // The client is told which screens there are and which it is shown, and its pointer is placed on that one.
+    let (settings, screens) = (settings(&login), screen::list());
+    let shown = screen::choose(&screens, settings.screen.as_deref()).cloned();
     let outbox = Arc::new(Outbox::default());
+    if let Some(shown) = &shown {
+        let names: Vec<&str> = screens.iter().map(|screen| screen.name.as_str()).collect();
+        let message = serde_json::json!(["screens", names, shown.name]).to_string();
+        outbox.push_control(ws::frame(ws::TEXT, message.as_bytes()));
+    }
     let shared = Arc::new(Shared::default());
     let told = Arc::new(FromClient {
         ceiling: ceiling(&login["bitrate"]).into(),
@@ -68,7 +76,7 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
             move || send(&outbox, &connection, &shared, &told)
         }),
         thread::spawn({
-            let (outbox, shared, settings) = (outbox.clone(), shared.clone(), settings(&login));
+            let (outbox, shared) = (outbox.clone(), shared.clone());
             move || {
                 let sink = Box::new({
                     let outbox = outbox.clone();
@@ -122,7 +130,11 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
                 };
                 host.input.key(code, down);
             }
-            Some("move") => host.input.move_to(number(1) as i32, number(2) as i32),
+            Some("move") => {
+                let (x, y) = (number(1) as i32, number(2) as i32);
+                let (x, y) = shown.as_ref().map_or((x, y), |screen| screen::place(screen, &screens, x, y));
+                host.input.move_to(x, y);
+            }
             Some("scroll") => host.input.scroll(number(1) as i32, number(2) as i32),
             Some("bitrate") => told.ceiling.store(ceiling(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed),
             Some("clipboard") => {
@@ -165,6 +177,7 @@ fn settings(login: &Value) -> Settings {
         cursor: login["cursor"] == "yes",
         full_chroma: login["chroma"] == "444",
         half_size: login["size"] == "half",
+        screen: login["screen"].as_str().filter(|name| !name.is_empty()).map(str::to_owned),
     }
 }
 

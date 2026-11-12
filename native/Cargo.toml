@@ -15,10 +15,10 @@ sha1_smol = "1"
 time = "0.3"
 unsafe-libopus = "0.2"
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-x11rb = { version = "0.14", default-features = false, features = ["damage", "shm", "xfixes"] }
+x11rb = { version = "0.14", default-features = false, features = ["damage", "randr", "shm", "xfixes"] }
 yuv = "0.8"
 
 [build-dependencies]
