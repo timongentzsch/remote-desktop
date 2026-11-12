@@ -37,6 +37,8 @@ pub struct Shared {
     pub climbing: AtomicBool,
     /// How long converting and encoding the latest frame took, in microseconds.
     pub encode_micros: AtomicU32,
+    /// How many frames the bitrate left coarser than they should be, since the session last asked.
+    pub coarse: AtomicU32,
 }
 
 /// What the pointer looks like: rows of pixels, each red, green, blue and how opaque it is, and the place in

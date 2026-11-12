@@ -231,6 +231,7 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
             received: *told.received.lock().unwrap(),
             round_trip: (round_trip > 0).then(|| Duration::from_millis(round_trip.into())),
             frames: left,
+            coarse: shared.coarse.swap(0, Ordering::Relaxed),
             held_up: outbox.take_held_up(),
             ceiling: told.ceiling.load(Ordering::Relaxed),
         });

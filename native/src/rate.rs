@@ -1,7 +1,9 @@
 //! How much video a client's connection is given. The session's writer reports what it sent and what the
 //! client says has arrived; the controller answers with the bitrate for the encoder. It cuts the rate when the
-//! link does not take the frames as fast as they are made, and finds out whether the link carries more by
-//! sending padding for a moment, since a rate the screen does not use says nothing about the link.
+//! link does not take the frames as fast as they are made. When the video could do with more, it finds out
+//! whether the link carries more by sending padding for a moment: what was used says nothing about what else
+//! there is. A screen that needs no more is not probed for more, which would cost traffic and, on a full
+//! link, a gap in the sound.
 //!
 //! Only the client's own count and round trip are gone by. What the connection itself knows ends where the
 //! connection does, which behind a proxy or in a tunnel is not at the client.
@@ -34,6 +36,10 @@ const QUEUE_LIMIT: Duration = Duration::from_millis(80);
 /// After lag, the share of what the link delivered that the video may take.
 const SHARE: f64 = 0.85;
 
+/// The video could do with more when over the last window it used this share of its rate, or the rate left
+/// most of its frames coarser than they should be: at a very low rate an encoder may not even use what it has.
+/// Only then is the link probed.
+const USED: f64 = 0.7;
 /// A probe offers this many times the current rate,
 const STEP: f64 = 2.0;
 /// for this long plus eight round trips, in which a connection that had gone quiet picks up speed again.
@@ -82,8 +88,10 @@ pub struct Reading {
     /// reported them.
     pub received: Option<Mark>,
     pub round_trip: Option<Duration>,
-    /// How many frames have left for the client since the last reading,
+    /// How many frames have left for the client since the last reading, how many the encoder made coarser
+    /// than they should be because of the rate,
     pub frames: u32,
+    pub coarse: u32,
     /// and for how long the capture could not hand its next frame over because the one before had not left.
     pub held_up: Duration,
     /// The highest bitrate the client wants, in kbit/s.
@@ -107,6 +115,8 @@ pub struct Controller {
     kbps: u32,
     ceiling: u32,
     limited: bool,
+    /// Whether the video could do with more, going by the last window judged (see `USED`).
+    wanting: bool,
     window: Window,
     probe: Option<Probe>,
     /// No probe starts before this.
@@ -127,6 +137,7 @@ struct Window {
     written: u64,
     arrived: Option<Mark>,
     frames: u32,
+    coarse: u32,
     held_up: Duration,
 }
 
@@ -137,6 +148,7 @@ impl Window {
             written: reading.written,
             arrived: reading.received,
             frames: 0,
+            coarse: 0,
             held_up: Duration::ZERO,
         }
     }
@@ -201,7 +213,8 @@ impl Controller {
             kbps: start(ceiling),
             ceiling,
             limited: false,
-            window: Window { since: now, written: 0, arrived: None, frames: 0, held_up: Duration::ZERO },
+            wanting: false,
+            window: Window { since: now, written: 0, arrived: None, frames: 0, coarse: 0, held_up: Duration::ZERO },
             probe: None,
             resting_until: now + FIRST_REST,
             settled_at: now,
@@ -216,6 +229,7 @@ impl Controller {
     pub fn step(&mut self, reading: &Reading) -> Verdict {
         self.fastest.note(reading.now, reading.round_trip);
         self.window.frames += reading.frames;
+        self.window.coarse += reading.coarse;
         self.window.held_up += reading.held_up;
         if reading.ceiling != self.ceiling {
             // The client chose anew: what the link carries is found out afresh.
@@ -254,6 +268,8 @@ impl Controller {
             return;
         }
         let window = std::mem::replace(&mut self.window, Window::new(reading));
+        let written = (reading.written - window.written) as f64 * 8.0 / 1000.0 / lasted.as_secs_f64();
+        self.wanting = written >= USED * self.kbps as f64 || window.coarse * 2 > window.frames;
         // Without frames the round trip says nothing about what the video does to the link.
         let late = window.frames > 0 && rose(reading.round_trip, self.fastest.get(), LATE_LIMIT);
         if !backed_up && !late {
@@ -263,7 +279,6 @@ impl Controller {
         // carries. A round trip grown long means a queue further along, where only the client can say what
         // arrived. It counts whole messages and may have sent little, so there the rate is at most halved.
         let (link_rate, least) = if backed_up {
-            let written = (reading.written - window.written) as f64 * 8.0 / 1000.0 / lasted.as_secs_f64();
             (written, LOWEST)
         } else {
             (carried(window.arrived, reading.received).unwrap_or(0.0), (self.kbps / 2).max(LOWEST))
@@ -274,14 +289,15 @@ impl Controller {
         self.rest(reading.now, blamed_on_raise);
     }
 
-    /// A probe, if the rate is below the ceiling, has rested, and the client's reports are fresh and show no
-    /// queue building up already.
+    /// A probe, if the video could do with more than a rate below the ceiling, the rate has rested, and the
+    /// client's reports are fresh and show no queue building up already.
     fn begin_probe(&mut self, reading: &Reading) -> Option<Probe> {
         let arrived = reading.received.filter(|(at, _)| reading.now.saturating_duration_since(*at) < STALE)?;
         let queueing = rose(reading.round_trip, self.fastest.get(), QUEUE_LIMIT);
-        if self.kbps >= reading.ceiling || reading.now < self.resting_until || queueing {
+        if self.kbps >= reading.ceiling || !self.wanting || reading.now < self.resting_until || queueing {
             return None;
         }
+        self.wanting = false; // what the probe leads to has to prove too little in its turn before the next
         self.window = Window::new(reading); // from here it shows what the probe does
         Some(Probe {
             kbps: ((self.kbps as f64 * STEP) as u32).min(reading.ceiling),
@@ -455,6 +471,7 @@ mod tests {
                     received: self.report,
                     round_trip: Some(self.round_trip + delay),
                     frames,
+                    coarse: 0,
                     held_up,
                     ceiling: self.ceiling,
                 });
@@ -474,7 +491,7 @@ mod tests {
     #[test]
     fn a_fast_link_is_given_the_ceiling_within_seconds() {
         let mut session = Session::new(100_000);
-        session.run(seconds(4));
+        session.run(seconds(6));
         assert_eq!(session.kbps, HIGHEST);
         assert!(!session.held_back);
         assert_eq!(session.cuts, 0);
@@ -500,23 +517,49 @@ mod tests {
     #[test]
     fn the_rate_follows_the_link_down_and_up_again() {
         let mut session = Session::new(100_000);
-        session.run(seconds(5));
+        session.run(seconds(8));
         session.capacity = 2000;
         session.run(seconds(3));
         assert!((1000..=1900).contains(&session.kbps), "after the link slowed: {}", session.kbps);
         session.run(seconds(20));
         session.capacity = 100_000;
-        session.run(seconds(15));
+        session.run(seconds(30));
         assert_eq!(session.kbps, HIGHEST, "after the link recovered");
     }
 
     #[test]
-    fn a_still_screen_recovers_as_well() {
+    fn a_screen_that_needs_no_more_is_not_probed_for_more() {
         let mut session = Session::new(2000);
         session.run(seconds(5));
+        let (rate, spent) = (session.kbps, session.padding);
         (session.moving, session.capacity) = (false, 100_000);
-        session.run(seconds(15));
-        assert_eq!(session.kbps, HIGHEST);
+        session.run(seconds(120));
+        assert_eq!((session.kbps, session.padding), (rate, spent), "a still screen is left alone");
+        session.moving = true;
+        session.run(seconds(12));
+        assert_eq!(session.kbps, HIGHEST, "and gets what the link carries once it moves");
+    }
+
+    #[test]
+    fn coarse_frames_ask_for_more_even_where_the_rate_is_not_used() {
+        let now = Instant::now();
+        let mut controller = Controller::new(now, HIGHEST);
+        let mut probed = false;
+        for tick in 0..600 {
+            let at = now + tick * TICK;
+            let verdict = controller.step(&Reading {
+                now: at,
+                written: 0,
+                received: Some((at, 0)),
+                round_trip: Some(ROUND_TRIP),
+                frames: 1,
+                coarse: 1,
+                held_up: Duration::ZERO,
+                ceiling: HIGHEST,
+            });
+            probed |= verdict.probing;
+        }
+        assert!(probed, "an encoder that cannot make do with its rate gets the link probed");
     }
 
     #[test]
@@ -542,6 +585,7 @@ mod tests {
                 received: None,
                 round_trip: None,
                 frames: 1,
+                coarse: 0,
                 held_up: Duration::ZERO,
                 ceiling: HIGHEST,
             });
@@ -564,7 +608,7 @@ mod tests {
         session.run(seconds(3));
         assert_eq!(session.kbps, 2000);
         session.ceiling = 10_000;
-        session.run(seconds(3));
+        session.run(seconds(6));
         assert_eq!(session.kbps, 10_000);
         session.ceiling = 1000;
         session.run(TICK);

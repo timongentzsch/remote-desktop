@@ -225,6 +225,7 @@ impl Stream {
             (encoded.unit.to_vec(), encoded.keyframe, encoded.settled, encoded.coarse);
         let took = started.elapsed();
         self.shared.encode_micros.store(took.as_micros() as u32, Ordering::Relaxed);
+        self.shared.coarse.fetch_add(coarse as u32, Ordering::Relaxed);
         self.fine_frames = if settled { self.fine_frames + 1 } else { 0 };
         if self.fine_frames >= SETTLED_FRAMES {
             self.refinements_left = 0;
