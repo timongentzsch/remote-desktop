@@ -12,18 +12,20 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
 - **Nobody in between.** The browser talks to your machine directly: no account, no relay, no vendor's
   server.
 - **Made to feel local.** A still screen costs nothing, a busy one is encoded in a few milliseconds, the
-  pointer is drawn by the client, and the bitrate follows the connection. Video travels over UDP with spare
-  packets, so that a lost one costs no wait: with one packet in twenty lost, frames still arrived on time.
+  pointer is drawn by the client, and the bitrate follows the connection. Video, sound and the pointer's
+  moves travel over UDP, so that a lost packet costs no wait: with one in twenty lost, frames still arrived
+  on time and sound played on.
 - **Yours to weigh.** One control says what gives way when the connection is not enough, response or
-  quality, and takes effect at once. Frame rate, delay and bitrate can be pinned to a corner of the picture.
+  quality, and takes effect at once. Another shows frames at an even pace where a connection's delay swings.
+  Frame rate, delay and bitrate can be pinned to a corner of the picture.
 
 ## What it is not
 
 - **Not a way around routers.** The other device has to be able to reach the machine: on the same network,
   over a VPN such as Tailscale, or through a port you open. There is no relay service.
 - **Not a game streamer.** It is made for desktop work and into a browser. There are no gamepads and no
-  HDR. Sound and input travel over TCP, and so does the video where UDP does not get through, which shows
-  on a link that loses packets.
+  HDR. Keys and clicks travel over TCP, and so does everything else where UDP does not get through, which
+  shows on a link that loses packets.
 - **Not a session of its own.** It shows what the machine's own screen shows: the login screen, then the
   desktop of whoever logs in there. It starts no separate sessions for remote users.
 - **Not file transfer or device sharing.** Text goes through the clipboard; files, drives, printers and USB

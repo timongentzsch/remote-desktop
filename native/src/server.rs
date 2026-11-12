@@ -99,7 +99,7 @@ pub fn serve(listener: TcpListener, host: Arc<Host>) -> ! {
     unreachable!("the listener never stops accepting")
 }
 
-fn answer(socket: TcpStream, host: &Host) -> io::Result<()> {
+fn answer(socket: TcpStream, host: &Arc<Host>) -> io::Result<()> {
     let configuration = host.tls.lock().unwrap().clone();
     let connection = Arc::new(Connection::accept(&configuration, socket, LOGIN_PATIENCE)?);
     let (mut head, began) = (Vec::new(), Instant::now());

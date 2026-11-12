@@ -255,6 +255,8 @@ const canvas = document.querySelector('canvas'), login = $('login'), settings = 
 const SAVED = ['bitrate', 'patience', 'fps', 'size', 'chroma', 'cursor', 'sound', 'motion', 'pin', 'screen'];
 
 let socket, stop;  // the current session's connection, and what ends it
+let path = null;    // its session to the host's UDP side, where there is one
+let moves = 0;      // how many moves of the pointer were sent
 const connected = () => document.body.classList.contains('connected');
 const send = (...message) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(message));
 
@@ -504,12 +506,23 @@ function datagramPath(port, fingerprint, token, take, failed) {
     if (!closed) timer = setTimeout(failed, AGAIN);
   })();
   return {
-    // Tells the host who this is and how the video fares: the last piece used and the first missing.
+    // What goes to the host begins with the token, which says who this is, and a byte for what follows.
+    // How the video fares: the last piece used and the first missing.
     say(used, missing) {
-      const message = new Uint8Array(24), view = new DataView(message.buffer);
+      const message = new Uint8Array(25), view = new DataView(message.buffer);
       message.set(bytes(token));
-      view.setUint32(16, used);
-      view.setUint32(20, missing);
+      view.setUint32(17, used);
+      view.setUint32(21, missing);
+      writer?.write(message).catch(() => {});
+    },
+    // Where the pointer goes: the count of this move, then x and y.
+    move(count, x, y) {
+      const message = new Uint8Array(25), view = new DataView(message.buffer);
+      message.set(bytes(token));
+      message[16] = 1;
+      view.setUint32(17, count);
+      view.setUint16(21, x);
+      view.setUint16(23, y);
       writer?.write(message).catch(() => {});
     },
     close() {
@@ -677,11 +690,21 @@ function connect() {
   // Video comes over the WebSocket until the host is reached over UDP, and from then on as datagrams. When it
   // changes its way it begins anew, with a piece that says how to decode: `awaited` while that is still to
   // come on the WebSocket.
-  let path = null, byUdp = false, awaited = false;
+  let byUdp = false, awaited = false;
   const joiner = pieceJoiner(piece => { byUdp = true; show(piece); }, () => path?.say(...joiner.status()));
   // A hidden page is let run so seldom that its word would be stale: it says nothing, and the host goes back
   // to the WebSocket until it is seen again.
   const status = setInterval(() => document.hidden || path?.say(...joiner.status()), STATUS);
+  // Sound over UDP: a datagram is 8, the packet's number (4 bytes), its length (2), the packet, and the packet
+  // before it once more, which is played first where its own datagram got lost.
+  let heard = -1;
+  function hear(datagram) {
+    const view = new DataView(datagram.buffer, datagram.byteOffset), number = view.getUint32(1), length = view.getUint16(5);
+    if (number <= heard) return;  // came late
+    if (number > heard + 1 && datagram.length > 7 + length) sound?.play(datagram.subarray(7 + length));
+    heard = number;
+    sound?.play(datagram.subarray(7, 7 + length));
+  }
   function show(piece) {
     if (!live) {
       live = true;
@@ -728,6 +751,7 @@ function connect() {
     udp(port, fingerprint, token) {
       path?.close();
       path = datagramPath(port, fingerprint, token, datagram => {
+        if (datagram[0] === SOUND) return hear(datagram);
         if (datagram[0] !== 9) return;  // padding is only there to show the host what the link carries
         bytes += datagram.length;
         joiner.take(datagram);
@@ -767,6 +791,7 @@ function connect() {
     clearInterval(report);
     clearInterval(status);
     path?.close();
+    path = null;
     joiner.close();
     showPointer(shape = null);
     ws.onmessage = null;
@@ -833,8 +858,11 @@ canvas.addEventListener('onpointerrawupdate' in canvas ? 'pointerrawupdate' : 'p
   const scale = Math.min(canvas.clientWidth / canvas.width, canvas.clientHeight / canvas.height);
   const normalise = (position, client, size) =>
     Math.round(Math.min(1, Math.max(0, (position - (client - size * scale) / 2) / (size * scale))) * 65535);
-  send('move', normalise(event.clientX, canvas.clientWidth, canvas.width),
-               normalise(event.clientY, canvas.clientHeight, canvas.height));
+  // A move goes over the WebSocket and, where there is one, over UDP as well, with its count: the host takes
+  // whichever arrives first, so a lost packet on either way holds the pointer up on neither.
+  const [x, y] = [normalise(event.clientX, canvas.clientWidth, canvas.width), normalise(event.clientY, canvas.clientHeight, canvas.height)];
+  send('move', x, y, ++moves);
+  path?.move(moves, x, y);
 });
 canvas.onmousedown = event => {
   showPanel(false);  // working in the remote picture again puts the panel away

@@ -53,6 +53,8 @@ const result = await evaluate(`(async () => {
   await new Promise(done => setTimeout(done, ${+seconds * 1000}));
   return JSON.stringify({ took, drawn, bitrate: $('now-bitrate').textContent, picture: $('now-picture').textContent });
 })()`);
+// TELL holds a JavaScript expression whose value is printed at the end, for what SET set up to count.
+if (process.env.TELL) console.log(await evaluate(process.env.TELL));
 chrome.kill();
 
 let measured;

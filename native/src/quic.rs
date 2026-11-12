@@ -56,11 +56,16 @@ const SESSION: u8 = 0;
 /// About what a packet adds to the datagram it carries, in bytes.
 const WRAPPING: u64 = 30;
 
-/// What a client's datagrams are made of: the token, the number of the last piece of video it could use, and
-/// the number of the first it is missing (`NOTHING` if none).
+/// A client's datagrams begin with the token and a byte that says what follows. How it is doing: the number
+/// of the last piece of video it could use, and that of the first it is missing (`NOTHING` if none). Or where
+/// the pointer goes: the count of this move, then x and y.
 const TOKEN: usize = 16;
-const STATUS: usize = TOKEN + 8;
+const STATUS: u8 = 0;
+const MOVE: u8 = 1;
 pub const NOTHING: u32 = u32::MAX;
+
+/// What a session does with a move of the pointer that came over UDP: its count, x and y.
+pub type Moved = Box<dyn Fn(u32, u16, u16) + Send + Sync>;
 /// A client says how it is doing many times a second. One that has said nothing for this long cannot be
 /// reached this way any more, or its page is hidden and its browser lets it do little.
 const SILENCE: Duration = Duration::from_millis(1500);
@@ -271,6 +276,8 @@ pub struct Link {
     used: AtomicU32,
     missing: AtomicU32,
     heard: AtomicU64,
+    /// What the session does with the pointer's moves that come this way.
+    moved: Mutex<Option<Moved>>,
     /// Set by the session when it is over.
     over: AtomicBool,
 }
@@ -343,6 +350,21 @@ impl Link {
         })
     }
 
+    /// Queues a datagram ahead of what waits: sound, which is small and must not wait behind a frame.
+    pub fn send_ahead(&self, datagram: Vec<u8>, kbps: u32) {
+        self.kbps.store(kbps, Ordering::Relaxed);
+        let mut waiting = self.waiting.lock().unwrap();
+        self.queued.fetch_add(datagram.len() as u64, Ordering::Relaxed);
+        waiting.push_front(datagram);
+        drop(waiting);
+        self.shared.wake();
+    }
+
+    /// Says what is to be done with the pointer's moves that the client sends this way.
+    pub fn on_move(&self, moved: Moved) {
+        *self.moved.lock().unwrap() = Some(moved);
+    }
+
     /// The last piece of video the client could use, and the first it is missing (`NOTHING` if none).
     pub fn status(&self) -> (u32, u32) {
         (self.used.load(Ordering::Relaxed), self.missing.load(Ordering::Relaxed))
@@ -350,6 +372,7 @@ impl Link {
 
     /// The session is over: the client's connection is closed and the link forgotten.
     pub fn close(&self) {
+        *self.moved.lock().unwrap() = None;
         self.over.store(true, Ordering::Relaxed);
         self.shared.wake();
     }
@@ -411,6 +434,7 @@ impl Endpoint {
             used: NOTHING.into(),
             missing: NOTHING.into(),
             heard: 0.into(),
+            moved: None.into(),
             over: false.into(),
         });
         self.shared.links.lock().unwrap().push(link.clone());
@@ -432,24 +456,32 @@ struct Client {
 }
 
 impl Client {
-    /// Takes what the client sent: its token and how it is doing.
+    /// Takes what the client sent: its token, then how it is doing or where its pointer goes.
     fn hear(&mut self, datagram: &[u8], shared: &Shared) {
-        let [SESSION, status @ ..] = datagram else { return };
-        if status.len() != STATUS {
-            return;
-        }
+        let [SESSION, said @ ..] = datagram else { return };
+        let Some((token, [kind, rest @ ..])) = said.split_at_checked(TOKEN) else { return };
         if self.link.is_none() {
             let links = shared.links.lock().unwrap();
-            let Some(link) = links.iter().find(|link| link.token == status[..TOKEN]) else { return };
+            let Some(link) = links.iter().find(|link| link.token == token) else { return };
             // The newest connection to show a link's token has it: a page may have opened a second one.
             *link.counts.lock().unwrap() = Some(self.counts.clone());
             self.link = Some(link.clone());
         }
         let Some(link) = &self.link else { return };
-        let number = |at: usize| u32::from_be_bytes(status[at..at + 4].try_into().unwrap());
-        link.used.store(number(TOKEN), Ordering::Relaxed);
-        link.missing.store(number(TOKEN + 4), Ordering::Relaxed);
-        link.heard.store(shared.started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        let number = |at: usize| u32::from_be_bytes(rest[at..at + 4].try_into().unwrap());
+        match (*kind, rest.len()) {
+            (STATUS, 8) => {
+                link.used.store(number(0), Ordering::Relaxed);
+                link.missing.store(number(4), Ordering::Relaxed);
+                link.heard.store(shared.started.elapsed().as_micros() as u64, Ordering::Relaxed);
+            }
+            (MOVE, 8) => {
+                if let Some(moved) = &*link.moved.lock().unwrap() {
+                    moved(number(0), (number(4) >> 16) as u16, number(4) as u16);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Whether this connection is the one its link counts on.

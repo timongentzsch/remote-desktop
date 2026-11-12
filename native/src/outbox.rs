@@ -31,6 +31,8 @@ struct Pending {
 pub enum Next {
     /// Bytes to send; for a piece of video, also when it was ready.
     Send(Vec<u8>, Option<Instant>),
+    /// A packet of sound, which may take another way than the rest.
+    Sound(Vec<u8>),
     /// Nothing came up in the time given.
     Nothing,
     /// The session is over.
@@ -82,12 +84,14 @@ impl Outbox {
             return Next::Closed;
         }
         let pending = &mut *pending;
-        let next = match pending.control.pop_front().or_else(|| pending.audio.pop_front()) {
-            Some(message) => Next::Send(message, None),
-            None => match pending.video.take_if(|_| video) {
-                Some((piece, ready)) => Next::Send(piece, Some(ready)),
-                None => return Next::Nothing,
-            },
+        let next = if let Some(message) = pending.control.pop_front() {
+            Next::Send(message, None)
+        } else if let Some(packet) = pending.audio.pop_front() {
+            Next::Sound(packet)
+        } else if let Some((piece, ready)) = pending.video.take_if(|_| video) {
+            Next::Send(piece, Some(ready))
+        } else {
+            return Next::Nothing;
         };
         self.changed.notify_all();
         next

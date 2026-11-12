@@ -58,7 +58,7 @@ struct FromClient {
 }
 
 /// Checks the client's login, then streams to it and injects its input until it leaves.
-pub fn run(connection: &Arc<Connection>, host: &Host) {
+pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     let login: Value = ws::read(&mut &**connection)
         .ok()
         .flatten()
@@ -146,15 +146,28 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
     if login["sound"] == "on" {
         let (outbox, shared) = (outbox.clone(), shared.clone());
         threads.push(thread::spawn(move || {
-            let packet = Box::new(move |packet: &[u8]| {
-                outbox.push_audio(ws::frame(ws::BINARY, &[&[ws::SOUND], packet].concat()))
-            });
+            let packet = Box::new(move |packet: &[u8]| outbox.push_audio([&[ws::SOUND], packet].concat()));
             if let Err(reason) = audio::run(shared, packet) {
                 eprintln!("remote-desktop: no sound: {reason}");
             }
         }));
     }
 
+    // The pointer's moves come over the connection and, where there is a link, over that as well. Each has its
+    // count, and one that is not newer than the last made is left out: whichever way is quicker counts.
+    let moved = Arc::new({
+        let (host, screens, shown, last) = (host.clone(), screens.clone(), shown.clone(), AtomicU32::new(0));
+        move |count: u32, x: i32, y: i32| {
+            if count == 0 || last.fetch_max(count, Ordering::Relaxed) < count {
+                let (x, y) = shown.as_ref().map_or((x, y), |screen| screen::place(screen, &screens, x, y));
+                host.input.move_to(x, y);
+            }
+        }
+    });
+    if let Some(link) = &link {
+        let moved = moved.clone();
+        link.on_move(Box::new(move |count, x, y| moved(count, x.into(), y.into())));
+    }
     let mut held = HashSet::new();
     while let Ok(Some(message)) = ws::read(&mut &**connection) {
         if connection.take_reply_pending() {
@@ -172,11 +185,7 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
                 };
                 host.input.key(code, down);
             }
-            Some("move") => {
-                let (x, y) = (number(1) as i32, number(2) as i32);
-                let (x, y) = shown.as_ref().map_or((x, y), |screen| screen::place(screen, &screens, x, y));
-                host.input.move_to(x, y);
-            }
+            Some("move") => moved(number(3) as u32, number(1) as i32, number(2) as i32),
             Some("scroll") => host.input.scroll(number(1) as i32, number(2) as i32),
             Some("bitrate") => told.ceiling.store(ceiling(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed),
             Some("patience") => told.patience.store(patience(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed),
@@ -264,6 +273,8 @@ struct Datagrams<'a> {
     counted: (Instant, u64, u64),
     /// The piece from which on the frame to begin with that was last asked for makes good what is lost.
     fresh_from: u32,
+    /// The number of the next packet of sound, and the packet before it, which goes along once more.
+    spoken: (u32, Vec<u8>),
     /// What the client last said of the pieces it has, and since when it should have said something else.
     status: (u32, u32),
     since: Instant,
@@ -284,6 +295,7 @@ impl<'a> Datagrams<'a> {
             lately: 0.0,
             counted: (now, 0, 0),
             fresh_from: 0,
+            spoken: (0, Vec::new()),
             status: link.status(),
             since: now,
             given: VecDeque::new(),
@@ -314,6 +326,19 @@ impl<'a> Datagrams<'a> {
         (self.plain, self.cut) = (0.95 * self.plain + piece.len() as f64, 0.95 * self.cut + took as f64);
         self.send(datagrams, kbps);
         self.pieces += 1;
+    }
+
+    /// Sends a packet of sound (a message as the connection carries it: the kind, then the packet) ahead of
+    /// what waits, and the packet before it once more: one datagram lost then costs nothing. A datagram is the
+    /// kind, the packet's number, its length, the packet, and the one before.
+    fn sound(&mut self, message: &[u8], kbps: u32) {
+        let (kind, packet) = (message[0], &message[1..]);
+        let (number, before) = &mut self.spoken;
+        let head = [&[kind][..], &number.to_be_bytes(), &(packet.len() as u16).to_be_bytes()].concat();
+        let datagram = [&head[..], packet, before].concat();
+        (*number, *before) = (*number + 1, packet.to_vec());
+        self.written += datagram.len() as u64;
+        self.link.send_ahead(datagram, kbps);
     }
 
     /// The share of the rate that is left for video itself, beside its spares and what datagrams begin with.
@@ -414,6 +439,14 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
             (Next::Send(piece, Some(ready)), Some(udp)) => {
                 udp.piece(&piece, kbps);
                 (left, sending) = (1, sending + ready.elapsed());
+            }
+            (Next::Sound(packet), Some(udp)) => udp.sound(&packet, kbps),
+            (Next::Sound(packet), None) => {
+                let message = ws::frame(ws::BINARY, &packet);
+                if connection.write(&message).is_err() {
+                    break;
+                }
+                written += message.len() as u64;
             }
             (Next::Send(bytes, ready), _) => {
                 // A piece of video is yet to be made a message; everything else comes as one.
