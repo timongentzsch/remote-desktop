@@ -39,7 +39,7 @@ const evaluate = expression => new Promise(done => {
 });
 
 await sleep(1500);
-// SET holds JavaScript that chooses settings before the session begins, such as settings.motion.value = "even".
+// SET holds JavaScript that chooses settings before the session begins, such as settings.bitrate.value = "2000".
 await evaluate(`${process.env.SET ?? ''}; showChoices(); login.fullscreen.checked = false; login.requestSubmit(); 'connecting'`);
 await sleep(6000);  // the picture is there and the bitrate has found its level
 

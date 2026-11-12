@@ -20,9 +20,11 @@
   button, input, select { font: inherit; color: inherit; border-radius: 0; }
   button { cursor: pointer; }
   [hidden] { display: none !important; }
-  :focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
-  /* In the panel everything sits edge to edge, so what has the focus is marked inside its own edges. */
-  .panel :focus-visible { outline-offset: -2px; }
+  /* What has the focus is marked inside its own edges: in the ground's colour where it is filled white, and
+     around it only where it is too small to hold the mark. */
+  :focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+  .primary:focus-visible, .slow .pill:focus-visible { outline-color: var(--ground); outline-offset: -4px; }
+  .option input:focus-visible, .steps input:focus-visible { outline-offset: 2px; }
 
   /* Connect screen */
   .connect { position: fixed; inset: 0; box-sizing: border-box; padding: 24px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 32px; }
@@ -89,10 +91,6 @@
   .legend { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
   .legend span:nth-child(even) { color: var(--muted); }
   .legend span { white-space: nowrap; }
-  /* The time frames are held shows only where they are: with even pacing on. Five parts do not fit on a line,
-     so each then has its name above its figure. */
-  body:not(.even) .hold { display: none; }
-  .even .legend span { display: flex; flex-direction: column; }
   .priority { padding: 0 var(--inset) 8px; display: flex; flex-direction: column; }
   .steps { display: flex; align-items: center; }
   .steps span { flex: 1 1 0; }
@@ -100,7 +98,6 @@
   .steps label { width: 28px; height: var(--control); display: flex; align-items: center; justify-content: center; cursor: pointer; }
   .steps input { appearance: none; width: 12px; height: 12px; margin: 0; border: 1px solid var(--text); background: none; cursor: pointer; }
   .steps input:checked { background: var(--text); }
-  .steps input:focus-visible { outline-offset: 2px; }
   /* The lines between the settings are the grid's own ground showing through its gaps. */
   .settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line); border-bottom-color: var(--text); }
   .setting { min-width: 0; height: var(--control); padding: 0 var(--inset); display: flex; align-items: center; gap: 8px; background: var(--ground); color: var(--muted); white-space: nowrap; }
@@ -157,15 +154,13 @@
     </div>
     <div class="delay" title="Where the measured delay goes. Capturing and displaying are not included.">
       <div class="bar" role="img" aria-label="Delay split into encoding, sending, network and decoding">
-        <i class="encode"></i><i class="send"></i><i class="network"></i><i class="decode"></i><i class="hold"></i>
+        <i class="encode"></i><i class="send"></i><i class="network"></i><i class="decode"></i>
       </div>
       <div class="legend">
         <span>Encode <output class="encode">–</output></span>
         <span>Send <output class="send">–</output></span>
         <span>Network <output class="network">–</output></span>
-        <span>Decode <output class="decode">–</output></span>
-        <span class="hold">Hold <output class="hold">–</output></span>
-        <span>ms</span>
+        <span>Decode <output class="decode">–</output> ms</span>
       </div>
     </div>
     <div class="priority">
@@ -222,13 +217,7 @@
           <option value="off">Off</option>
         </select>
       </label>
-      <label class="setting">Even pacing
-        <select name="motion" title="Off shows each frame the moment it arrives. On holds frames a little to show them at a steady pace, which smooths motion over a connection whose delay swings and costs that much delay.">
-          <option value="direct">Off</option>
-          <option value="even">On</option>
-        </select>
-      </label>
-      <label class="setting">Numbers
+      <label class="setting wide">Numbers
         <select name="pin" title="Keeps frame rate, delay and bitrate in a corner of the picture.">
           <option value="off">Hidden</option>
           <option value="top-left">Top left</option>
@@ -256,7 +245,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const canvas = document.querySelector('canvas'), login = $('login'), settings = $('settings');
-const SAVED = ['bitrate', 'patience', 'fps', 'size', 'chroma', 'cursor', 'sound', 'motion', 'pin', 'screen'];
+const SAVED = ['bitrate', 'patience', 'fps', 'size', 'chroma', 'cursor', 'sound', 'pin', 'screen'];
 
 let socket, stop;  // the current session's connection, and what ends it
 let path = null;    // its session to the host's UDP side, where there is one
@@ -269,50 +258,20 @@ const send = (...message) => socket?.readyState === WebSocket.OPEN && socket.sen
 const context = canvas.getContext('2d', { alpha: false, desynchronized: true });  // skip compositor queueing where supported
 
 // Decodes the stream and draws it. `failed` is called if the decoder gives up.
-// With even pacing on, a frame is not shown the moment it is decoded. Over a path whose delay swings,
-// frames that left the host evenly arrive in clumps, and motion shown as they come goes in fits. Each frame
-// says when the host made it, so how late it is compared with the quickest of late is known; frames are then
-// held to be shown as late as nine in ten of the recent ones were, MOST_HOLD ms at the most. That costs as
-// much delay and gives an even pace. A frame later than that is shown at once.
-const MOST_HOLD = 150, REMEMBERED = 120, MEMORY = 10000;
 function videoPlayer(failed) {
-  let pending = new Uint8Array(0), frames = 0, decodeTime = 0, heldTime = 0;
+  let pending = new Uint8Array(0), frames = 0, decodeTime = 0;
   const submitted = [];  // when each frame still inside the decoder was handed to it
-  const held = [], lateness = [];  // frames waiting for their moment; how late the recent ones were
-  let timer = 0, hold = 0, quickest = Infinity, earlier = Infinity, turned = 0;
-  function show(frame) {
-    if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-      canvas.width = frame.displayWidth;
-      canvas.height = frame.displayHeight;
-      showPointer();  // its size follows the picture's
-    }
-    context.drawImage(frame, 0, 0);
-    frame.close();
-  }
-  function showDue() {
-    while (held.length && held[0].due <= performance.now() + 1) show(held.shift().frame);
-    timer = held.length ? setTimeout(showDue, held[0].due - performance.now()) : 0;
-  }
   const decoder = new VideoDecoder({
     output(frame) {
-      const now = performance.now();
-      decodeTime += now - submitted.shift();
+      decodeTime += performance.now() - submitted.shift();
       frames++;
-      if (settings.motion.value !== 'even') return show(frame);
-      // The host's clock is another, so only differences count: this frame's way against the quickest of the
-      // last MEMORY ms or two.
-      const took = now - frame.timestamp / 1000;
-      if (now - turned > MEMORY) [earlier, quickest, turned] = [quickest, Infinity, now];
-      quickest = Math.min(quickest, took);
-      const late = took - Math.min(quickest, earlier);
-      lateness.push(late);
-      if (lateness.length > REMEMBERED) lateness.shift();
-      const usual = [...lateness].sort((a, b) => a - b)[Math.floor(lateness.length * 0.9)];
-      hold += (Math.min(usual, MOST_HOLD) - hold) / 20;  // follows slowly, or the pace would swing with it
-      const wait = Math.max(0, hold - late);
-      heldTime += wait;
-      held.push({ frame, due: now + wait });
-      if (!timer) showDue();
+      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        canvas.width = frame.displayWidth;
+        canvas.height = frame.displayHeight;
+        showPointer();  // its size follows the picture's
+      }
+      context.drawImage(frame, 0, 0);
+      frame.close();
     },
     error: failed,
   });
@@ -344,17 +303,13 @@ function videoPlayer(failed) {
       }
       pending = stream.slice(at);
     },
-    // How many frames came out since the last call, and how long one took to decode and was held on average, in ms.
+    // How many frames were drawn since the last call, and how long decoding one took on average, in ms.
     measure() {
-      const measured = { frames, decode: decodeTime / (frames || 1), hold: heldTime / (frames || 1) };
-      frames = decodeTime = heldTime = 0;
+      const measured = { frames, decode: decodeTime / (frames || 1) };
+      frames = decodeTime = 0;
       return measured;
     },
-    close() {
-      clearTimeout(timer);
-      for (const { frame } of held.splice(0)) frame.close();
-      if (decoder.state !== 'closed') decoder.close();
-    },
+    close: () => decoder.state !== 'closed' && decoder.close(),
   };
 }
 
@@ -735,8 +690,8 @@ function connect() {
     if (recent.length > 4) recent.shift();
     const received = recent.reduce((sum, count) => sum + count) * 8 / (TICK * recent.length);  // kbit/s
     if (++ticks % 4 === 0 && live && host.kbps) {  // once the host has reported
-      const { frames, decode, hold } = video.measure();
-      showStatistics(frames, { encode: host.encode, send: host.send, network: roundTrip / 2, decode, hold }, received, host.kbps, host.heldBack, byUdp ? 'UDP' : 'TCP');
+      const { frames, decode } = video.measure();
+      showStatistics(frames, { encode: host.encode, send: host.send, network: roundTrip / 2, decode }, received, host.kbps, host.heldBack, byUdp ? 'UDP' : 'TCP');
     }
   }, TICK);
 
@@ -895,20 +850,18 @@ login.onsubmit = event => {
   connect();
 };
 settings.onsubmit = event => event.preventDefault();
-// What the choice between response and quality means, in words; where the numbers are pinned; how frames are shown.
+// What the choice between response and quality means, in words, and where the numbers are pinned.
 function showChoices() {
   const chosen = settings.querySelector('[name=patience]:checked');
   $('patience-says').textContent = `${chosen.ariaLabel}: video may run ${chosen.value} ms behind.`;
   document.body.dataset.pin = settings.pin.value;
-  document.body.classList.toggle('even', settings.motion.value === 'even');
 }
 settings.onchange = event => {
   try { localStorage.settings = JSON.stringify(Object.fromEntries(SAVED.map(name => [name, settings[name].value]))); } catch {}
   const { name } = event.target;
   showChoices();
   if (name === 'bitrate' || name === 'patience') send(name, +settings[name].value);  // take effect in the running stream
-  else if (name !== 'pin' && name !== 'motion') connect();                          // these two are the page's own;
-                                                                                    // the rest apply when the capture starts
+  else if (name !== 'pin') connect();                                               // the others when the capture starts
 };
 $('pill').onclick = () => showPanel(settings.hidden);
 $('leave').onclick = () => {

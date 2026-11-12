@@ -16,8 +16,7 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
   moves travel over UDP, so that a lost packet costs no wait: with one in twenty lost, frames still arrived
   on time and sound played on.
 - **Yours to weigh.** One control says what gives way when the connection is not enough, response or
-  quality, and takes effect at once. Another shows frames at an even pace where a connection's delay swings.
-  Frame rate, delay and bitrate can be pinned to a corner of the picture.
+  quality, and takes effect at once. Frame rate, delay and bitrate can be pinned to a corner of the picture.
 
 ## What it is not
 
