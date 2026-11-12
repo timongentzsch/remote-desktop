@@ -44,8 +44,6 @@ pub struct Encoded<'a> {
     /// The access unit, as length-prefixed NAL units.
     pub unit: &'a [u8],
     pub keyframe: bool,
-    /// The frame is so small that it says little more than "nothing changed".
-    pub settled: bool,
     /// The bitrate cap, not the quality target, decided how good the frame is. Only x264 says so.
     pub coarse: bool,
 }
@@ -164,15 +162,9 @@ impl Encoder {
         let (mut data, mut keyframe, mut coarse) = (ptr::null_mut(), 0, 0);
         let size = unsafe { encoder_encode(self.raw, &mut data, &mut keyframe, &mut coarse) };
         // The access unit stays valid until the next call into the encoder, which needs `&mut self`.
-        // "Nothing changed" still costs something: a header for each slice the encoder cuts the frame into, and
-        // at x264's higher efforts a little for each block. It stays below a quarter of a byte for each
-        // 16-pixel block, on a machine of few cores too; anything bigger carried picture detail.
-        let blocks = self.width.div_ceil(16) * self.height.div_ceil(16);
-        let settled = (size as usize) < 64 + blocks / 4;
         (size > 0).then(|| Encoded {
             unit: unsafe { slice::from_raw_parts(data, size as usize) },
             keyframe: keyframe != 0,
-            settled,
             coarse: coarse != 0,
         })
     }
@@ -188,7 +180,7 @@ impl Drop for Encoder {
 mod tests {
     use std::sync::Mutex;
 
-    use super::super::{REFINE_FPS, SETTLED_FRAMES};
+    use super::super::{REFINE_FPS, Still};
     use super::*;
 
     /// Held by a test while it uses the GPU's encoder, which only one can have at a time.
@@ -287,11 +279,13 @@ mod tests {
             draw_detail(&mut encoder);
             let first = encoder.encode().expect("a frame in gives a frame out").unit.len();
             assert!(encoder.set_rate(kbps, REFINE_FPS));
-            let (mut sizes, mut settled_in_a_row) = (Vec::new(), 0);
-            while settled_in_a_row < SETTLED_FRAMES {
-                let encoded = encoder.encode().expect("a frame in gives a frame out");
-                settled_in_a_row = if encoded.settled { settled_in_a_row + 1 } else { 0 };
-                sizes.push(encoded.unit.len());
+            let (mut sizes, mut still) = (Vec::new(), Still::default());
+            still.finished(first, Still::share(kbps));
+            loop {
+                sizes.push(encoder.encode().expect("a frame in gives a frame out").unit.len());
+                if still.finished(*sizes.last().unwrap(), Still::share(kbps)) {
+                    break;
+                }
                 assert!(
                     sizes.len() < 200,
                     "the picture never settled (full_chroma={full_chroma} gpu={gpu}): {sizes:?}"

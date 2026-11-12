@@ -19,9 +19,40 @@ use encode::{EFFORTS, Encoder};
 pub const REFINE_FPS: u32 = 10;
 /// For how many seconds at most a still picture is refined.
 const REFINE_SECONDS: u32 = 20;
-/// How many refinements in a row have to add nothing before the picture counts as finished.
-pub const SETTLED_FRAMES: u32 = 3;
 const REFINE_INTERVAL: Duration = Duration::from_millis(1000 / REFINE_FPS as u64);
+
+/// Tells when refining a still picture has stopped paying. An encoder goes on spending a little on a picture
+/// that does not change, and how much depends on its settings, the picture's size and the machine's cores, so
+/// no size as such says "nothing changed". What does is that the frames have stopped getting smaller, at a
+/// size far below what the bitrate lets a frame be: near that, they are still filling in detail.
+#[derive(Default)]
+pub struct Still {
+    smallest: Option<usize>,
+    level_frames: u32,
+}
+
+impl Still {
+    /// How many frames in a row have to be level before the picture counts as finished,
+    const LEVEL_FRAMES: u32 = 3;
+    /// a frame being level when it has at least this many tenths of the smallest frame's size,
+    const LEVEL_TENTHS: usize = 9;
+    /// and far below what the bitrate allows when under this fraction of it.
+    const FAR_BELOW: usize = 4;
+
+    /// The share of a bitrate in kbit/s that one refinement may take, in bytes.
+    pub fn share(kbps: u32) -> usize {
+        kbps as usize * 125 / REFINE_FPS as usize
+    }
+
+    /// Takes the size of the picture's latest frame and the share it could have taken; says whether the
+    /// picture is finished.
+    pub fn finished(&mut self, size: usize, share: usize) -> bool {
+        let level = self.smallest.is_some_and(|smallest| size * 10 >= smallest * Self::LEVEL_TENTHS);
+        self.smallest = Some(self.smallest.map_or(size, |smallest| smallest.min(size)));
+        self.level_frames = if level && size * Self::FAR_BELOW < share { self.level_frames + 1 } else { 0 };
+        self.level_frames >= Self::LEVEL_FRAMES
+    }
+}
 
 /// The software encoder can put more work into a frame, which makes it look better at the same size. It is
 /// asked to where that shows and fits: when the bitrate cap, not the quality target, decided how good most
@@ -67,9 +98,9 @@ pub struct Stream {
     /// The bitrate cap in kbit/s and the frames a second the encoder was last told.
     rate: (u32, u32),
     /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
-    /// frame would ever improve it, so the same picture is encoded again until the encoder has nothing to add.
+    /// frame would ever improve it, so the same picture is encoded again until that stops paying.
     refinements_left: u32,
-    fine_frames: u32,
+    still: Still,
     /// When the latest frame, new or refined, was encoded.
     encoded: Instant,
     started: Instant,
@@ -95,7 +126,7 @@ impl Stream {
             weighed: Weighed::default(),
             rate: (0, 0),
             refinements_left: 0,
-            fine_frames: 0,
+            still: Still::default(),
             encoded: now,
             started: now,
             wrote_header: false,
@@ -143,7 +174,7 @@ impl Stream {
         }
         let full_chroma = encoder.full_chroma;
         convert::bgrx_to_yuv(source, stride, encoder.width, encoder.height, encoder.planes(), full_chroma);
-        self.refinements_left = REFINE_SECONDS * REFINE_FPS;
+        (self.refinements_left, self.still) = (REFINE_SECONDS * REFINE_FPS, Still::default());
         if let Some((took, coarse)) = self.encode(started, self.settings.fps)
             && !self.shared.climbing.load(Ordering::Relaxed)
         {
@@ -221,13 +252,11 @@ impl Stream {
             self.settings.kbps = wanted;
         }
         let encoded = encoder.encode()?;
-        let (unit, keyframe, settled, coarse) =
-            (encoded.unit.to_vec(), encoded.keyframe, encoded.settled, encoded.coarse);
+        let (unit, keyframe, coarse) = (encoded.unit.to_vec(), encoded.keyframe, encoded.coarse);
         let took = started.elapsed();
         self.shared.encode_micros.store(took.as_micros() as u32, Ordering::Relaxed);
         self.shared.coarse.fetch_add(coarse as u32, Ordering::Relaxed);
-        self.fine_frames = if settled { self.fine_frames + 1 } else { 0 };
-        if self.fine_frames >= SETTLED_FRAMES {
+        if self.still.finished(unit.len(), Still::share(self.rate.0)) {
             self.refinements_left = 0;
         }
         self.encoded = Instant::now();
@@ -271,6 +300,20 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_still_picture_is_finished_when_its_frames_stop_shrinking() {
+        let share = Still::share(3000);
+        let finished_after = |sizes: &[usize]| {
+            let mut still = Still::default();
+            sizes.iter().position(|&size| still.finished(size, share)).map(|index| index + 1)
+        };
+        assert_eq!(finished_after(&[60000, 30000, 9000, 900, 200, 150, 150, 150, 150]), Some(9), "at its floor");
+        // x264 at its highest effort goes on spending some kilobytes a frame, in a cycle.
+        assert_eq!(finished_after(&[60000, 20000, 4000, 2962, 2925, 3091, 2962]), Some(7));
+        assert_eq!(finished_after(&[30000; 50]), None, "frames at the limit are still filling in detail");
+        assert_eq!(finished_after(&[9000, 5000, 3000, 1800, 1000, 600]), None, "frames getting smaller are too");
+    }
 
     #[test]
     fn effort_goes_up_where_it_shows_and_fits_and_down_for_good() {
