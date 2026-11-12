@@ -82,8 +82,10 @@ const BURST: f64 = 16.0 * 1024.0;
 /// How much may wait to be sent to one client. More than this is older than is worth sending.
 const WAITING: usize = 4 << 20;
 
-/// How many round trips late a packet is given up as lost.
+/// How many round trips late a packet is given up as lost, and how many later ones may arrive before it. The
+/// usual three would take packets that merely changed places on the way for lost.
 const LATE: f32 = 3.0;
+const OVERTAKEN: u32 = 64;
 
 /// Larger than any amount under way, and large enough that the connection does not pace by it either.
 const WINDOW: u64 = 1 << 40;
@@ -224,6 +226,7 @@ fn configuration(counters: &Arc<Counters>) -> Result<(Arc<ServerConfig>, [u8; 32
     // no hurry to know; and on a way whose round trip swings, the usual patience of an eighth more takes
     // packets for lost that are merely late, which then looks like a link that loses heavily.
     transport.time_threshold(LATE);
+    transport.packet_threshold(OVERTAKEN);
     let mut configuration =
         ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(tls).map_err(|error| error.to_string())?));
     configuration.transport_config(Arc::new(transport));

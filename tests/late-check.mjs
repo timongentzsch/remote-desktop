@@ -39,7 +39,8 @@ const evaluate = expression => new Promise(done => {
 });
 
 await sleep(1500);
-await evaluate(`login.fullscreen.checked = false; login.requestSubmit(); 'connecting'`);
+// SET holds JavaScript that chooses settings before the session begins, such as settings.motion.value = "even".
+await evaluate(`${process.env.SET ?? ''}; showChoices(); login.fullscreen.checked = false; login.requestSubmit(); 'connecting'`);
 await sleep(6000);  // the picture is there and the bitrate has found its level
 
 const result = await evaluate(`(async () => {
@@ -63,7 +64,10 @@ const late = took.map(time => time - quickest).sort((a, b) => a - b);
 const at = share => late[Math.min(late.length - 1, Math.floor(share * late.length))].toFixed(0).padStart(4);
 const over = limit => (100 * late.filter(time => time > limit).length / late.length).toFixed(1).padStart(5);
 const gap = Math.max(...drawn.slice(1).map((time, index) => time - drawn[index]));
-console.log(`${(took.length / +seconds).toFixed(0).padStart(3)} fps at ${measured.bitrate} (${measured.picture.split(', ').slice(1).join(', ')}) | late by: half ${at(0.5)} ms, 9 in 10 within ${at(0.9)}, 99 in 100 within ${at(0.99)}, worst ${at(1)} | over 50 ms ${over(50)}%, over 100 ms ${over(100)}% | longest gap ${gap.toFixed(0)} ms`);
+// How far each frame's distance to the one before it, as drawn, is from that distance as the host made them.
+const uneven = took.slice(1).map((time, index) => Math.abs(time - took[index])).sort((a, b) => a - b);
+const pace = share => uneven[Math.min(uneven.length - 1, Math.floor(share * uneven.length))].toFixed(0);
+console.log(`${(took.length / +seconds).toFixed(0).padStart(3)} fps at ${measured.bitrate} (${measured.picture.split(', ').slice(1).join(', ')}) | late by: half ${at(0.5)} ms, 9 in 10 within ${at(0.9)}, 99 in 100 within ${at(0.99)}, worst ${at(1)} | over 50 ms ${over(50)}%, over 100 ms ${over(100)}% | pace off by: half ${pace(0.5)} ms, 9 in 10 within ${pace(0.9)} | longest gap ${gap.toFixed(0)} ms`);
 // With DETAIL set: second by second, how many frames were drawn and how late the latest of them was.
 if (process.env.DETAIL) {
   const seconds = new Map();
