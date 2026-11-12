@@ -80,6 +80,11 @@ It is valid for 820 days and names the machine's hostname and address as they we
 certificate from Tailscale instead. Browsers trust it as it is, the host is reachable from the tailnet at
 `https://<machine>.<tailnet>.ts.net:8765`, and the certificate renews itself.
 
+Reaching the host from another network is left to Tailscale or another VPN altogether; this program has no
+relay or router traversal of its own. Where Tailscale cannot connect two devices directly it relays them
+through one of its servers, which is slow and shows as delay here: `tailscale ping <machine>` says which of
+the two it is.
+
 ## Security
 
 Whoever logs in controls the desktop session, so treat the address and password like an SSH login.
@@ -144,6 +149,11 @@ builds them and publishes them when a version tag is pushed.
       audio.rs, input.rs       sound as Opus; keyboard and pointer through uinput
       compositor.rs, gnome.rs, xserver.rs
                                the display servers' connections that the above share
+
+To extend it: another way of capturing a screen is a module in `capture/` with one function, `run`, that
+feeds a `Stream`; another encoder implements `encoder_ops` in `stream/encoder.h`; another desktop's
+clipboard is a module in `clipboard/`; and another kind of message gets its number in `ws.rs` and a handler
+in the client's table of them.
 
 ## Licence
 
