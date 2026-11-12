@@ -7,9 +7,10 @@ use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::damage::{ConnectionExt as _, ReportLevel};
 use x11rb::protocol::shm::ConnectionExt as _;
-use x11rb::protocol::xfixes::{ConnectionExt as _, GetCursorImageReply};
+use x11rb::protocol::xfixes::{ConnectionExt as _, CursorNotifyMask, GetCursorImageReply};
 use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _, EventMask, ImageFormat, ImageOrder};
 
+use super::Shape;
 use super::memory::Memory;
 use crate::screen;
 use crate::stream::Stream;
@@ -71,6 +72,12 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
     x.change_window_attributes(root, &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY))?
         .check()?;
 
+    // Where the client draws the pointer, it is told the pointer's shape, now and whenever that changes.
+    if !stream.settings.cursor {
+        x.xfixes_select_cursor_input(root, CursorNotifyMask::DISPLAY_CURSOR)?.check()?;
+        stream.pointer(shape(&x.xfixes_get_cursor_image()?.reply()?));
+    }
+
     // The picture in the stream is out of date: at first because there is none.
     let mut stale = true;
     let mut captured = Instant::now() - Duration::from_secs(1);
@@ -80,6 +87,7 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
         while let Some(event) = events.next(&x)? {
             match event {
                 Event::DamageNotify(_) => stale = true,
+                Event::XfixesCursorNotify(_) => stream.pointer(shape(&x.xfixes_get_cursor_image()?.reply()?)),
                 Event::ConfigureNotify(change) if change.window == root && (change.width, change.height) != whole => {
                     return Ok(Ended::Resized);
                 }
@@ -126,6 +134,12 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
         events.wait(&x, None, wait)?;
     }
     Ok(Ended::Unwanted)
+}
+
+/// The pointer's shape as the client is told it.
+fn shape(pointer: &GetCursorImageReply) -> Shape {
+    let pixels = pointer.cursor_image.iter().copied();
+    Shape::from_premultiplied(pointer.width, pointer.height, (pointer.xhot, pointer.yhot), pixels)
 }
 
 /// Paints the pointer over the picture, whose top left corner is at `origin` on the server's screen. The

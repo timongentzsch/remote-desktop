@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::capture::{self, Settings, Shared};
+use crate::capture::{self, Output, Settings, Shared};
 use crate::input::{Input, KEY_LEFTSHIFT};
 use crate::outbox::{Next, Outbox};
 use crate::rate::{self, Controller, Reading};
@@ -80,7 +80,18 @@ pub fn run(connection: &Arc<Connection>, host: &Host) {
             move || {
                 let sink = Box::new({
                     let outbox = outbox.clone();
-                    move |piece: &[u8]| outbox.push_video(ws::frame(ws::BINARY, piece))
+                    move |output: Output| match output {
+                        Output::Video(piece) => outbox.push_video(ws::frame(ws::BINARY, piece)),
+                        // A message of its own kind: the shape's size and the place of its tip, then its pixels.
+                        Output::Pointer(shape) => {
+                            let numbers = [shape.width, shape.height, shape.hot.0, shape.hot.1];
+                            let head = numbers.iter().flat_map(|number| number.to_be_bytes());
+                            let message: Vec<u8> =
+                                [ws::POINTER].into_iter().chain(head).chain(shape.pixels.iter().copied()).collect();
+                            outbox.push_control(ws::frame(ws::BINARY, &message));
+                            true
+                        }
+                    }
                 });
                 if let Err(reason) = capture::run(settings, shared, sink) {
                     eprintln!("remote-desktop: capture ended: {reason}");

@@ -39,8 +39,40 @@ pub struct Shared {
     pub encode_micros: AtomicU32,
 }
 
-/// Receives each piece of the stream; returns false once nobody is listening any more.
-pub type Sink = Box<dyn FnMut(&[u8]) -> bool + Send>;
+/// What the pointer looks like: rows of pixels, each red, green, blue and how opaque it is, and the place in
+/// the picture that is at the pointer's position.
+#[derive(Clone, PartialEq)]
+pub struct Shape {
+    pub width: u16,
+    pub height: u16,
+    pub hot: (u16, u16),
+    pub pixels: Vec<u8>,
+}
+
+impl Shape {
+    /// A shape from pixels as desktops hand them out: 32 bits each, alpha on top and blue at the bottom, the
+    /// colours already multiplied by the alpha.
+    pub fn from_premultiplied(width: u16, height: u16, hot: (u16, u16), argb: impl Iterator<Item = u32>) -> Self {
+        let straight =
+            |colour: u8, alpha: u8| (colour as u32 * 255).checked_div(alpha as u32).unwrap_or(0).min(255) as u8;
+        let pixels = argb.flat_map(|pixel| {
+            let [blue, green, red, alpha] = pixel.to_le_bytes();
+            [straight(red, alpha), straight(green, alpha), straight(blue, alpha), alpha]
+        });
+        Self { width, height, hot, pixels: pixels.collect() }
+    }
+}
+
+/// What a capture hands to its session.
+pub enum Output<'a> {
+    /// The next piece of the video stream.
+    Video(&'a [u8]),
+    /// The pointer's shape, where the client draws the pointer and the desktop tells its shape.
+    Pointer(&'a Shape),
+}
+
+/// Receives what the capture puts out; returns false once nobody is listening any more.
+pub type Sink = Box<dyn FnMut(Output) -> bool + Send>;
 
 /// Captures the chosen screen until `shared.stop` is set, the sink declines a piece, or the desktop ends it.
 pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), String> {
@@ -57,5 +89,17 @@ pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), St
     } else {
         // GNOME's compositor has no Wayland protocol for this; it is asked over D-Bus.
         mutter::run(stream)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shape_gets_its_colours_back_from_under_the_alpha() {
+        // Opaque red, half-transparent white, fully transparent.
+        let shape = Shape::from_premultiplied(3, 1, (1, 0), [0xFFFF_0000, 0x8080_8080, 0].into_iter());
+        assert_eq!(shape.pixels, [255, 0, 0, 255, 255, 255, 255, 128, 0, 0, 0, 0]);
     }
 }

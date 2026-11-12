@@ -11,8 +11,9 @@ use crate::stream::Stream;
 const SERVICE: &str = "org.gnome.Mutter.ScreenCast";
 const SESSION: &str = "org.gnome.Mutter.ScreenCast.Session";
 /// Mutter's cursor modes: left out of the picture, or painted into it.
-const CURSOR_HIDDEN: u32 = 0;
 const CURSOR_EMBEDDED: u32 = 1;
+/// Not in the picture, but its shape told beside it, for the client to draw.
+const CURSOR_METADATA: u32 = 2;
 
 /// Captures the chosen monitor until the stream is no longer wanted or GNOME ends the cast.
 pub fn run(stream: Stream) -> Result<(), String> {
@@ -22,7 +23,7 @@ pub fn run(stream: Stream) -> Result<(), String> {
         .call("/org/gnome/Mutter/ScreenCast", SERVICE, "CreateSession", &[gnome::options(Vec::new())])
         .map_err(|_| unavailable)?;
     let session = gnome::path(&session)?;
-    let cursor = if stream.settings.cursor { CURSOR_EMBEDDED } else { CURSOR_HIDDEN };
+    let cursor = if stream.settings.cursor { CURSOR_EMBEDDED } else { CURSOR_METADATA };
     // Mutter knows a monitor by the name of its connector, which is the name its output goes by. An empty
     // name stands for the primary monitor.
     let screens = screen::list();

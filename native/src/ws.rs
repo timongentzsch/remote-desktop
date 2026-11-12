@@ -9,6 +9,7 @@ const CLOSE: u8 = 8;
 /// The first byte of a binary message says what it carries. Video has none of its own: its stream begins with
 /// "F" and goes on in tags that begin with 9.
 pub const PADDING: u8 = 0;
+pub const POINTER: u8 = 7;
 pub const SOUND: u8 = 8;
 
 /// The Sec-WebSocket-Accept value answering a client's Sec-WebSocket-Key.

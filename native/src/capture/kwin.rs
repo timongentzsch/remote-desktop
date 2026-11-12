@@ -18,8 +18,9 @@ use crate::stream::Stream;
 /// The protocol's name, by which a compositor announces it.
 pub const PROTOCOL: &str = "zkde_screencast_unstable_v1";
 /// KWin's pointer modes: left out of the picture, or painted into it.
-const POINTER_HIDDEN: u32 = 1;
 const POINTER_EMBEDDED: u32 = 2;
+/// Not in the picture, but its shape told beside it, for the client to draw.
+const POINTER_METADATA: u32 = 4;
 
 /// What KWin has said about the cast so far.
 #[derive(Default)]
@@ -34,7 +35,7 @@ pub fn run(stream: Stream) -> Result<(), String> {
     let queue = events.handle();
     let output = compositor::output(&globals, &queue, stream.settings.screen.as_deref())?;
     let screencast: ZkdeScreencastUnstableV1 = bind(&globals, &queue)?;
-    let pointer = if stream.settings.cursor { POINTER_EMBEDDED } else { POINTER_HIDDEN };
+    let pointer = if stream.settings.cursor { POINTER_EMBEDDED } else { POINTER_METADATA };
     // The cast lasts as long as this object and the connection it belongs to.
     let _cast = screencast.stream_output(&output, pointer, &queue, ());
 

@@ -3,12 +3,14 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <pipewire/context.h>
 #include <pipewire/core.h>
 #include <pipewire/keys.h>
 #include <pipewire/main-loop.h>
 #include <pipewire/stream.h>
+#include <spa/buffer/meta.h>
 #include <spa/param/video/format-utils.h>
 
 /* The library's functions this file calls. They are reached through the pointers in `pw` only. */
@@ -42,6 +44,13 @@ static void load(void)
     loaded = 1;
 }
 
+/* The largest pointer shape that is taken, in pixels along each side, and the largest a cast may leave room
+   for: GNOME always leaves room for more than it uses, and a cast that finds its room refused tells no shape. */
+#define POINTER_SIDE 256
+#define POINTER_SIDE_OFFERED 1024
+/* How much room a buffer needs to carry a pointer shape of this side. */
+#define POINTER_ROOM(side) (sizeof(struct spa_meta_cursor) + sizeof(struct spa_meta_bitmap) + (side) * (side) * 4)
+
 struct screen {
     struct pw_main_loop *loop;
     struct pw_context *context;
@@ -52,6 +61,12 @@ struct screen {
     /* The buffer whose pixels the caller is looking at; it goes back to the stream on the next call. */
     struct pw_buffer *held;
     int ended;
+    /* The pointer's shape as a buffer last carried it, and whether the caller has not been given it yet. */
+    struct {
+        int fresh;
+        int width, height, hot_x, hot_y;
+        uint32_t pixels[POINTER_SIDE * POINTER_SIDE];
+    } pointer;
 };
 
 static void on_state_changed(void *data, enum pw_stream_state old, enum pw_stream_state state, const char *error)
@@ -73,13 +88,19 @@ static void on_param_changed(void *data, uint32_t id, const struct spa_pod *para
         screen->ended = 1;
         return;
     }
-    /* The format is settled; say which kinds of buffer are acceptable: plain memory, not GPU buffers. */
-    uint8_t storage[256];
+    /* The format is settled; say which kinds of buffer are acceptable: plain memory, not GPU buffers. And
+       that they may carry the pointer's shape beside the picture, which a cast asked to do so then does. */
+    uint8_t storage[512];
     struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, sizeof storage);
-    const struct spa_pod *buffers = spa_pod_builder_add_object(&builder,
+    const struct spa_pod *wanted[2];
+    wanted[0] = spa_pod_builder_add_object(&builder,
         SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
         SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int((1 << SPA_DATA_MemPtr) | (1 << SPA_DATA_MemFd)));
-    pw.pw_stream_update_params(screen->stream, &buffers, 1);
+    wanted[1] = spa_pod_builder_add_object(&builder,
+        SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+        SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Cursor),
+        SPA_PARAM_META_size, SPA_POD_CHOICE_RANGE_Int(POINTER_ROOM(64), POINTER_ROOM(1), POINTER_ROOM(POINTER_SIDE_OFFERED)));
+    pw.pw_stream_update_params(screen->stream, wanted, 2);
 }
 
 static const struct pw_stream_events events = {
@@ -150,6 +171,52 @@ static int holds_picture(const struct screen *screen, const struct pw_buffer *bu
     return data->chunk->offset + (uint64_t)data->chunk->stride * screen->format.size.height <= data->maxsize;
 }
 
+/* Keeps the pointer's shape if this buffer carries one, which it does when the shape has changed. Its pixels
+   are stored as 32 bits each, alpha on top and blue at the bottom, whichever of the two usual orders they
+   come in; anything that does not fit what the buffer says of itself is left alone. */
+static void keep_pointer(struct screen *screen, const struct spa_buffer *buffer)
+{
+    const struct spa_meta *meta = spa_buffer_find_meta(buffer, SPA_META_Cursor);
+    const struct spa_meta_cursor *cursor = meta ? meta->data : NULL;
+    if (!cursor || meta->size < sizeof *cursor || !spa_meta_cursor_is_valid(cursor) || !cursor->bitmap_offset
+        || (uint64_t)cursor->bitmap_offset + sizeof(struct spa_meta_bitmap) > meta->size)
+        return;
+    const struct spa_meta_bitmap *bitmap = SPA_PTROFF(cursor, cursor->bitmap_offset, const struct spa_meta_bitmap);
+    uint32_t width = bitmap->size.width, height = bitmap->size.height;
+    int swapped = bitmap->format == SPA_VIDEO_FORMAT_RGBA;
+    if (!width || !height || width > POINTER_SIDE || height > POINTER_SIDE || bitmap->stride < (int32_t)width * 4
+        || (!swapped && bitmap->format != SPA_VIDEO_FORMAT_BGRA)
+        || (uint64_t)cursor->bitmap_offset + bitmap->offset + (uint64_t)bitmap->stride * height > meta->size)
+        return;
+    const uint8_t *rows = SPA_PTROFF(bitmap, bitmap->offset, const uint8_t);
+    for (uint32_t y = 0; y < height; y++) {
+        uint32_t *out = &screen->pointer.pixels[y * width];
+        memcpy(out, rows + (size_t)y * bitmap->stride, (size_t)width * 4);
+        for (uint32_t x = 0; swapped && x < width; x++) /* red and blue change places */
+            out[x] = (out[x] & 0xFF00FF00) | (out[x] >> 16 & 0xFF) | (out[x] & 0xFF) << 16;
+    }
+    screen->pointer.width = width;
+    screen->pointer.height = height;
+    screen->pointer.hot_x = cursor->hotspot.x;
+    screen->pointer.hot_y = cursor->hotspot.y;
+    screen->pointer.fresh = 1;
+}
+
+/* The pointer's shape, if a new one has come since this was last asked: returns 1 and describes it, its pixels
+   as `keep_pointer` stores them and valid until the next call of `screen_next`. Otherwise 0. */
+int screen_pointer(struct screen *screen, const uint32_t **pixels, int *width, int *height, int *hot_x, int *hot_y)
+{
+    if (!screen->pointer.fresh)
+        return 0;
+    screen->pointer.fresh = 0;
+    *pixels = screen->pointer.pixels;
+    *width = screen->pointer.width;
+    *height = screen->pointer.height;
+    *hot_x = screen->pointer.hot_x;
+    *hot_y = screen->pointer.hot_y;
+    return 1;
+}
+
 static int64_t now_ms(void)
 {
     struct timespec now;
@@ -171,6 +238,7 @@ int screen_next(struct screen *screen, int timeout_ms, const uint8_t **pixels, i
     for (;;) {
         struct pw_buffer *buffer;
         while ((buffer = pw.pw_stream_dequeue_buffer(screen->stream))) {
+            keep_pointer(screen, buffer->buffer);
             struct pw_buffer *unused = holds_picture(screen, buffer) ? screen->held : buffer;
             if (unused != buffer)
                 screen->held = buffer;

@@ -5,6 +5,7 @@ use std::ffi::c_int;
 use std::time::Duration;
 use std::{ptr, slice};
 
+use super::Shape;
 use crate::stream::Stream;
 
 /// Feeds the pictures of PipeWire node `node` to the stream until the stream is no longer wanted or the
@@ -16,6 +17,9 @@ pub fn run(node: u32, mut stream: Stream, desktop: &str) -> Result<(), String> {
             Ok(Some(picture)) => stream.picture(picture.pixels, picture.stride, picture.width, picture.height),
             Ok(None) => {}
             Err(()) => return Err(format!("{desktop} ended the screen cast")),
+        }
+        if let Some(shape) = screen.pointer() {
+            stream.pointer(shape);
         }
         stream.refine();
     }
@@ -36,6 +40,14 @@ unsafe extern "C" {
         stride: *mut c_int,
         width: *mut c_int,
         height: *mut c_int,
+    ) -> c_int;
+    fn screen_pointer(
+        screen: *mut Raw,
+        pixels: *mut *const u32,
+        width: *mut c_int,
+        height: *mut c_int,
+        hot_x: *mut c_int,
+        hot_y: *mut c_int,
     ) -> c_int;
     fn screen_close(screen: *mut Raw);
 }
@@ -78,6 +90,21 @@ impl Screen {
             0 => Ok(None),
             _ => Err(()),
         }
+    }
+}
+
+impl Screen {
+    /// The pointer's shape, if the cast was asked to tell it and it has changed since this was last asked.
+    fn pointer(&mut self) -> Option<Shape> {
+        let mut pixels = ptr::null();
+        let (mut width, mut height, mut hot_x, mut hot_y) = (0, 0, 0, 0);
+        if unsafe { screen_pointer(self.0, &mut pixels, &mut width, &mut height, &mut hot_x, &mut hot_y) } == 0 {
+            return None;
+        }
+        // The wrapper keeps the shape's pixels until the next wait for a picture, which needs `&mut self`.
+        let pixels = unsafe { slice::from_raw_parts(pixels, (width * height) as usize) };
+        let hot = (hot_x.max(0) as u16, hot_y.max(0) as u16);
+        Some(Shape::from_premultiplied(width as u16, height as u16, hot, pixels.iter().copied()))
     }
 }
 

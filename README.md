@@ -99,7 +99,9 @@ Whoever logs in controls the desktop session, so treat the address and password 
 - One screen is shown at a time; with several, the settings offer the choice. That was tried with virtual
   screens only: whether the pointer lands on the chosen one of several real monitors is untried, and a
   rotated screen is not turned upright.
-- The pointer is drawn by the client, always as an arrow, or painted into the video by the host.
+- Drawn by the client, the pointer takes on the remote pointer's shape on X11, GNOME and KDE; Hyprland and
+  Sway do not tell it, so there it stays an arrow. KDE's was not seen working: its test desktop has no pointer.
+  Painted into the video by the host it always has its true shape.
 - "Sharp" colour (4:4:4) is decoded in software by Chrome.
 - When a connection that was slow gets faster, the bitrate follows at the next try: ten seconds after it was
   cut, then at growing intervals of up to a minute. Each try costs a moment of padding.

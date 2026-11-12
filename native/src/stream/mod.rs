@@ -10,7 +10,7 @@ mod encode;
 
 pub use encode::{PROBE, probe};
 
-use crate::capture::{Settings, Shared, Sink};
+use crate::capture::{Output, Settings, Shape, Shared, Sink};
 use encode::{EFFORTS, Encoder};
 
 /// How many times a second a still picture is encoded again to bring it up to the quality target. Far fewer
@@ -74,6 +74,8 @@ pub struct Stream {
     encoded: Instant,
     started: Instant,
     wrote_header: bool,
+    /// The pointer's shape as the session last heard of it.
+    pointer: Option<Shape>,
     /// Set once the stream is over: Ok when the sink went away, Err with the reason otherwise.
     pub ended: Option<Result<(), String>>,
 }
@@ -97,6 +99,7 @@ impl Stream {
             encoded: now,
             started: now,
             wrote_header: false,
+            pointer: None,
             ended: None,
         }
     }
@@ -245,8 +248,20 @@ impl Stream {
         self.send(&tag);
     }
 
+    /// Passes the pointer's shape on, unless it is the one passed on last.
+    pub fn pointer(&mut self, shape: Shape) {
+        if self.pointer.as_ref() != Some(&shape) {
+            self.put_out(Output::Pointer(&shape));
+            self.pointer = Some(shape);
+        }
+    }
+
     fn send(&mut self, bytes: &[u8]) {
-        if !(self.sink)(bytes) {
+        self.put_out(Output::Video(bytes));
+    }
+
+    fn put_out(&mut self, output: Output) {
+        if !(self.sink)(output) {
             self.ended.get_or_insert(Ok(()));
         }
     }
