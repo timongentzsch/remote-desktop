@@ -1,2 +1,5 @@
 native/target/
 .DS_Store
+tests/remote-desktop
+tests/*.mkv
+tests/*.jpg
