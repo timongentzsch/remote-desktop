@@ -164,10 +164,11 @@ impl Encoder {
         let (mut data, mut keyframe, mut coarse) = (ptr::null_mut(), 0, 0);
         let size = unsafe { encoder_encode(self.raw, &mut data, &mut keyframe, &mut coarse) };
         // The access unit stays valid until the next call into the encoder, which needs `&mut self`.
-        // "Nothing changed" still costs a header of some twenty bytes for each slice the encoder cuts the frame
-        // into, and x264 makes up to one slice for every four rows of 16-pixel blocks. Anything bigger carried
-        // picture detail.
-        let settled = (size as usize) < 64 + 8 * self.height.div_ceil(16);
+        // "Nothing changed" still costs something: a header for each slice the encoder cuts the frame into, and
+        // at x264's higher efforts a little for each block. It stays below a quarter of a byte for each
+        // 16-pixel block, on a machine of few cores too; anything bigger carried picture detail.
+        let blocks = self.width.div_ceil(16) * self.height.div_ceil(16);
+        let settled = (size as usize) < 64 + blocks / 4;
         (size > 0).then(|| Encoded {
             unit: unsafe { slice::from_raw_parts(data, size as usize) },
             keyframe: keyframe != 0,
