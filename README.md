@@ -20,8 +20,8 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
   over a VPN such as Tailscale, or through a port you open. There is no relay service.
 - **Not a game streamer.** It is made for desktop work, over TCP and into a browser. There are no gamepads
   and no HDR, and fast action over a lossy link will stutter.
-- **Not a remote login.** It shows the session that is already running, not the login screen and not a
-  session of its own.
+- **Not a session of its own.** It shows what the machine's own screen shows: the login screen, then the
+  desktop of whoever logs in there. It starts no separate sessions for remote users.
 - **Not file transfer or device sharing.** Text goes through the clipboard; files, drives, printers and USB
   devices are not passed on.
 
@@ -52,13 +52,15 @@ In a terminal of the desktop session you want to control:
 - creates a certificate, kept with the password in `~/.config/remote-desktop/`,
 - starts the host with the desktop session: as a systemd user service, or through the desktop's autostart
   where there is no systemd,
+- with systemd, adds a system service that shows the login screen while nobody is logged in,
 
 and prints the address to open. `remote-desktop uninstall` undoes all of it except the password and the
 certificate.
 
-The host runs inside the desktop session, so it is not there while the machine shows its login screen. For
-a machine to be reachable after a restart, let its display manager log the user in automatically and lock
-the session at once; the lock screen can be opened remotely.
+While the machine shows its login screen, the system service shows it too, under the same address and
+password, and the page carries on by itself into the desktop once you have logged in there. This was seen
+working with SDDM. A login at a text console has no picture to show, and without systemd there is no such
+service: there, let the display manager log the user in automatically and lock the session at once.
 
     remote-desktop password                  change the login password
     remote-desktop password --none           allow access without a password
@@ -97,6 +99,9 @@ Whoever logs in controls the desktop session, so treat the address and password 
 - With `password --none`, anyone who can reach port 8765 controls the desktop. Other web sites cannot do so
   through a visitor's browser: the host only accepts connections from its own page.
 - The udev rule lets every program of the user at the machine create input devices, not only this one.
+- The service for the login screen answers before anyone has logged in, behind the same password. It is root
+  only until it has read the password and the certificate, and serves as the display manager's own user.
+  `sudo systemctl disable --now remote-desktop-login` switches it off.
 - The host listens on all network interfaces unless started with `--listen`.
 
 ## Build
@@ -121,6 +126,7 @@ builds them and publishes them when a version tag is pushed.
     native/src/
       main.rs, install.rs      the command line; install, uninstall, password
       server.rs, session.rs    HTTPS and the client page; one client's login, threads and input
+      greeter.rs               the same host at the login screen, as the display manager's user
       outbox.rs, ws.rs         what waits to be sent to a client; WebSocket framing
       rate.rs                  the bitrate a connection is given, from how well frames get through
       screen.rs                the desktop's screens, and where the pointer goes on the one shown

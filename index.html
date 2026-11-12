@@ -373,6 +373,11 @@ addEventListener('focus', () => connected() && offerClipboard());
 
 // ---- Session ----
 
+// A session that ends without being asked to is taken up again, a try a second for RETRY ms: the host may
+// have restarted, or have handed over between the login screen and the desktop behind it.
+const RETRY = 30000;
+let retryUntil = 0, leaving = false;
+
 const TICK = 250;  // ms between looks at the stream
 const PING = 100;  // ms between pings
 // A binary message from the host is video, unless its first byte is one of these.
@@ -400,6 +405,7 @@ addEventListener('resize', showPointer);
 // Opens a session with the current settings, replacing any existing one.
 function connect() {
   stop?.();
+  leaving = false;
   document.body.classList.toggle('remote-cursor', settings.cursor.value === 'yes');
   const ws = socket = new WebSocket('/ws');
   const video = videoPlayer(() => ws.close()), sound = soundPlayer();
@@ -459,6 +465,7 @@ function connect() {
     if (Object.hasOwn(carried, kind)) return carried[kind](event.data);
     if (!live) {
       live = true;
+      retryUntil = 0;
       setConnected(true);
       // Kept in this browser so the next visit only needs a click. Anyone using this browser profile can read it.
       try { localStorage.password = login.password.value; } catch {}
@@ -481,6 +488,12 @@ function connect() {
     end();
     if (ws !== socket) return;  // replaced by a newer session
     held.clear();
+    if (live && !leaving) retryUntil = performance.now() + RETRY;
+    if (!leaving && performance.now() < retryUntil) {
+      $('pill-text').textContent = 'Reconnecting';
+      return setTimeout(() => ws === socket && !leaving && connect(), 1000);
+    }
+    retryUntil = 0;
     if (!live) try { localStorage.removeItem('password'); } catch {}
     setConnected(false, live ? 'Disconnected' : 'Could not connect. Is the password right?');
     if (document.fullscreenElement) document.exitFullscreen();
@@ -565,7 +578,11 @@ settings.onchange = event => {
   else connect();                                                // the others apply when the capture starts
 };
 $('pill').onclick = () => showPanel(settings.hidden);
-$('leave').onclick = () => socket.close();
+$('leave').onclick = () => {
+  leaving = true;
+  socket.close();
+  setConnected(false, 'Disconnected');  // also when no session is up, between tries
+};
 $('fullscreen').onclick = () => document.fullscreenElement ? document.exitFullscreen() : enterFullscreen();
 
 try {

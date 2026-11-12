@@ -1,7 +1,7 @@
 //! The network side: serves the client page over HTTPS and hands each WebSocket connection to a session.
 
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, ErrorKind, Read};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -23,6 +23,9 @@ const PAGES: [(&str, &str, &[u8]); 3] = [
 /// How long a client may take over each step before it has logged in. Without a limit, connections that say
 /// nothing would each keep a thread waiting for good.
 const LOGIN_PATIENCE: Duration = Duration::from_secs(10);
+/// How long the port may stay taken at the start. The host of a desktop session and the one at the login
+/// screen follow each other on it, and the one that leaves needs a moment.
+const PORT_PATIENCE: Duration = Duration::from_secs(20);
 
 /// What all connections share.
 pub struct Host {
@@ -33,18 +36,24 @@ pub struct Host {
     tls: Mutex<Arc<ServerConfig>>,
 }
 
+impl Host {
+    /// Reads the password and the certificate and creates the input devices.
+    pub fn open() -> Arc<Self> {
+        let password = fs::read(install::password_path())
+            .unwrap_or_else(|_| fail("no password is set; run `remote-desktop password`"))
+            .trim_ascii()
+            .to_vec();
+        let input = Input::open().unwrap_or_else(|error| {
+            fail(&format!("cannot create input devices through /dev/uinput ({error}); run `remote-desktop install`"))
+        });
+        let tls = certificate::configuration().unwrap_or_else(|error| fail(&error));
+        Arc::new(Self { input, password, tls: Mutex::new(tls) })
+    }
+}
+
+/// The host of a desktop session: serves it for as long as the session lasts.
 pub fn run(address: &str) -> ! {
-    let password = fs::read(install::password_path())
-        .unwrap_or_else(|_| fail("no password is set; run `remote-desktop password`"))
-        .trim_ascii()
-        .to_vec();
-    let input = Input::open().unwrap_or_else(|error| {
-        fail(&format!("cannot create input devices through /dev/uinput ({error}); run `remote-desktop install`"))
-    });
-    let tls = certificate::configuration().unwrap_or_else(|error| fail(&error));
-    let listener =
-        TcpListener::bind(address).unwrap_or_else(|error| fail(&format!("cannot listen on {address}: {error}")));
-    let host = Arc::new(Host { input, password, tls: Mutex::new(tls) });
+    let host = Host::open();
     thread::spawn({
         let host = host.clone();
         move || loop {
@@ -55,16 +64,35 @@ pub fn run(address: &str) -> ! {
             }
         }
     });
+    serve(listen(address), host)
+}
+
+/// Takes the port, waiting a while if another host still has it.
+pub fn listen(address: &str) -> TcpListener {
+    let began = Instant::now();
+    loop {
+        match TcpListener::bind(address) {
+            Ok(listener) => return listener,
+            Err(error) if error.kind() == ErrorKind::AddrInUse && began.elapsed() < PORT_PATIENCE => {
+                thread::sleep(Duration::from_millis(250))
+            }
+            Err(error) => fail(&format!("cannot listen on {address}: {error}")),
+        }
+    }
+}
+
+/// Answers every connection, each on a thread of its own.
+pub fn serve(listener: TcpListener, host: Arc<Host>) -> ! {
     for socket in listener.incoming().flatten() {
         let host = host.clone();
         thread::spawn(move || {
-            let _ = serve(socket, &host); // an error here is the client going away
+            let _ = answer(socket, &host); // an error here is the client going away
         });
     }
     unreachable!("the listener never stops accepting")
 }
 
-fn serve(socket: TcpStream, host: &Host) -> io::Result<()> {
+fn answer(socket: TcpStream, host: &Host) -> io::Result<()> {
     let configuration = host.tls.lock().unwrap().clone();
     let connection = Arc::new(Connection::accept(&configuration, socket, LOGIN_PATIENCE)?);
     let (mut head, began) = (Vec::new(), Instant::now());

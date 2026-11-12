@@ -6,6 +6,7 @@
 //!     remote-desktop password [--none]          set the login password, or allow access without one
 //!     remote-desktop certificate [--tailscale]  make a new certificate, or switch where it comes from
 //!     remote-desktop [--listen ADDRESS]         run the host (default 0.0.0.0:8765)
+//!     remote-desktop login-screen [ADDRESS]     as root: run the host at the login screen whenever there is one
 
 mod audio;
 mod capture;
@@ -13,6 +14,7 @@ mod certificate;
 mod clipboard;
 mod compositor;
 mod gnome;
+mod greeter;
 mod input;
 mod install;
 mod outbox;
@@ -42,6 +44,8 @@ fn main() {
     match (arguments.next().as_deref(), arguments.next()) {
         (None, _) => server::run(&format!("0.0.0.0:{PORT}")),
         (Some("--listen"), Some(address)) => server::run(&address),
+        // What the system service that `install` sets up runs.
+        (Some("login-screen"), address) => greeter::run(&address.unwrap_or(format!("0.0.0.0:{PORT}"))),
         (Some("install"), option) if is_tailscale(&option) => install::install(option.is_some()),
         (Some("uninstall"), None) => install::uninstall(),
         (Some("password"), None) => install::set_password(),

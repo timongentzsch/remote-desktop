@@ -27,6 +27,30 @@ Restart=on-failure
 WantedBy=graphical-session.target
 ";
 
+const LOGIN_UNIT: &str = "remote-desktop-login.service";
+const LOGIN_UNIT_PATH: &str = "/etc/systemd/system/remote-desktop-login.service";
+
+/// A system service besides, because the login screen belongs to no user's session (see greeter.rs). It is
+/// told where the installing user's password and certificate are.
+fn login_unit() -> String {
+    format!(
+        "\
+[Unit]
+Description=Remote desktop host at the login screen
+
+[Service]
+Environment=XDG_CONFIG_HOME={}
+ExecStart=/usr/local/bin/remote-desktop login-screen
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+",
+        config_directory().display()
+    )
+}
+
 /// The program's desktop entry, hidden from menus. Plasma before 6.8 only casts the screen for a program whose
 /// entry asks for that (see capture/kwin.rs), and a copy among the desktop's autostart entries starts the
 /// host at login where systemd does not.
@@ -118,7 +142,15 @@ pub fn install(tailscale: bool) {
         run("systemctl", &["--user", "daemon-reload"]);
         run("systemctl", &["--user", "enable", "remote-desktop.service"]);
         run("systemctl", &["--user", "restart", "remote-desktop.service"]);
-        println!("Installed {BINARY} and started the remote-desktop user service.");
+        let draft = std::env::temp_dir().join(LOGIN_UNIT);
+        write(draft.clone(), &login_unit());
+        run("sudo", &["install", "-m644", &draft.to_string_lossy(), LOGIN_UNIT_PATH]);
+        let _ = fs::remove_file(draft);
+        run("sudo", &["systemctl", "daemon-reload"]);
+        run("sudo", &["systemctl", "--quiet", "enable", LOGIN_UNIT]);
+        run("sudo", &["systemctl", "restart", LOGIN_UNIT]);
+        println!("Installed {BINARY} and started the remote-desktop user service,");
+        println!("and the {LOGIN_UNIT} system service for the login screen.");
     } else {
         write(autostart_path(), DESKTOP_ENTRY);
         stop_host();
@@ -165,6 +197,7 @@ pub fn uninstall() {
         let _ = Command::new("systemctl")
             .args(["--user", "--quiet", "disable", "--now", "remote-desktop.service"])
             .status();
+        let _ = Command::new("sudo").args(["systemctl", "--quiet", "disable", "--now", LOGIN_UNIT]).status();
     }
     stop_host();
     for path in [unit_path(), autostart_path(), desktop_entry_path()] {
@@ -174,11 +207,11 @@ pub fn uninstall() {
         run("systemctl", &["--user", "daemon-reload"]);
     }
     firewall(false);
-    run("sudo", &["rm", "-f", BINARY, UDEV_RULE_PATH]);
+    run("sudo", &["rm", "-f", BINARY, UDEV_RULE_PATH, LOGIN_UNIT_PATH]);
     run("sudo", &["udevadm", "control", "--reload"]);
     let kept = config_directory().join("remote-desktop");
     println!(
-        "Removed the service, {BINARY} and the input rule. The password and certificate remain in {}.",
+        "Removed the services, {BINARY} and the input rule. The password and certificate remain in {}.",
         kept.display()
     );
 }
