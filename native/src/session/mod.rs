@@ -70,13 +70,16 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     // it lasts as long as the session.
     let mut settings = login.settings;
     let made = login.device.and_then(|window| {
-        VirtualScreen::create(window, settings.fps, !settings.cursor)
+        VirtualScreen::create(window, settings.fps)
             .map_err(|error| warn!("showing the machine's own screen: {error}"))
             .ok()
     });
     if made.is_some() {
         settings.screen = Some(virtual_screen::NAME.to_owned());
     }
+    // A client that draws the pointer itself must not get the desktop's in the picture as well; it shows
+    // again when the session ends, before the screens made for it go.
+    let _pointer = (!settings.cursor).then(platform::hide_pointer).flatten();
     // The client is told which screens there are and which it is shown, and its pointer is placed on that one.
     let screens = screen::list();
     let shown = screen::choose(&screens, settings.screen.as_deref()).cloned();

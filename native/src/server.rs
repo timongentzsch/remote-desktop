@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use rustls::ServerConfig;
 
-use crate::platform::{self, Input, virtual_screen};
+use crate::platform::{self, Input};
 use crate::tls::Connection;
 use crate::{certificate, fail, quic, session, ws};
 
@@ -70,7 +70,7 @@ impl Host {
 
 /// The host of a desktop session: serves it for as long as the session lasts.
 pub fn run(address: &str) -> ! {
-    virtual_screen::restore_leftover();
+    platform::restore_leftovers();
     let host = Host::open();
     thread::spawn({
         let host = host.clone();

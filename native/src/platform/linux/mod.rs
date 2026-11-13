@@ -10,8 +10,10 @@ pub mod fd;
 mod firewall;
 mod gnome;
 pub mod greeter;
+mod hyprland;
 pub mod input;
 pub mod install;
+pub mod pointer;
 pub mod tcp;
 pub mod virtual_screen;
 mod xserver;
@@ -19,6 +21,12 @@ mod xserver;
 pub use install::{data_directory, password_path, write_private};
 
 use crate::screen::Screen;
+
+/// Undoes what a host that ended without undoing it, as one that crashed would, left changed in the desktop.
+pub fn restore_leftovers() {
+    virtual_screen::restore_leftover();
+    pointer::restore_leftover();
+}
 
 /// The desktop's screens, as its compositor or X server tells them.
 pub fn screens() -> Result<Vec<Screen>, String> {

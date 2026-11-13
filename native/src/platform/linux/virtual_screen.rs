@@ -4,11 +4,11 @@
 //! goes. Only Hyprland makes one so far; elsewhere the session shows one of the machine's screens as usual.
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::hyprland;
 use crate::screen;
 
 /// The output's name, which the capture finds it by.
@@ -62,11 +62,8 @@ pub struct VirtualScreen {
 }
 
 impl VirtualScreen {
-    /// Makes the screen for `window` at `fps` frames a second and switches the machine's own screens off. Where
-    /// the client draws the pointer itself (`pointer_drawn_by_client`), the desktop's own is hidden: a screen
-    /// without a display behind it has no layer of its own for the pointer, so the desktop paints the pointer
-    /// into the picture even for a capture that asked for it without, and the client would show two.
-    pub fn create(window: Window, fps: u32, pointer_drawn_by_client: bool) -> Result<Self, String> {
+    /// Makes the screen for `window` at `fps` frames a second and switches the machine's own screens off.
+    pub fn create(window: Window, fps: u32) -> Result<Self, String> {
         if !hyprland::running() {
             return Err("this desktop cannot make a screen of the client's size".into());
         }
@@ -77,7 +74,7 @@ impl VirtualScreen {
         // From here on, dropping it undoes what was done, also after a failure halfway.
         let made = Self { fps };
         std::fs::write(marker(), NAME).map_err(|error| format!("cannot note the virtual screen: {error}"))?;
-        hyprland::create()?;
+        create_output()?;
         made.resize(window)?;
         // The compositor makes the output at a size of its own and gives it the one asked for a moment later;
         // a capture that began before would start over at the new size.
@@ -89,7 +86,7 @@ impl VirtualScreen {
             return Err("the virtual screen did not appear".into());
         }
         for own in screen::list().into_iter().filter(|screen| screen.name != NAME) {
-            hyprland::switch_off(&own.name)?;
+            switch_off(&own.name)?;
         }
         // The session places the pointer by the screens the desktop lists once this returns. Until the others
         // are gone, the list still has them, and this screen beside them rather than where it ends up alone.
@@ -100,15 +97,12 @@ impl VirtualScreen {
         if !alone {
             return Err("the machine's own screens did not go off".into());
         }
-        if pointer_drawn_by_client {
-            hyprland::hide_pointer()?;
-        }
         Ok(made)
     }
 
     /// Gives the screen the size of the client's window as it is now.
     pub fn resize(&self, window: Window) -> Result<(), String> {
-        hyprland::set_mode(window.pixels(), self.fps, window.scale())
+        set_mode(window.pixels(), self.fps, window.scale())
     }
 }
 
@@ -127,15 +121,15 @@ pub fn restore_leftover() {
 }
 
 fn restore() {
-    if let Err(error) = hyprland::restore() {
+    if let Err(error) = restore_outputs() {
         warn!("could not bring the screens back: {error}");
     }
     let _ = std::fs::remove_file(marker());
 }
 
-/// Notes that a virtual screen is up, where it goes with the login session.
+/// Notes that a virtual screen is up.
 fn marker() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from).join("remote-desktop-screen")
+    hyprland::marker("remote-desktop-screen")
 }
 
 /// Whether `done` came true within `limit`, asking it every `POLL`.
@@ -150,63 +144,27 @@ fn wait_for(limit: Duration, done: impl Fn() -> bool) -> bool {
     true
 }
 
-/// Hyprland, through `hyprctl`. Its newer configuration is Lua, set with `eval`; the older one takes `keyword`.
-mod hyprland {
-    use super::*;
+/// The headless output on Hyprland, the only desktop that makes one so far.
+fn create_output() -> Result<(), String> {
+    hyprland::hyprctl(&["output", "create", "headless", NAME])
+}
 
-    pub fn running() -> bool {
-        std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
-    }
+fn set_mode((width, height): (u32, u32), fps: u32, scale: f64) -> Result<(), String> {
+    let mode = format!("{width}x{height}@{fps}");
+    hyprland::monitor(
+        &format!(r#"{{ output = "{NAME}", mode = "{mode}", position = "auto", scale = {scale} }}"#),
+        &format!("{NAME},{mode},auto,{scale}"),
+    )
+}
 
-    pub fn create() -> Result<(), String> {
-        hyprctl(&["output", "create", "headless", NAME])
-    }
+fn switch_off(name: &str) -> Result<(), String> {
+    hyprland::monitor(&format!(r#"{{ output = "{name}", disabled = true }}"#), &format!("{name},disable"))
+}
 
-    pub fn set_mode((width, height): (u32, u32), fps: u32, scale: f64) -> Result<(), String> {
-        let mode = format!("{width}x{height}@{fps}");
-        monitor(
-            &format!(r#"{{ output = "{NAME}", mode = "{mode}", position = "auto", scale = {scale} }}"#),
-            &format!("{NAME},{mode},auto,{scale}"),
-        )
-    }
-
-    pub fn switch_off(name: &str) -> Result<(), String> {
-        monitor(&format!(r#"{{ output = "{name}", disabled = true }}"#), &format!("{name},disable"))
-    }
-
-    /// Nobody sits at the machine while its screens are off; `restore` shows the pointer again.
-    pub fn hide_pointer() -> Result<(), String> {
-        setting(r#"{ cursor = { invisible = true } }"#, &["cursor:invisible", "true"])
-    }
-
-    /// Reading the configuration again brings its screens back as they were set up, and its pointer; then the
-    /// headless one goes.
-    pub fn restore() -> Result<(), String> {
-        let reloaded = hyprctl(&["reload"]);
-        hyprctl(&["output", "remove", NAME]).and(reloaded)
-    }
-
-    /// A monitor rule: as the Lua table `lua`, or else in the older form `legacy`.
-    fn monitor(lua: &str, legacy: &str) -> Result<(), String> {
-        hyprctl(&["eval", &format!("hl.monitor({lua})")]).or_else(|_| hyprctl(&["keyword", "monitor", legacy]))
-    }
-
-    /// A setting: as the Lua table `lua`, or else as the older form's keyword and value, `legacy`.
-    fn setting(lua: &str, legacy: &[&str; 2]) -> Result<(), String> {
-        hyprctl(&["eval", &format!("hl.config({lua})")]).or_else(|_| hyprctl(&["keyword", legacy[0], legacy[1]]))
-    }
-
-    /// Runs `hyprctl`, which says "ok" when it did what it was told.
-    fn hyprctl(arguments: &[&str]) -> Result<(), String> {
-        let output =
-            Command::new("hyprctl").args(arguments).output().map_err(|error| format!("cannot run hyprctl: {error}"))?;
-        let reply = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if output.status.success() && reply == "ok" {
-            Ok(())
-        } else {
-            Err(format!("hyprctl {}: {reply}", arguments.join(" ")))
-        }
-    }
+/// Reading the configuration again brings its screens back as they were set up; then the headless one goes.
+fn restore_outputs() -> Result<(), String> {
+    let reloaded = hyprland::hyprctl(&["reload"]);
+    hyprland::hyprctl(&["output", "remove", NAME]).and(reloaded)
 }
 
 #[cfg(test)]

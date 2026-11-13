@@ -12,12 +12,15 @@ use linux as os;
 compile_error!("there is no platform module for this operating system yet: see platform/mod.rs");
 
 // The screen: its picture for a session (`capture(settings, shared, sink)`, see capture.rs), the screens there
-// are (`screens()`), waking those that sleep (`wake_displays(&input)`), and a screen made to the client's
-// window where the desktop can make one (`virtual_screen::{VirtualScreen, Window, NAME, restore_leftover}`).
+// are (`screens()`), waking those that sleep (`wake_displays(&input)`), a screen made to the client's window
+// where the desktop can make one (`virtual_screen::{VirtualScreen, Window, NAME}`), the desktop's pointer
+// hidden while a client draws its own where the picture would show it too (`hide_pointer()`), and undoing
+// what a host that crashed left changed (`restore_leftovers()`).
 pub use os::capture::run as capture;
 pub use os::displays::wake_displays;
-pub use os::screens;
+pub use os::pointer::hide as hide_pointer;
 pub use os::virtual_screen;
+pub use os::{restore_leftovers, screens};
 
 // What the client does: keys, buttons and the pointer, in the client's codes, which are Linux's (linux/input.rs).
 pub use os::input::Input;
