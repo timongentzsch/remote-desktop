@@ -194,15 +194,19 @@
         </select>
       </label>
       <label class="setting">Size
-        <select name="size">
-          <option value="native">Native</option>
-          <option value="half">Half</option>
+        <select name="size" title="Host shows the host's screen as it is. Client gives the remote desktop a screen of this window's size and switches the host's own screens off while connected, where the desktop allows (Hyprland). 1080p, 720p and 360p shrink the host's screen to that height, for less data.">
+          <option value="host">Host</option>
+          <option value="client">Client</option>
+          <option value="1080">1080p</option>
+          <option value="720">720p</option>
+          <option value="360">360p</option>
         </select>
       </label>
-      <label class="setting">Colour
-        <select name="chroma" title="Sharp keeps full colour detail in text and thin lines. It costs more processing on both ends.">
-          <option value="420">Standard</option>
-          <option value="444">Sharp</option>
+      <label class="setting">Colour detail
+        <select name="chroma" title="Full keeps coloured text and thin lines crisp, for more work on both ends and more data. Reduced halves colour detail. Auto keeps it full where that fits.">
+          <option value="auto">Auto</option>
+          <option value="444">Full</option>
+          <option value="420">Reduced</option>
         </select>
       </label>
       <label class="setting">Pointer
@@ -247,6 +251,17 @@ const $ = id => document.getElementById(id);
 const canvas = document.querySelector('canvas'), login = $('login'), settings = $('settings');
 const SAVED = ['bitrate', 'patience', 'fps', 'size', 'chroma', 'cursor', 'sound', 'pin', 'screen'];
 
+// What the host sends, as native/src/ws.rs and stream/flv.rs say: a binary message's first byte tells its kind,
+// and video goes in FLV, a header that begins with "F" and then tags of [type, size:3, time:3+1, stream:3,
+// data, size again:4]. Video's tag type is its kind.
+const PADDING = 0, POINTER = 7, SOUND = 8, VIDEO = 9;
+const FLV_SIGNATURE = 0x46, FLV_HEADER = 13, TAG_HEAD = 11, TAG_TAIL = 4;
+// Sound as audio.rs encodes it, and the range pointer positions are told in (input.rs's ABS_RANGE).
+const SOUND_RATE = 48000, SOUND_CHANNELS = 2;
+const POINTER_RANGE = 65535;
+// The longest message the host reads (ws.rs), less room for the message's own wrapping.
+const LONGEST_MESSAGE = 60000;
+
 let socket, stop;  // the current session's connection, and what ends it
 let path = null;    // its session to the host's UDP side, where there is one
 let moves = 0;      // how many moves of the pointer were sent
@@ -283,15 +298,16 @@ function videoPlayer(failed) {
       const stream = new Uint8Array(pending.length + chunk.byteLength);
       stream.set(pending);
       stream.set(new Uint8Array(chunk), pending.length);
-      let at = stream[0] === 0x46 ? 13 : 0;
+      let at = stream[0] === FLV_SIGNATURE ? FLV_HEADER : 0;
       for (;;) {
         const size = stream[at + 1] << 16 | stream[at + 2] << 8 | stream[at + 3];
-        if (stream.length < at + 11 + size + 4) break;  // also true while the tag header itself is incomplete
-        const data = stream.subarray(at + 11, at + 11 + size);
-        if (stream[at] === 9 && data[1] === 0) {         // H.264 decoder configuration (avcC)
+        if (stream.length < at + TAG_HEAD + size + TAG_TAIL) break;  // also while the tag head is incomplete
+        const data = stream.subarray(at + TAG_HEAD, at + TAG_HEAD + size);
+        if (stream[at] === VIDEO && data[1] === 0) {         // H.264 decoder configuration (avcC)
           const profile = [...data.subarray(6, 9)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+          colourDetail = data[6] === 244 ? 'full' : 'reduced';  // High 4:4:4 Predictive keeps it full
           decoder.configure({ codec: 'avc1.' + profile, description: data.slice(5), optimizeForLatency: true });
-        } else if (stream[at] === 9) {
+        } else if (stream[at] === VIDEO) {
           submitted.push(performance.now());
           decoder.decode(new EncodedVideoChunk({
             type: data[0] >> 4 === 1 ? 'key' : 'delta',
@@ -321,6 +337,8 @@ function videoPlayer(failed) {
 // A datagram is: 9, the piece's number (4 bytes), its length (3), how many of the piece's shards come before
 // this block (2), k, m, which of the block's k + m this is, then the shard.
 const HEAD = 13, NOTHING = 0xFFFFFFFF;
+// Datagrams to the host, as quic.rs reads them: the token, a kind, and 8 bytes for what that kind tells.
+const TOKEN_LENGTH = 16, STATUS_KIND = 0, MOVE_KIND = 1, DATAGRAM_LENGTH = TOKEN_LENGTH + 1 + 8;
 
 // The spares are sums of the shards, each times a factor, calculated byte by byte in the field of 256 elements,
 // where adding is exclusive or and multiplying goes by logarithms.
@@ -370,7 +388,7 @@ function rebuild(shards, k) {
 }
 
 // Whether a piece of the stream says how to decode what follows, which is where a decoder can begin.
-const begins = piece => piece[0] === 9 && piece[12] === 0;
+const begins = piece => piece[0] === VIDEO && piece[12] === 0;
 
 // Puts pieces back together from their datagrams and hands them to `use` in order. When a piece cannot be had,
 // those after it are of no use either: `ask` is called for the host to be told, which then sends a frame to
@@ -464,24 +482,27 @@ function datagramPath(port, fingerprint, token, take, failed) {
     writer = null;
     if (!closed) timer = setTimeout(failed, AGAIN);
   })();
+  // What goes to the host (quic.rs) begins with the token, which says who this is, and a byte for what follows.
+  const datagram = kind => {
+    const message = new Uint8Array(DATAGRAM_LENGTH);
+    message.set(bytes(token));
+    message[TOKEN_LENGTH] = kind;
+    return [message, new DataView(message.buffer)];
+  };
   return {
-    // What goes to the host begins with the token, which says who this is, and a byte for what follows.
     // How the video fares: the last piece used and the first missing.
     say(used, missing) {
-      const message = new Uint8Array(25), view = new DataView(message.buffer);
-      message.set(bytes(token));
-      view.setUint32(17, used);
-      view.setUint32(21, missing);
+      const [message, view] = datagram(STATUS_KIND);
+      view.setUint32(TOKEN_LENGTH + 1, used);
+      view.setUint32(TOKEN_LENGTH + 5, missing);
       writer?.write(message).catch(() => {});
     },
     // Where the pointer goes: the count of this move, then x and y.
     move(count, x, y) {
-      const message = new Uint8Array(25), view = new DataView(message.buffer);
-      message.set(bytes(token));
-      message[16] = 1;
-      view.setUint32(17, count);
-      view.setUint16(21, x);
-      view.setUint16(23, y);
+      const [message, view] = datagram(MOVE_KIND);
+      view.setUint32(TOKEN_LENGTH + 1, count);
+      view.setUint16(TOKEN_LENGTH + 5, x);
+      view.setUint16(TOKEN_LENGTH + 7, y);
       writer?.write(message).catch(() => {});
     },
     close() {
@@ -504,7 +525,7 @@ let speaker, playAt = 0;
 function soundPlayer() {
   if (settings.sound.value !== 'on' || !window.AudioDecoder) return null;
   // Browsers only let a page play sound once the user has acted on it; connecting is such an act.
-  speaker ??= new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+  speaker ??= new AudioContext({ sampleRate: SOUND_RATE, latencyHint: 'interactive' });
   speaker.resume();
   let packets = 0;
   const decoder = new AudioDecoder({
@@ -524,7 +545,7 @@ function soundPlayer() {
     },
     error() {},
   });
-  decoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
+  decoder.configure({ codec: 'opus', sampleRate: SOUND_RATE, numberOfChannels: SOUND_CHANNELS });
   return {
     play: packet => decoder.state === 'configured' && decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: packets++ * PACKET_MICROS, data: packet })),
     close: () => decoder.state !== 'closed' && decoder.close(),
@@ -570,6 +591,7 @@ function setConnected(on, problem = '') {
 // the video's bitrate as `received` of what the host `allowed`, in kbit/s, and whether the link is what holds
 // it there. Below SLOW_RATE that shows in the picture, and is said.
 const SLOW_RATE = 3000;
+let colourDetail = 'full';  // as the stream's latest decoder configuration says
 function showStatistics(frames, parts, received, allowed, heldBack, way) {
   const delay = Math.round(Object.values(parts).reduce((sum, part) => sum + part));
   const slow = heldBack && allowed < SLOW_RATE;
@@ -579,7 +601,8 @@ function showStatistics(frames, parts, received, allowed, heldBack, way) {
   $('now-fps').textContent = $('pin-fps').textContent = `${frames} fps`;
   $('now-delay').textContent = $('pin-delay').textContent = `${delay} ms`;
   $('now-bitrate').textContent = $('pin-bitrate').textContent = `${megabits(received)} Mbit/s`;
-  $('now-picture').textContent = `${canvas.width} × ${canvas.height}, ${way}, up to ${megabits(allowed)} Mbit/s`;
+  $('now-picture').textContent =
+    `${canvas.width} × ${canvas.height}, ${colourDetail} colour detail, ${way}, up to ${megabits(allowed)} Mbit/s`;
   $('notice').textContent = `This connection carries about ${megabits(allowed)} Mbit/s. Moving pictures are softened so the session stays responsive.`;
   $('pill-text').textContent = slow ? `Slow link / ${megabits(allowed)} Mbit/s` : `${frames} fps / ${delay} ms / ${way}`;
   for (const [name, value] of Object.entries(parts)) {
@@ -596,10 +619,10 @@ let clipboard = '';
 async function offerClipboard() {
   try {
     const text = await navigator.clipboard.readText();
-    const message = JSON.stringify(['clipboard', text, 0]);
-    if (!text || text === clipboard || new TextEncoder().encode(message).length > 60000) return;  // the host reads messages up to 64 kB
+    const length = new TextEncoder().encode(JSON.stringify(['clipboard', text])).length;
+    if (!text || text === clipboard || length > LONGEST_MESSAGE) return;
     clipboard = text;
-    send('clipboard', text, 0);
+    send('clipboard', text);
   } catch {}  // not permitted, or the window is not focused
 }
 addEventListener('focus', () => connected() && offerClipboard());
@@ -608,13 +631,12 @@ addEventListener('focus', () => connected() && offerClipboard());
 
 // A session that ends without being asked to is taken up again, a try a second for RETRY ms: the host may
 // have restarted, or have handed over between the login screen and the desktop behind it.
-const RETRY = 30000;
+const RETRY = 30000, RECONNECT = 1000;  // ms to keep trying after a session ended unasked for, and between tries
 let retryUntil = 0, leaving = false;
 
 const TICK = 250;  // ms between looks at the stream
+const TICKS_PER_REPORT = 1000 / TICK;  // the host reports once a second, and what arrived is averaged over that
 const PING = 100;  // ms between pings
-// A binary message from the host is video, unless its first byte is one of these.
-const PADDING = 0, POINTER = 7, SOUND = 8;
 const STATUS = 50;  // ms between words to the host on how video over UDP fares
 
 // The remote pointer's shape, which the pointer over the picture takes on where the host tells it: 16-bit width,
@@ -635,6 +657,16 @@ function showPointer() {
   canvas.style.setProperty('--pointer', `image-set(url(${sized.toDataURL()}) ${sharpness}x) ${tip.join(' ')}, default`);
 }
 addEventListener('resize', showPointer);
+
+// With the size set to the client, the host makes its screen to this window: its size in CSS pixels and how
+// many device pixels each has. It is told at login, and again once a resize has settled.
+const WINDOW_SETTLE = 300;
+const windowSize = () => [innerWidth, innerHeight, devicePixelRatio];
+let resizing;
+addEventListener('resize', () => {
+  clearTimeout(resizing);
+  if (settings.size.value === 'client') resizing = setTimeout(() => send('window', windowSize()), WINDOW_SETTLE);
+});
 
 // Opens a session with the current settings, replacing any existing one.
 function connect() {
@@ -687,9 +719,9 @@ function connect() {
   const report = setInterval(() => {
     recent.push(bytes);
     bytes = 0;
-    if (recent.length > 4) recent.shift();
+    if (recent.length > TICKS_PER_REPORT) recent.shift();
     const received = recent.reduce((sum, count) => sum + count) * 8 / (TICK * recent.length);  // kbit/s
-    if (++ticks % 4 === 0 && live && host.kbps) {  // once the host has reported
+    if (++ticks % TICKS_PER_REPORT === 0 && live && host.kbps) {  // once the host has reported
       const { frames, decode } = video.measure();
       showStatistics(frames, { encode: host.encode, send: host.send, network: roundTrip / 2, decode }, received, host.kbps, host.heldBack, byUdp ? 'UDP' : 'TCP');
     }
@@ -711,13 +743,13 @@ function connect() {
       path?.close();
       path = datagramPath(port, fingerprint, token, datagram => {
         if (datagram[0] === SOUND) return hear(datagram);
-        if (datagram[0] !== 9) return;  // padding is only there to show the host what the link carries
+        if (datagram[0] !== VIDEO) return;  // padding is only there to show the host what the link carries
         bytes += datagram.length;
         joiner.take(datagram);
       }, () => send('udp'));
     },
     // Video is back on the WebSocket ("tcp"); over UDP it would go on with piece `next`.
-    path(_, next) { [byUdp, awaited] = [false, true]; joiner.restart(next); },
+    path(next) { [byUdp, awaited] = [false, true]; joiner.restart(next); },
   };
   const carried = {
     [SOUND](data) { sound?.play(new Uint8Array(data, 1)); },
@@ -729,7 +761,9 @@ function connect() {
     },
   };
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => ws.send(JSON.stringify({ password: login.password.value, ...Object.fromEntries(new FormData(settings)) }));
+  ws.onopen = () => ws.send(JSON.stringify({
+    password: login.password.value, window: windowSize(), ...Object.fromEntries(new FormData(settings)),
+  }));
   ws.onmessage = event => {
     received += event.data.byteLength ?? event.data.length;
     if (typeof event.data === 'string') {
@@ -766,7 +800,7 @@ function connect() {
     if (!leaving && performance.now() < retryUntil) {
       $('pill-text').textContent = 'Reconnecting';
       document.body.classList.add('waiting');
-      return setTimeout(() => ws === socket && !leaving && connect(), 1000);
+      return setTimeout(() => ws === socket && !leaving && connect(), RECONNECT);
     }
     retryUntil = 0;
     if (!live) try { localStorage.removeItem('password'); } catch {}
@@ -816,7 +850,7 @@ canvas.addEventListener('onpointerrawupdate' in canvas ? 'pointerrawupdate' : 'p
   // The picture is letterboxed inside the canvas element; map to its visible area, normalised to 0..65535.
   const scale = Math.min(canvas.clientWidth / canvas.width, canvas.clientHeight / canvas.height);
   const normalise = (position, client, size) =>
-    Math.round(Math.min(1, Math.max(0, (position - (client - size * scale) / 2) / (size * scale))) * 65535);
+    Math.round(Math.min(1, Math.max(0, (position - (client - size * scale) / 2) / (size * scale))) * POINTER_RANGE);
   // A move goes over the WebSocket and, where there is one, over UDP as well, with its count: the host takes
   // whichever arrives first, so a lost packet on either way holds the pointer up on neither.
   const [x, y] = [normalise(event.clientX, canvas.clientWidth, canvas.width), normalise(event.clientY, canvas.clientHeight, canvas.height)];

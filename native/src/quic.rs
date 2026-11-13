@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, ErrorKind};
 use std::net::UdpSocket;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -22,18 +22,23 @@ use quinn_proto::{
     Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, Event, ServerConfig, StreamEvent,
     TransportConfig, VarInt,
 };
-use rcgen::{CertificateParams, KeyPair};
+use rcgen::KeyPair;
 use ring::rand::SecureRandom;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use time::OffsetDateTime;
 
-use crate::certificate;
+use crate::certificate::{self, RENEWAL};
+use crate::fd::{self, Waker};
 use crate::rate::Mark;
 
 /// Browsers accept a certificate by its fingerprint alone, without anyone having to trust it first, if it is
 /// valid for no more than two weeks. So the endpoint makes its own, and a new one every day.
 const VALID_DAYS: i64 = 12;
-const RENEWAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// What a client may send that waits to be read, in bytes: on a stream, and four times that over all.
+const RECEIVED: usize = 1 << 16;
+/// The largest UDP packet there can be, and the size every path takes, which QUIC begins with.
+const LARGEST_PACKET: usize = 1 << 16;
+const SMALLEST_DATAGRAM: u16 = 1200;
 
 /// The first bytes on the stream that carries this side's HTTP/3 settings: the stream's kind (control), then a
 /// SETTINGS frame of pairs. Browsers of different ages ask for different ones before they open a session.
@@ -59,7 +64,9 @@ const WRAPPING: u64 = 30;
 /// A client's datagrams begin with the token and a byte that says what follows. How it is doing: the number
 /// of the last piece of video it could use, and that of the first it is missing (`NOTHING` if none). Or where
 /// the pointer goes: the count of this move, then x and y.
+/// index.html makes them alike.
 const TOKEN: usize = 16;
+const TOLD: usize = 8;
 const STATUS: u8 = 0;
 const MOVE: u8 = 1;
 pub const NOTHING: u32 = u32::MAX;
@@ -192,10 +199,7 @@ impl ControllerFactory for Counters {
 
 /// A certificate made for this endpoint alone, and its SHA-256 fingerprint.
 fn certificate() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>, [u8; 32]), String> {
-    let mut parameters = CertificateParams::new(certificate::names()).map_err(|error| error.to_string())?;
-    let now = OffsetDateTime::now_utc();
-    parameters.not_before = now - time::Duration::days(1);
-    parameters.not_after = now + time::Duration::days(VALID_DAYS);
+    let parameters = certificate::parameters(VALID_DAYS)?;
     let key = KeyPair::generate().map_err(|error| error.to_string())?;
     let certificate = parameters.self_signed(&key).map_err(|error| error.to_string())?;
     let fingerprint = ring::digest::digest(&ring::digest::SHA256, certificate.der());
@@ -206,7 +210,7 @@ fn certificate() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>, [u8
 /// The endpoint's setup with a new certificate, and that certificate's fingerprint.
 fn configuration(counters: &Arc<Counters>) -> Result<(Arc<ServerConfig>, [u8; 32]), String> {
     let (certificate, key, fingerprint) = certificate()?;
-    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+    let mut tls = certificate::tls_builder()
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|error| error.to_string())?
         .with_no_client_auth()
@@ -215,15 +219,15 @@ fn configuration(counters: &Arc<Counters>) -> Result<(Arc<ServerConfig>, [u8; 32
     tls.alpn_protocols = vec![b"h3".to_vec()];
     let mut transport = TransportConfig::default();
     transport.congestion_controller_factory(counters.clone());
-    transport.datagram_receive_buffer_size(Some(1 << 16));
+    transport.datagram_receive_buffer_size(Some(RECEIVED));
     transport.datagram_send_buffer_size(WAITING);
     transport.keep_alive_interval(Some(KEEP_ALIVE));
     // A browser opens a handful of streams and says little on them, and nothing here reads them. A stranger is
     // given no more room than that to fill.
     transport.max_concurrent_bidi_streams(VarInt::from_u32(4));
     transport.max_concurrent_uni_streams(VarInt::from_u32(8));
-    transport.stream_receive_window(VarInt::from_u32(1 << 16));
-    transport.receive_window(VarInt::from_u32(1 << 18));
+    transport.stream_receive_window(VarInt::from_u32(RECEIVED as u32));
+    transport.receive_window(VarInt::from_u32(4 * RECEIVED as u32));
     // Packets stay at the size every path takes. Trying larger ones pays little, and the connection takes
     // lost large packets for a path that drops them, which a link that merely loses packets is not.
     transport.mtu_discovery_config(None);
@@ -246,15 +250,14 @@ struct Shared {
     fingerprint: Mutex<[u8; 32]>,
     /// The links of the sessions there are.
     links: Mutex<Vec<Arc<Link>>>,
-    /// An eventfd: written to when a link has something for the thread.
-    wake: OwnedFd,
+    /// Woken when a link has something for the thread.
+    waker: Waker,
     started: Instant,
 }
 
 impl Shared {
     fn wake(&self) {
-        let one = 1u64.to_ne_bytes();
-        unsafe { libc::write(self.wake.as_raw_fd(), one.as_ptr().cast(), one.len()) };
+        self.waker.wake();
     }
 }
 
@@ -385,29 +388,25 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// Takes the UDP port of `address` and serves it on a thread of its own.
-    pub fn open(address: &str) -> io::Result<Self> {
+    /// Takes the UDP port of `address` and serves it on a thread of its own; `tailnet_only` as in `server::Host`.
+    pub fn open(address: &str, tailnet_only: bool) -> io::Result<Self> {
         let socket = UdpSocket::bind(address)?;
         socket.set_nonblocking(true)?;
         let port = socket.local_addr()?.port();
-        let wake = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-        if wake < 0 {
-            return Err(io::Error::last_os_error());
-        }
         let started = Instant::now();
         let counters = Arc::new(Counters { started, latest: None.into() });
         let (configuration, fingerprint) = configuration(&counters).map_err(io::Error::other)?;
         let shared = Arc::new(Shared {
             fingerprint: fingerprint.into(),
             links: Vec::new().into(),
-            wake: unsafe { OwnedFd::from_raw_fd(wake) },
+            waker: Waker::new()?,
             started,
         });
         thread::spawn({
             let shared = shared.clone();
             move || {
-                if let Err(error) = serve(socket, &shared, &counters, configuration) {
-                    eprintln!("remote-desktop: the UDP side ended: {error}");
+                if let Err(error) = serve(socket, &shared, &counters, configuration, tailnet_only) {
+                    warn!("the UDP side ended: {error}");
                 }
             }
         });
@@ -430,7 +429,7 @@ impl Endpoint {
             queued: 0.into(),
             kbps: 0.into(),
             counts: None.into(),
-            room: 1200.into(),
+            room: u32::from(SMALLEST_DATAGRAM).into(),
             used: NOTHING.into(),
             missing: NOTHING.into(),
             heard: 0.into(),
@@ -470,12 +469,12 @@ impl Client {
         let Some(link) = &self.link else { return };
         let number = |at: usize| u32::from_be_bytes(rest[at..at + 4].try_into().unwrap());
         match (*kind, rest.len()) {
-            (STATUS, 8) => {
+            (STATUS, TOLD) => {
                 link.used.store(number(0), Ordering::Relaxed);
                 link.missing.store(number(4), Ordering::Relaxed);
                 link.heard.store(shared.started.elapsed().as_micros() as u64, Ordering::Relaxed);
             }
-            (MOVE, 8) => {
+            (MOVE, TOLD) => {
                 if let Some(moved) = &*link.moved.lock().unwrap() {
                     moved(number(0), (number(4) >> 16) as u16, number(4) as u16);
                 }
@@ -529,24 +528,18 @@ fn serve(
     shared: &Arc<Shared>,
     counters: &Arc<Counters>,
     configuration: Arc<ServerConfig>,
+    tailnet_only: bool,
 ) -> io::Result<()> {
     let mut endpoint = quinn_proto::Endpoint::new(Arc::new(EndpointConfig::default()), Some(configuration), true, None);
     let mut clients: HashMap<ConnectionHandle, Client> = HashMap::new();
-    let (mut packet, mut out) = (vec![0; 1 << 16], Vec::new());
+    let (mut packet, mut out) = (vec![0; LARGEST_PACKET], Vec::new());
     let mut renewed = Instant::now();
     // The earliest moment something is due without a packet arriving.
     let mut due: Option<Instant> = None;
     loop {
         let patience = due.map_or(RENEWAL, |due| due.saturating_duration_since(Instant::now())).min(RENEWAL);
-        let mut polls = [socket.as_raw_fd(), shared.wake.as_raw_fd()].map(|fd| libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        });
-        // Rounded up to the next millisecond, or the thread would spin through the last fraction of one.
-        unsafe { libc::poll(polls.as_mut_ptr(), 2, patience.as_millis() as i32 + i32::from(!patience.is_zero())) };
-        let mut count = [0u8; 8];
-        unsafe { libc::read(shared.wake.as_raw_fd(), count.as_mut_ptr().cast(), count.len()) };
+        fd::wait_readable([socket.as_raw_fd(), shared.waker.fd()], Some(patience));
+        shared.waker.settle();
         let now = Instant::now();
         loop {
             let (size, remote) = match socket.recv_from(&mut packet) {
@@ -558,7 +551,9 @@ fn serve(
             };
             out.clear();
             match endpoint.handle(now, remote, None, None, BytesMut::from(&packet[..size]), &mut out) {
-                Some(DatagramEvent::NewConnection(incoming)) if clients.len() >= MOST_CLIENTS => {
+                Some(DatagramEvent::NewConnection(incoming))
+                    if clients.len() >= MOST_CLIENTS || (tailnet_only && !crate::server::on_tailnet(remote.ip())) =>
+                {
                     endpoint.ignore(incoming)
                 }
                 Some(DatagramEvent::NewConnection(incoming)) => match endpoint.accept(incoming, now, &mut out, None) {
@@ -599,7 +594,7 @@ fn serve(
                     endpoint.set_server_config(Some(fresh));
                     *shared.fingerprint.lock().unwrap() = fingerprint;
                 }
-                Err(error) => eprintln!("remote-desktop: could not renew the UDP side's certificate: {error}"),
+                Err(error) => warn!("could not renew the UDP side's certificate: {error}"),
             }
             renewed = Instant::now();
         }

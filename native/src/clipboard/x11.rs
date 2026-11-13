@@ -3,7 +3,6 @@
 //! owner itself to offer text from the client.
 
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
@@ -70,7 +69,7 @@ fn share(inbox: &Inbox, shared: &Shared, mut copied: Copied) -> Result<(), Box<d
             (own, last) = (new.clone(), new);
             x.set_selection_owner(window, clipboard, x11rb::CURRENT_TIME)?;
         }
-        events.wait(&x, Some(inbox.waker()), Duration::from_millis(250))?;
+        events.wait(&x, Some(inbox.waker()), super::LOOK)?;
     }
     Ok(())
 }

@@ -76,9 +76,8 @@ fn wait() -> Greeter {
             return greeter;
         }
         let watching = Path::new(SESSIONS).is_dir() && watch >= 0;
-        let patience = if looks_left > 0 || !watching { LOOK.as_millis() as i32 } else { -1 };
-        let mut poll = libc::pollfd { fd: watch, events: libc::POLLIN, revents: 0 };
-        if unsafe { libc::poll(&mut poll, 1, patience) } > 0 {
+        let patience = (looks_left > 0 || !watching).then_some(LOOK);
+        if crate::fd::wait_readable([watch], patience) == [true] {
             let mut events = [0u8; 4096];
             unsafe { libc::read(watch, events.as_mut_ptr().cast(), events.len()) };
             looks_left = LOOKS;

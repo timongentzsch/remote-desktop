@@ -35,9 +35,7 @@ impl Events {
         x.flush()?;
         self.ahead = x.poll_for_event()?;
         if self.ahead.is_none() {
-            let wait = |fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-            let mut polled = [wait(x.stream().as_raw_fd()), wait(other.unwrap_or(-1))]; // a negative one is skipped
-            unsafe { libc::poll(polled.as_mut_ptr(), 2, limit.as_millis() as i32) };
+            crate::fd::wait_readable([x.stream().as_raw_fd(), other.unwrap_or(-1)], Some(limit));
         }
         Ok(())
     }

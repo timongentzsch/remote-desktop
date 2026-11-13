@@ -1,6 +1,6 @@
 # Checks and tests every push and pull request, and builds the portable binaries.
-# Pushing a tag such as v0.1.0 also publishes them as a release, which is what the install line in the
-# README downloads: releases/latest/download/remote-desktop-<architecture>.
+# Pushing a tag such as v0.1.0 also publishes them as a release, with install.sh, which is what the install
+# line in the README downloads: releases/latest/download/install.sh, which fetches remote-desktop-<architecture>.
 name: Build
 
 on:
@@ -40,6 +40,7 @@ jobs:
           for architecture in x86_64 aarch64; do
             cp target/$architecture-unknown-linux-gnu/release/remote-desktop dist/remote-desktop-$architecture
           done
+          cp ../install.sh dist/
       - uses: actions/upload-artifact@v4
         with:
           name: remote-desktop

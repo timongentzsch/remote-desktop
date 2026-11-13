@@ -204,9 +204,9 @@ struct encoder *nvenc_open(int width, int height, int fps, int kbps, int full_ch
         vui->videoFormat = 5; /* unspecified */
         vui->videoFullRangeFlag = 1;
         vui->colourDescriptionPresentFlag = 1;
-        vui->colourPrimaries = vui->transferCharacteristics = vui->colourMatrix = 1; /* BT.709 */
+        vui->colourPrimaries = vui->transferCharacteristics = vui->colourMatrix = BT709;
         vui->chromaSampleLocationFlag = 1;
-        vui->chromaSampleLocationTop = vui->chromaSampleLocationBot = 1; /* 4:2:0 chroma sits at each block's centre */
+        vui->chromaSampleLocationTop = vui->chromaSampleLocationBot = CHROMA_AT_CENTRE;
 
         encoder->setup = (NV_ENC_INITIALIZE_PARAMS){
             .version = NV_ENC_INITIALIZE_PARAMS_VER,

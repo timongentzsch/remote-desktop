@@ -11,22 +11,30 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use time::{Duration, OffsetDateTime};
 
-use crate::install::{config_directory, write_private};
+use crate::install::{data_directory, write_private};
+
+/// How often the certificates are looked at again: Tailscale's renewed when it is due, and the UDP side's own
+/// made anew (see quic.rs).
+pub const RENEWAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// An address set aside for documentation (RFC 5737), which a UDP socket can be pointed at to learn the way
+/// out without anything being sent.
+const SOMEWHERE: &str = "192.0.2.1:9";
 
 /// Apple's platforms refuse server certificates valid for more than 825 days.
 const VALID_DAYS: i64 = 820;
 
 pub fn path() -> PathBuf {
-    config_directory().join("remote-desktop/certificate.pem")
+    data_directory().join("certificate.pem")
 }
 
 fn key_path() -> PathBuf {
-    config_directory().join("remote-desktop/key.pem")
+    data_directory().join("key.pem")
 }
 
 /// Holds this machine's Tailscale name while the certificate comes from Tailscale; absent when it is self-signed.
 fn tailscale_marker() -> PathBuf {
-    config_directory().join("remote-desktop/tailscale")
+    data_directory().join("tailscale")
 }
 
 /// The name the Tailscale certificate is for, if that is the certificate in use.
@@ -92,7 +100,7 @@ pub fn names() -> Vec<String> {
     }
     // The address this machine would use to reach others, found without sending anything.
     let address = UdpSocket::bind("0.0.0.0:0").and_then(|socket| {
-        socket.connect("192.0.2.1:9")?;
+        socket.connect(SOMEWHERE)?;
         socket.local_addr()
     });
     if let Ok(address) = address {
@@ -102,16 +110,27 @@ pub fn names() -> Vec<String> {
     names
 }
 
+/// What a certificate of this machine's names starts from: valid for `days`, from a day ago on, so that a client
+/// whose clock is a little behind takes it too.
+pub fn parameters(days: i64) -> Result<CertificateParams, String> {
+    let mut parameters = CertificateParams::new(names()).map_err(|error| error.to_string())?;
+    let now = OffsetDateTime::now_utc();
+    parameters.not_before = now - Duration::days(1);
+    parameters.not_after = now + Duration::days(days);
+    Ok(parameters)
+}
+
+/// The TLS library set up with the cryptography used throughout.
+pub fn tls_builder() -> rustls::ConfigBuilder<ServerConfig, rustls::WantsVersions> {
+    ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+}
+
 /// Creates a new self-signed certificate and key, replacing any existing ones.
 pub fn create() -> Result<(), String> {
     let _ = std::fs::remove_file(tailscale_marker());
-    let names = names();
-    let mut parameters = CertificateParams::new(names.clone()).map_err(|error| error.to_string())?;
+    let mut parameters = parameters(VALID_DAYS)?;
     parameters.distinguished_name = DistinguishedName::new();
-    parameters.distinguished_name.push(DnType::CommonName, format!("Remote desktop on {}", names[1]));
-    let now = OffsetDateTime::now_utc();
-    parameters.not_before = now - Duration::days(1);
-    parameters.not_after = now + Duration::days(VALID_DAYS);
+    parameters.distinguished_name.push(DnType::CommonName, format!("Remote desktop on {}", names()[1]));
     parameters.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     parameters.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     let key = KeyPair::generate().map_err(|error| error.to_string())?;
@@ -124,7 +143,7 @@ pub fn create() -> Result<(), String> {
 pub fn configuration() -> Result<Arc<ServerConfig>, String> {
     if let Some(name) = tailscale_name() {
         if let Err(error) = fetch_tailscale_certificate(&name) {
-            eprintln!("remote-desktop: keeping the current certificate: {error}");
+            warn!("keeping the current certificate: {error}");
         }
     } else if !path().exists() || !key_path().exists() {
         create()?;
@@ -135,7 +154,7 @@ pub fn configuration() -> Result<Arc<ServerConfig>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(unreadable)?;
     let key = PrivateKeyDer::from_pem_file(key_path()).map_err(unreadable)?;
-    let configuration = ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+    let configuration = tls_builder()
         .with_safe_default_protocol_versions()
         .map_err(|error| error.to_string())?
         .with_no_client_auth()

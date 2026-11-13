@@ -265,6 +265,11 @@ impl Controller {
         }
     }
 
+    /// Half the rate, the most one short measurement may take away.
+    fn halved(&self) -> u32 {
+        (self.kbps / 2).max(LOWEST)
+    }
+
     /// Once the window is over, or frames were held up for too long in it already, cuts the rate if it lagged.
     fn judge_window(&mut self, reading: &Reading) {
         if reading.now < self.settled_at {
@@ -294,7 +299,7 @@ impl Controller {
         let (link_rate, least) = match arrived {
             Some(arrived) if reading.lost.is_some() => (arrived, LOWEST),
             _ if backed_up => (written, LOWEST),
-            _ => (arrived.unwrap_or(0.0), (self.kbps / 2).max(LOWEST)),
+            _ => (arrived.unwrap_or(0.0), self.halved()),
         };
         self.kbps = ((SHARE * link_rate) as u32).clamp(least, self.kbps);
         self.limited = true;
@@ -360,7 +365,7 @@ impl Controller {
         // What arrived while the link was full is all it carries, even where that is less than the rate so
         // far, which a still screen may never have put to the test. One short measurement halves it at most.
         // Otherwise the rate does not go down.
-        let least = if full { (self.kbps / 2).max(LOWEST) } else { self.kbps };
+        let least = if full { self.halved() } else { self.kbps };
         let shown = arrival_rate.map_or(self.kbps, |rate| ((SHARE * rate) as u32).clamp(least, probe.kbps));
         let reached = if kept_pace { probe.kbps } else { shown };
         let gained = reached as f64 >= self.kbps as f64 * GAIN;

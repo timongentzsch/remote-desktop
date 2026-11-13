@@ -26,7 +26,11 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
   HDR. Keys and clicks travel over TCP, and so does everything else where UDP does not get through, which
   shows on a link that loses packets.
 - **Not a session of its own.** It shows what the machine's own screen shows: the login screen, then the
-  desktop of whoever logs in there. It starts no separate sessions for remote users.
+  desktop of whoever logs in there. It starts no separate sessions for remote users. On Hyprland the size
+  "Client" gives that desktop a screen of the client window's size instead, for as long as the client is
+  connected, and switches the machine's own screens off meanwhile; elsewhere it shows the machine's screen.
+  The sizes 1080p, 720p and 360p shrink the machine's screen to that height before it is encoded, for links
+  that carry little.
 - **Not file transfer or device sharing.** Text goes through the clipboard; files, drives, printers and USB
   devices are not passed on.
 
@@ -48,13 +52,25 @@ through, the video takes the same connection as everything else. It is developed
 
 In a terminal of the desktop session you want to control:
 
-    curl -fLo remote-desktop https://github.com/timongentzsch/remote-desktop/releases/latest/download/remote-desktop-$(uname -m) && chmod +x remote-desktop && ./remote-desktop install
+    curl -fsSL https://github.com/timongentzsch/remote-desktop/releases/latest/download/install.sh | sh
 
-`install` asks for a login password and for sudo, then
+For a machine on a tailnet, reached only from the tailnet, and without a password:
+
+    curl -fsSL https://github.com/timongentzsch/remote-desktop/releases/latest/download/install.sh | sh -s -- --tailscale --no-password
+
+The script downloads the binary for this machine's architecture and runs `remote-desktop install` with the
+options given:
+
+- `--tailscale` takes the certificate from Tailscale (see [Certificates](#certificates)) and answers devices on
+  the tailnet only,
+- `--no-password` lets in whoever reaches the host without a password.
+
+`install` asks for a login password, unless told `--no-password`, and for sudo, then
 
 - copies the binary to `/usr/local/bin/remote-desktop`,
 - lets the user at the machine create input devices (a udev rule for `/dev/uinput`),
-- opens port 8765 if ufw or firewalld is active: TCP, and UDP for the video,
+- opens port 8765 if ufw or firewalld is active: TCP, and UDP for the video; with `--tailscale` on Tailscale's
+  interface only,
 - creates a certificate, kept with the password in `~/.config/remote-desktop/`,
 - starts the host with the desktop session: as a systemd user service, or through the desktop's autostart
   where there is no systemd,
@@ -69,6 +85,8 @@ session that ended unasked for half a minute, connects to that one. The login sc
 SDDM. A login at a text console has no picture to show, and without systemd there is no such service: there,
 let the display manager log the user in automatically and lock the session at once.
 
+    remote-desktop install [--tailscale] [--no-password]
+                                             what install.sh runs, for a binary downloaded by hand
     remote-desktop password                  change the login password
     remote-desktop password --none           allow access without a password
     remote-desktop certificate [--tailscale] make a new certificate, or switch where it comes from
@@ -85,9 +103,16 @@ Browsers only decode video and capture the keyboard on secure pages, so the host
 
 It is valid for 820 days and names the machine's hostname and address as they were when it was made.
 
-**Tailscale.** On a tailnet with HTTPS certificates enabled, `remote-desktop install --tailscale` takes the
-certificate from Tailscale instead. Browsers trust it as it is, the host is reachable from the tailnet at
-`https://<machine>.<tailnet>.ts.net:8765`, and the certificate renews itself.
+**Tailscale.** On a tailnet with HTTPS certificates enabled, `install --tailscale` takes the certificate from
+Tailscale instead. Browsers trust it as it is, the host is reachable from the tailnet at
+`https://<machine>.<tailnet>.ts.net:8765`, and the certificate renews itself. A self-hosted Headscale issues
+these certificates from version 0.30 on, with `dns.certificates` and a DNS challenge provider configured.
+
+With this certificate the host answers devices on the tailnet only: connections from Tailscale's addresses
+(`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and from the machine itself. Tailscale drops those addresses arriving
+over any other interface, so nobody on the local network can pose as one, and a subnet router's forwarding
+from the tailnet into the local network does not count. Who on the tailnet may reach the machine is up to the
+tailnet's access rules.
 
 Reaching the host from another network is left to Tailscale or another VPN altogether; this program has no
 relay or router traversal of its own. Where Tailscale cannot connect two devices directly it relays them
@@ -111,7 +136,8 @@ Whoever logs in controls the desktop session, so treat the address and password 
 - The service for the login screen answers before anyone has logged in, behind the same password. It is root
   only until it has read the password and the certificate, and serves as the display manager's own user.
   `sudo systemctl disable --now remote-desktop-login` switches it off.
-- The host listens on all network interfaces unless started with `--listen`.
+- The host listens on all network interfaces unless started with `--listen`. With a certificate from Tailscale
+  it answers devices on the tailnet only (see [Certificates](#certificates)).
 
 ## Build
 
@@ -131,11 +157,15 @@ builds them and publishes them when a version tag is pushed.
 
 ## Layout
 
+    install.sh                 the one-line install: fetches the binary, runs `remote-desktop install`
     index.html                 the client: page, styles and script in one file
     fonts/                     its typeface, JetBrains Mono, which the host serves along
     native/src/
-      main.rs, install.rs      the command line; install, uninstall, password
-      server.rs, session.rs    HTTPS and the client page; one client's login, threads and input
+      main.rs, install.rs      the command line and the names it shares; install, uninstall, password
+      firewall.rs              the port in ufw or firewalld, for everyone or the tailnet only
+      server.rs                HTTPS and the client page, and who is answered
+      session/                 one client's session: its login, threads and input, and its datagrams
+      virtual_screen.rs        a screen of the client window's size (Hyprland)
       greeter.rs               the same host at the login screen, as the display manager's user
       outbox.rs, ws.rs         what waits to be sent to a client; WebSocket framing
       quic.rs, fec.rs          the UDP side that video takes; its spare datagrams against loss
@@ -143,17 +173,21 @@ builds them and publishes them when a version tag is pushed.
       screen.rs                the desktop's screens, and where the pointer goes on the one shown
       tls.rs, certificate.rs   the encrypted connection; the certificate behind it
       capture/                 the screen's picture, one module per way of getting it
-      stream/                  pictures to video: pacing, colour conversion, the encoders
+      stream/                  pictures to video: pacing, colour detail, the encoders, the FLV they go in
       clipboard/               clipboard text in both directions, one module per kind of desktop
       audio.rs, input.rs       sound as Opus; keyboard and pointer through uinput
       compositor.rs, gnome.rs, xserver.rs
                                the display servers' connections that the above share
+      fd.rs                    waiting on file descriptors, and waking a thread that does
     tests/                     the regression on every kind of desktop, and tools for measuring
 
 To extend it: another way of capturing a screen is a module in `capture/` with one function, `run`, that
 feeds a `Stream`; another encoder implements `encoder_ops` in `stream/encoder.h`; another desktop's
-clipboard is a module in `clipboard/`; and another kind of message gets its number in `ws.rs` and a handler
-in the client's table of them.
+clipboard is a module in `clipboard/`; another desktop's virtual screen is a module in `virtual_screen.rs`
+beside Hyprland's; and another kind of message gets its number in `ws.rs` and a handler in the client's table
+of them. The client and the host share a protocol but no code: each value they must agree on is named on both
+sides, with a note where the other side has it (`session/login.rs` for the login, `ws.rs`, `stream/flv.rs` and
+`quic.rs` for the binary ones).
 
 ## Licence
 

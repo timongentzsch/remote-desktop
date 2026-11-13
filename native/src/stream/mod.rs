@@ -7,11 +7,14 @@ use std::time::{Duration, Instant};
 
 mod convert;
 mod encode;
+mod flv;
 
 pub use encode::{PROBE, probe};
 
 use crate::capture::{Output, Settings, Shape, Shared, Sink};
+use convert::Shrinker;
 use encode::{EFFORTS, Encoder};
+use flv::Packet;
 
 /// How many times a second a still picture is encoded again to bring it up to the quality target. Far fewer
 /// than the frame rate, so that each of these frames may take a correspondingly larger share of the bitrate cap:
@@ -19,6 +22,8 @@ use encode::{EFFORTS, Encoder};
 pub const REFINE_FPS: u32 = 10;
 /// For how many seconds at most a still picture is refined.
 const REFINE_SECONDS: u32 = 20;
+/// The longest the capture waits for the screen to change before it looks whether it is still wanted.
+const LONGEST_WAIT: Duration = Duration::from_millis(250);
 const REFINE_INTERVAL: Duration = Duration::from_millis(1000 / REFINE_FPS as u64);
 
 /// Tells when refining a still picture has stopped paying. An encoder goes on spending a little on a picture
@@ -63,6 +68,26 @@ impl Still {
 const EFFORT_FRAMES: u32 = 60;
 const STEP_COST: u32 = 2;
 
+/// Full colour detail (4:4:4) keeps coloured text and thin lines crisp, for twice the samples of 4:2:0 to
+/// convert, encode and send. Where the client leaves the choice to the host, the stream begins with it and
+/// weighs it with the effort: it gives full colour up first, when new frames take longer than the budget or the
+/// bitrate cap decided most of them, since a coarse picture loses more than colour detail does. It tries again
+/// when frames are done in a `FULL_CHROMA_COST`th of the budget and fine as they are, after a rest that
+/// doubles each time full colour had to be given up, so that a link it does not suit is not put through a
+/// keyframe again and again.
+const FULL_CHROMA_COST: u32 = 2;
+const CHROMA_REST: Duration = Duration::from_secs(30);
+const CHROMA_REST_LIMIT: Duration = Duration::from_secs(600);
+
+/// Whether to go on with full colour detail.
+fn next_chroma(full: bool, average: Duration, budget: Duration, mostly_coarse: bool, rested: bool) -> bool {
+    if full {
+        average <= budget && !mostly_coarse
+    } else {
+        rested && !mostly_coarse && average * FULL_CHROMA_COST < budget
+    }
+}
+
 /// What the new frames since the encoder's effort was last looked at added up to.
 #[derive(Default)]
 struct Weighed {
@@ -88,13 +113,19 @@ pub struct Stream {
     sink: Sink,
     /// The size of the screen the encoder is open for.
     screen: (usize, usize),
-    /// The half-size copy of the screen, when the picture is scaled down.
+    /// What shrinks the screen to the picture, and the shrunk copy, when the picture is smaller than the
+    /// screen (see `Settings::height`).
+    shrinker: Option<Shrinker>,
     scaled: Vec<u8>,
     encoder: Option<Encoder>,
     /// How much work the software encoder puts into a frame and the most it may (see `EFFORT_FRAMES`).
     effort: u32,
     most_effort: u32,
     weighed: Weighed,
+    /// With colour detail left to the stream: when full colour may be tried again, and the rest after the
+    /// next time it has to be given up.
+    chroma_rested_at: Instant,
+    chroma_rest: Duration,
     /// The bitrate cap in kbit/s and the frames a second the encoder was last told.
     rate: (u32, u32),
     /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
@@ -119,11 +150,14 @@ impl Stream {
             shared,
             sink,
             screen: (0, 0),
+            shrinker: None,
             scaled: Vec::new(),
             encoder: None,
             effort: 0,
             most_effort: EFFORTS - 1,
             weighed: Weighed::default(),
+            chroma_rested_at: now,
+            chroma_rest: CHROMA_REST,
             rate: (0, 0),
             refinements_left: 0,
             still: Still::default(),
@@ -153,7 +187,7 @@ impl Stream {
         } else {
             Duration::MAX
         };
-        refinement.min(Duration::from_millis(250))
+        refinement.min(LONGEST_WAIT)
     }
 
     /// Encodes a new picture of the screen. `pixels` holds its rows, `stride` bytes apart, each pixel as blue,
@@ -168,13 +202,13 @@ impl Stream {
         }
         let Some(encoder) = &mut self.encoder else { return };
         let (mut source, mut stride) = (pixels, stride);
-        if self.settings.half_size {
-            convert::halve(source, stride, width, height, &mut self.scaled);
-            (source, stride) = (&self.scaled, width / 2 * 4);
+        if let Some(shrinker) = &mut self.shrinker {
+            shrinker.shrink(source, stride, &mut self.scaled);
+            (source, stride) = (&self.scaled, encoder.width * convert::BYTES_PER_PIXEL);
         }
         let full_chroma = encoder.full_chroma;
         convert::bgrx_to_yuv(source, stride, encoder.width, encoder.height, encoder.planes(), full_chroma);
-        (self.refinements_left, self.still) = (REFINE_SECONDS * REFINE_FPS, Still::default());
+        self.refine_anew();
         if let Some((took, coarse)) = self.encode(started, self.settings.fps)
             && !self.shared.climbing.load(Ordering::Relaxed)
         {
@@ -182,7 +216,8 @@ impl Stream {
         }
     }
 
-    /// Counts a new frame and, every `EFFORT_FRAMES` of them, reconsiders the software encoder's effort.
+    /// Counts a new frame and, every `EFFORT_FRAMES` of them, reconsiders the colour detail where it is the
+    /// stream's to choose, and else the software encoder's effort.
     fn weigh_effort(&mut self, took: Duration, coarse: bool) {
         self.weighed.frames += 1;
         self.weighed.coarse += coarse as u32;
@@ -191,16 +226,35 @@ impl Stream {
             return;
         }
         let weighed = std::mem::take(&mut self.weighed);
+        let (average, budget) = (weighed.time / weighed.frames, self.frame_interval() / 2);
+        let mostly_coarse = weighed.coarse * 2 > weighed.frames;
+        if self.settings.auto_chroma {
+            let now = Instant::now();
+            let full = self.settings.full_chroma;
+            let wanted = next_chroma(full, average, budget, mostly_coarse, now >= self.chroma_rested_at);
+            if wanted != full {
+                if full {
+                    self.chroma_rested_at = now + self.chroma_rest;
+                    self.chroma_rest = (self.chroma_rest * 2).min(CHROMA_REST_LIMIT);
+                }
+                self.settings.full_chroma = wanted;
+                self.encoder = None; // the next picture opens another, which begins with a keyframe
+                return;
+            }
+        }
         if self.encoder.as_ref().is_none_or(|encoder| encoder.gpu) {
             return;
         }
-        let (average, budget) = (weighed.time / weighed.frames, self.frame_interval() / 2);
-        let (effort, most) =
-            next_effort(self.effort, self.most_effort, average, budget, weighed.coarse * 2 > weighed.frames);
+        let (effort, most) = next_effort(self.effort, self.most_effort, average, budget, mostly_coarse);
         if effort != self.effort {
             self.encoder = None; // the next picture opens another, which begins with a keyframe
         }
         (self.effort, self.most_effort) = (effort, most);
+    }
+
+    /// Starts refining the latest picture from the beginning: it is new, or a client begins with it.
+    fn refine_anew(&mut self) {
+        (self.refinements_left, self.still) = (REFINE_SECONDS * REFINE_FPS, Still::default());
     }
 
     /// Encodes the latest picture once more if the screen has stood still long enough and the picture is not
@@ -208,7 +262,7 @@ impl Stream {
     pub fn refine(&mut self) {
         if self.shared.fresh.load(Ordering::Relaxed) && self.encoder.is_some() {
             // A client waits for a frame to begin with: the latest picture again, refined from there.
-            (self.refinements_left, self.still) = (REFINE_SECONDS * REFINE_FPS, Still::default());
+            self.refine_anew();
             self.encode(Instant::now(), REFINE_FPS);
         } else if self.refinements_left > 0 && self.encoded.elapsed() >= REFINE_INTERVAL {
             self.refinements_left -= 1;
@@ -219,9 +273,14 @@ impl Stream {
     /// Opens the encoder for a screen of this size and sends the stream's header and decoder configuration.
     fn open(&mut self, width: usize, height: usize) -> Result<(), String> {
         self.screen = (width, height);
-        let scale = if self.settings.half_size { 2 } else { 1 };
+        let (width, height) = match self.settings.height {
+            Some(most) if height > most => (width * most / height, most),
+            _ => (width, height),
+        };
         // 4:2:0 needs even dimensions; an odd last row or column is dropped.
-        let (width, height) = ((width / scale) & !1, (height / scale) & !1);
+        let (width, height) = (width & !1, height & !1);
+        let shrinking = self.settings.height.is_some_and(|most| self.screen.1 > most);
+        self.shrinker = if shrinking { Some(Shrinker::new(self.screen, (width, height))?) } else { None };
         let (fps, kbps, full_chroma) = (self.settings.fps, self.settings.kbps, self.settings.full_chroma);
         let mut encoder =
             Encoder::open(width, height, fps, kbps, full_chroma, self.effort).ok_or("could not open the encoder")?;
@@ -231,13 +290,14 @@ impl Stream {
             (false, 0) => "with x264".to_owned(),
             (false, effort) => format!("with x264, effort {effort} of {}", EFFORTS - 1),
         };
-        eprintln!("remote-desktop: encoding {width}x{height} {how}");
+        let colour = if full_chroma { "4:4:4" } else { "4:2:0" };
+        warn!("encoding {width}x{height} {colour} {how}");
         if !self.wrote_header {
-            self.send(b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00");
+            self.send(flv::HEADER);
             self.wrote_header = true;
         }
         let configuration = encoder.configuration();
-        self.send_tag(true, 0, &configuration);
+        self.send_tag(Packet::Configuration, &configuration);
         self.encoder = Some(encoder);
         Ok(())
     }
@@ -249,7 +309,7 @@ impl Stream {
         let fresh = self.shared.fresh.swap(false, Ordering::Relaxed);
         if fresh {
             let configuration = self.encoder.as_mut()?.configuration();
-            self.send_tag(true, 0, &configuration);
+            self.send_tag(Packet::Configuration, &configuration);
         }
         let encoder = self.encoder.as_mut()?;
         // The session may allow another bitrate by now, and refining goes at another pace than the screen.
@@ -270,21 +330,13 @@ impl Stream {
             self.refinements_left = 0;
         }
         self.encoded = Instant::now();
-        self.send_tag(keyframe, 1, &unit);
+        self.send_tag(Packet::Frame { keyframe }, &unit);
         Some((took, coarse))
     }
 
-    /// Sends one FLV video tag. Packet type 0 carries the decoder configuration, 1 an access unit.
-    fn send_tag(&mut self, keyframe: bool, packet_type: u8, payload: &[u8]) {
-        let size = payload.len() as u32 + 5;
-        let time = (self.started.elapsed().as_millis() as u32).to_be_bytes();
-        let mut tag = Vec::with_capacity(payload.len() + 20);
-        tag.push(9);
-        tag.extend(&size.to_be_bytes()[1..]);
-        tag.extend([time[1], time[2], time[3], time[0], 0, 0, 0]);
-        tag.extend([if keyframe { 0x17 } else { 0x27 }, packet_type, 0, 0, 0]);
-        tag.extend(payload);
-        tag.extend((size + 11).to_be_bytes());
+    /// Sends one video tag, timed from the stream's start.
+    fn send_tag(&mut self, packet: Packet, payload: &[u8]) {
+        let tag = flv::tag(packet, self.started.elapsed().as_millis() as u32, payload);
         self.send(&tag);
     }
 
@@ -335,5 +387,18 @@ mod tests {
         assert_eq!(next_effort(1, 2, slow, budget, true), (0, 0), "too slow: back, and not tried again");
         assert_eq!(next_effort(0, 0, quick, budget, true), (0, 0));
         assert_eq!(next_effort(0, 2, slow, budget, true), (0, 2), "nothing below the least");
+    }
+
+    #[test]
+    fn full_colour_detail_stays_where_it_fits_and_returns_after_a_rest() {
+        let (budget, quick, middling, slow) =
+            (Duration::from_millis(8), Duration::from_millis(3), Duration::from_millis(5), Duration::from_millis(9));
+        assert!(next_chroma(true, middling, budget, false, false), "fits: kept");
+        assert!(!next_chroma(true, slow, budget, false, true), "over the budget: given up");
+        assert!(!next_chroma(true, quick, budget, true, true), "the bitrate decides: given up");
+        assert!(next_chroma(false, quick, budget, false, true), "time to spare after the rest: again");
+        assert!(!next_chroma(false, quick, budget, false, false), "not before the rest is over");
+        assert!(!next_chroma(false, middling, budget, false, true), "twice the work would not fit");
+        assert!(!next_chroma(false, quick, budget, true, true), "coarse frames want the bits elsewhere");
     }
 }

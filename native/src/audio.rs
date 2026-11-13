@@ -17,6 +17,14 @@ use unsafe_libopus::{
 
 use crate::capture::Shared;
 
+/// The most an encoded packet of sound may take, in bytes, as Opus recommends.
+const LARGEST_PACKET: usize = 4000;
+/// The sound server matches each reply to its command by a tag; these commands are sent one at a time.
+const AUTH_TAG: u32 = 0;
+const NAME_TAG: u32 = 1;
+const RECORD_TAG: u32 = 2;
+/// How often the sound thread looks whether the session has ended, while the sound server sends nothing.
+const LOOK: std::time::Duration = std::time::Duration::from_millis(250);
 const RATE: u32 = 48000;
 const CHANNELS: usize = 2;
 /// 20 ms, the usual Opus frame.
@@ -29,7 +37,6 @@ pub type Packets = Box<dyn FnMut(&[u8]) + Send>;
 
 /// Records until `shared.stop` is set and hands each encoded packet to `packet`. Silence is not sent.
 pub fn run(shared: Arc<Shared>, mut packet: Packets) -> Result<(), String> {
-    let failed = |error: protocol::ProtocolError| format!("the audio server refused: {error}");
     let (mut server, version) = connect()?;
     let stream = protocol::RecordStreamParams {
         source_name: Some(c"@DEFAULT_MONITOR@".to_owned()),
@@ -44,23 +51,26 @@ pub fn run(shared: Arc<Shared>, mut packet: Packets) -> Result<(), String> {
         flags: protocol::stream::StreamFlags { adjust_latency: true, ..Default::default() },
         ..Default::default()
     };
-    protocol::write_command_message(server.get_mut(), 2, &protocol::Command::CreateRecordStream(stream), version)
-        .map_err(failed)?;
-    protocol::read_reply_message::<protocol::CreateRecordStreamReply>(&mut server, version).map_err(failed)?;
+    protocol::write_command_message(
+        server.get_mut(),
+        RECORD_TAG,
+        &protocol::Command::CreateRecordStream(stream),
+        version,
+    )
+    .map_err(refused)?;
+    protocol::read_reply_message::<protocol::CreateRecordStreamReply>(&mut server, version).map_err(refused)?;
 
     let mut encoder = Encoder::new()?;
-    let (mut samples, mut chunk, mut encoded) = (Vec::new(), Vec::new(), [0; 4000]);
+    let (mut samples, mut chunk, mut encoded) = (Vec::new(), Vec::new(), [0; LARGEST_PACKET]);
     while !shared.stop.load(Ordering::Relaxed) {
-        if server.buffer().is_empty() {
-            let mut poll = libc::pollfd { fd: server.get_ref().as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            if unsafe { libc::poll(&mut poll, 1, 250) } <= 0 {
-                continue;
-            }
+        if server.buffer().is_empty() && crate::fd::wait_readable([server.get_ref().as_raw_fd()], Some(LOOK)) == [false]
+        {
+            continue;
         }
-        let descriptor = protocol::read_descriptor(&mut server).map_err(failed)?;
+        let descriptor = protocol::read_descriptor(&mut server).map_err(refused)?;
         if descriptor.channel == u32::MAX {
             // A notice from the server about the stream, not sound.
-            protocol::Command::read_tag_prefixed(&mut server, version).map_err(failed)?;
+            protocol::Command::read_tag_prefixed(&mut server, version).map_err(refused)?;
             continue;
         }
         chunk.resize(descriptor.length as usize, 0);
@@ -79,24 +89,23 @@ pub fn run(shared: Arc<Shared>, mut packet: Packets) -> Result<(), String> {
 
 /// Connects to the user's audio server and introduces this client.
 fn connect() -> Result<(BufReader<UnixStream>, u16), String> {
-    let failed = |error: protocol::ProtocolError| format!("the audio server refused: {error}");
     let path = pulseaudio::socket_path_from_env().ok_or("no audio server is running")?;
     let mut server =
         BufReader::new(UnixStream::connect(path).map_err(|error| format!("cannot reach the audio server: {error}"))?);
     let cookie = pulseaudio::cookie_path_from_env().and_then(|path| std::fs::read(path).ok()).unwrap_or_default();
     let login =
         protocol::AuthParams { version: protocol::MAX_VERSION, supports_shm: false, supports_memfd: false, cookie };
-    protocol::write_command_message(server.get_mut(), 0, &protocol::Command::Auth(login), protocol::MAX_VERSION)
-        .map_err(failed)?;
+    protocol::write_command_message(server.get_mut(), AUTH_TAG, &protocol::Command::Auth(login), protocol::MAX_VERSION)
+        .map_err(refused)?;
     let (_, reply) =
-        protocol::read_reply_message::<protocol::AuthReply>(&mut server, protocol::MAX_VERSION).map_err(failed)?;
+        protocol::read_reply_message::<protocol::AuthReply>(&mut server, protocol::MAX_VERSION).map_err(refused)?;
     let version = reply.version.min(protocol::MAX_VERSION);
 
     let mut properties = protocol::Props::new();
     properties.set(protocol::Prop::ApplicationName, CString::from(c"Remote Desktop"));
-    protocol::write_command_message(server.get_mut(), 1, &protocol::Command::SetClientName(properties), version)
-        .map_err(failed)?;
-    protocol::read_reply_message::<protocol::SetClientNameReply>(&mut server, version).map_err(failed)?;
+    protocol::write_command_message(server.get_mut(), NAME_TAG, &protocol::Command::SetClientName(properties), version)
+        .map_err(refused)?;
+    protocol::read_reply_message::<protocol::SetClientNameReply>(&mut server, version).map_err(refused)?;
     Ok((server, version))
 }
 
@@ -131,6 +140,10 @@ impl Drop for Encoder {
     }
 }
 
+fn refused(error: protocol::ProtocolError) -> String {
+    format!("the audio server refused: {error}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,7 +151,7 @@ mod tests {
     #[test]
     fn a_tone_encodes_to_small_packets() {
         let mut encoder = Encoder::new().unwrap();
-        let mut out = [0; 4000];
+        let mut out = [0; LARGEST_PACKET];
         let mut total = 0;
         for index in 0..50 {
             // One second of a 440 Hz tone on both channels, 20 ms at a time.

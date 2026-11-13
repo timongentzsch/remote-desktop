@@ -13,11 +13,14 @@ pub const POINTER: u8 = 7;
 pub const SOUND: u8 = 8;
 pub const VIDEO: u8 = 9;
 
+/// What RFC 6455 has every server append to the client's key before hashing it.
+const ACCEPT_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
 /// The Sec-WebSocket-Accept value answering a client's Sec-WebSocket-Key.
 pub fn accept_key(key: &str) -> String {
     let mut hash = sha1_smol::Sha1::new();
     hash.update(key.as_bytes());
-    hash.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    hash.update(ACCEPT_GUID);
     base64(&hash.digest().bytes())
 }
 

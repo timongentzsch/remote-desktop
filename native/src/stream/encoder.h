@@ -25,6 +25,11 @@ struct encoder {
    picture is given the bits this quality needs and no more, however high the bitrate cap. */
 #define QUALITY 20
 
+/* How the picture's colours are told to the decoder, in H.264's codes: full range, BT.709 primaries, transfer
+   and matrix (as convert.rs makes them), and 4:2:0 chroma sited at each 2x2 block's centre. */
+#define BT709 1
+#define CHROMA_AT_CENTRE 1
+
 /* How much work the software encoder can put into a frame: 0 is the least, EFFORTS - 1 the most. More makes a
    frame of the same size look better and takes longer. The GPU's encoder has the one level. */
 #define EFFORTS 3

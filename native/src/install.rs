@@ -4,31 +4,37 @@ use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-use crate::{certificate, fail};
+use crate::{NAME, PORT, certificate, fail, firewall};
 
 const BINARY: &str = "/usr/local/bin/remote-desktop";
+/// The user service that runs the host in the desktop session, and the system service at the login screen.
+const USER_UNIT: &str = "remote-desktop.service";
 const UDEV_RULE_PATH: &str = "/etc/udev/rules.d/70-remote-desktop.rules";
 /// Lets whoever is logged in at the seat create input devices. The number must stay below 73.
 const UDEV_RULE: &str = r#"KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput""#;
 /// A user service, because capture and input belong to the logged-in desktop session.
-const UNIT: &str = "\
+fn user_unit() -> String {
+    format!(
+        "\
 [Unit]
 Description=Remote desktop host
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-ExecStart=/usr/local/bin/remote-desktop
+ExecStart={BINARY}
 Restart=on-failure
 
 [Install]
 WantedBy=graphical-session.target
-";
+"
+    )
+}
 
 const LOGIN_UNIT: &str = "remote-desktop-login.service";
-const LOGIN_UNIT_PATH: &str = "/etc/systemd/system/remote-desktop-login.service";
+const SYSTEM_UNITS: &str = "/etc/systemd/system";
 
 /// A system service besides, because the login screen belongs to no user's session (see greeter.rs). It is
 /// told where the installing user's password and certificate are.
@@ -40,7 +46,7 @@ Description=Remote desktop host at the login screen
 
 [Service]
 Environment=XDG_CONFIG_HOME={}
-ExecStart=/usr/local/bin/remote-desktop login-screen
+ExecStart={BINARY} login-screen
 Restart=always
 RestartSec=1
 
@@ -54,14 +60,18 @@ WantedBy=multi-user.target
 /// The program's desktop entry, hidden from menus. Plasma before 6.8 only casts the screen for a program whose
 /// entry asks for that (see capture/kwin.rs), and a copy among the desktop's autostart entries starts the
 /// host at login where systemd does not.
-const DESKTOP_ENTRY: &str = "\
+fn desktop_entry() -> String {
+    format!(
+        "\
 [Desktop Entry]
 Type=Application
 Name=Remote Desktop
-Exec=/usr/local/bin/remote-desktop
+Exec={BINARY}
 NoDisplay=true
 X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1
-";
+"
+    )
+}
 
 /// One of the user's base directories: where `variable` points, or `fallback` in the home directory.
 fn user_directory(variable: &str, fallback: &str) -> PathBuf {
@@ -72,15 +82,24 @@ fn user_directory(variable: &str, fallback: &str) -> PathBuf {
 }
 
 fn desktop_entry_path() -> PathBuf {
-    user_directory("XDG_DATA_HOME", ".local/share").join("applications/remote-desktop.desktop")
+    user_directory("XDG_DATA_HOME", ".local/share").join("applications").join(format!("{NAME}.desktop"))
+}
+
+fn login_unit_path() -> String {
+    format!("{SYSTEM_UNITS}/{LOGIN_UNIT}")
 }
 
 pub fn config_directory() -> PathBuf {
     user_directory("XDG_CONFIG_HOME", ".config")
 }
 
+/// Where the password and the certificate are kept.
+pub fn data_directory() -> PathBuf {
+    config_directory().join(NAME)
+}
+
 pub fn password_path() -> PathBuf {
-    config_directory().join("remote-desktop/password")
+    data_directory().join("password")
 }
 
 /// Whether systemd runs the user's services. Where it does not, the desktop's autostart starts the host.
@@ -89,16 +108,16 @@ fn has_systemd() -> bool {
 }
 
 /// What the user is told to run for a change of password or certificate to take effect.
-fn restart_command() -> &'static str {
-    if has_systemd() { "systemctl --user restart remote-desktop" } else { "remote-desktop install" }
+fn restart_command() -> String {
+    if has_systemd() { format!("systemctl --user restart {USER_UNIT}") } else { format!("{NAME} install") }
 }
 
 fn unit_path() -> PathBuf {
-    config_directory().join("systemd/user/remote-desktop.service")
+    config_directory().join("systemd/user").join(USER_UNIT)
 }
 
 fn autostart_path() -> PathBuf {
-    config_directory().join("autostart/remote-desktop.desktop")
+    config_directory().join("autostart").join(format!("{NAME}.desktop"))
 }
 
 fn write(path: PathBuf, contents: &str) {
@@ -114,8 +133,10 @@ fn stop_host() {
 
 /// Copies this binary into place, grants access to uinput (both through sudo) and starts the host: as a
 /// service of the user's systemd, or without one now and through the desktop's autostart at each login.
-pub fn install(tailscale: bool) {
-    if !password_path().exists() {
+pub fn install(tailscale: bool, no_password: bool) {
+    if no_password {
+        clear_password();
+    } else if !password_path().exists() {
         set_password();
     }
     let this = std::env::current_exe().unwrap_or_else(|error| fail(&format!("cannot locate this program: {error}")));
@@ -129,67 +150,48 @@ pub fn install(tailscale: bool) {
             &format!("{rule} && modprobe uinput && udevadm control --reload && udevadm trigger --name-match=uinput"),
         ],
     );
-    firewall(true);
     if tailscale {
         use_tailscale();
     } else if !certificate::path().exists() {
         certificate::create().unwrap_or_else(|error| fail(&error));
     }
+    // A certificate from Tailscale stays when installing again without --tailscale, and so does what it implies.
+    let tailnet_only = certificate::tailscale_name().is_some();
+    firewall::open(tailnet_only);
 
-    write(desktop_entry_path(), DESKTOP_ENTRY);
+    write(desktop_entry_path(), &desktop_entry());
     if has_systemd() {
-        write(unit_path(), UNIT);
+        write(unit_path(), &user_unit());
         run("systemctl", &["--user", "daemon-reload"]);
-        run("systemctl", &["--user", "enable", "remote-desktop.service"]);
-        run("systemctl", &["--user", "restart", "remote-desktop.service"]);
-        let draft = config_directory().join("remote-desktop").join(LOGIN_UNIT); // where no one else writes
+        run("systemctl", &["--user", "enable", USER_UNIT]);
+        run("systemctl", &["--user", "restart", USER_UNIT]);
+        let draft = data_directory().join(LOGIN_UNIT); // where no one else writes
         write(draft.clone(), &login_unit());
-        run("sudo", &["install", "-m644", &draft.to_string_lossy(), LOGIN_UNIT_PATH]);
+        run("sudo", &["install", "-m644", &draft.to_string_lossy(), &login_unit_path()]);
         let _ = fs::remove_file(draft);
         run("sudo", &["systemctl", "daemon-reload"]);
         run("sudo", &["systemctl", "--quiet", "enable", LOGIN_UNIT]);
         run("sudo", &["systemctl", "restart", LOGIN_UNIT]);
-        println!("Installed {BINARY} and started the remote-desktop user service,");
+        println!("Installed {BINARY} and started the {USER_UNIT} user service,");
         println!("and the {LOGIN_UNIT} system service for the login screen.");
     } else {
-        write(autostart_path(), DESKTOP_ENTRY);
+        write(autostart_path(), &desktop_entry());
         stop_host();
         // In a session of its own, so that it outlives this terminal; `setsid` leaves once it has started it.
-        let silent = std::process::Stdio::null;
-        let started =
-            Command::new("setsid").args(["--fork", BINARY]).stdin(silent()).stdout(silent()).stderr(silent()).status();
-        if !started.is_ok_and(|status| status.success()) {
+        if !run_quietly("setsid", &["--fork", BINARY]) {
             fail(&format!("cannot start {BINARY}"));
         }
         println!("Installed {BINARY} and started it. From now on it starts with the desktop session, at login.");
     }
-    show_certificate();
-}
-
-/// Opens or closes the service's port where a firewall this knows how to configure is active: TCP for the page
-/// and the session, and UDP of the same number, which video takes where it can (see quic.rs).
-fn firewall(open: bool) {
-    let ports = ["tcp", "udp"].map(|protocol| format!("{}/{protocol}", crate::PORT));
-    let active = |program: &str, arguments: &[&str], marker: &str| {
-        Command::new("sudo")
-            .arg(program)
-            .args(arguments)
-            .output()
-            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(marker))
-    };
-    let (done, both) = (if open { "Opened" } else { "Closed" }, ports.join(" and "));
-    if active("ufw", &["status"], "Status: active") {
-        let rule: &[&str] = if open { &["ufw", "allow"] } else { &["ufw", "delete", "allow"] };
-        for port in &ports {
-            run("sudo", &[rule, &[port.as_str()]].concat());
-        }
-        println!("{done} ports {both} in the firewall (ufw).");
-    } else if active("firewall-cmd", &["--state"], "running") {
-        let changes = ports.each_ref().map(|port| format!("--{}-port={port}", if open { "add" } else { "remove" }));
-        run("sudo", &["firewall-cmd", "--quiet", "--permanent", &changes[0], &changes[1]]);
-        run("sudo", &["firewall-cmd", "--quiet", "--reload"]);
-        println!("{done} ports {both} in the firewall (firewalld).");
+    if fs::read(password_path()).is_ok_and(|password| password.trim_ascii().is_empty()) {
+        let who = if tailnet_only {
+            "on your tailnet who may reach this machine".into()
+        } else {
+            format!("who can reach port {PORT}")
+        };
+        println!("No password is set: anyone {who} can see and control this desktop.");
     }
+    show_certificate();
 }
 
 /// `remote-desktop uninstall`: undoes `install`. The password and certificate stay, so installing again keeps
@@ -197,10 +199,8 @@ fn firewall(open: bool) {
 pub fn uninstall() {
     // Whichever way it was started; what is not there to stop or remove is fine.
     if has_systemd() {
-        let _ = Command::new("systemctl")
-            .args(["--user", "--quiet", "disable", "--now", "remote-desktop.service"])
-            .status();
-        let _ = Command::new("sudo").args(["systemctl", "--quiet", "disable", "--now", LOGIN_UNIT]).status();
+        run_quietly("systemctl", &["--user", "--quiet", "disable", "--now", USER_UNIT]);
+        run_quietly("sudo", &["systemctl", "--quiet", "disable", "--now", LOGIN_UNIT]);
     }
     stop_host();
     for path in [unit_path(), autostart_path(), desktop_entry_path()] {
@@ -209,10 +209,10 @@ pub fn uninstall() {
     if has_systemd() {
         run("systemctl", &["--user", "daemon-reload"]);
     }
-    firewall(false);
-    run("sudo", &["rm", "-f", BINARY, UDEV_RULE_PATH, LOGIN_UNIT_PATH]);
+    firewall::close();
+    run("sudo", &["rm", "-f", BINARY, UDEV_RULE_PATH, &login_unit_path()]);
     run("sudo", &["udevadm", "control", "--reload"]);
-    let kept = config_directory().join("remote-desktop");
+    let kept = data_directory();
     println!(
         "Removed the services, {BINARY} and the input rule. The password and certificate remain in {}.",
         kept.display()
@@ -226,6 +226,10 @@ pub fn renew_certificate(tailscale: bool) {
         use_tailscale();
     } else {
         certificate::create().unwrap_or_else(|error| fail(&error));
+    }
+    // Who the host answers follows where the certificate comes from, and the firewall with it.
+    if std::path::Path::new(BINARY).exists() {
+        firewall::open(tailscale);
     }
     println!("The certificate changed. Restart the host to use it: {}", restart_command());
     show_certificate();
@@ -241,14 +245,14 @@ fn use_tailscale() {
 /// Tells the user where to connect and, for a self-signed certificate, how to make their browser trust it.
 fn show_certificate() {
     if let Some(name) = certificate::tailscale_name() {
-        println!("\nOpen https://{name}:{} in Chrome from any device on your tailnet.", crate::PORT);
+        println!("\nOpen https://{name}:{} in Chrome from any device on your tailnet.", PORT);
         return;
     }
     let path = certificate::path();
     println!(
         "\nOpen https://{}:{} in Chrome. It also answers to: {}",
         certificate::names()[0],
-        crate::PORT,
+        PORT,
         certificate::names()[1..].join(", ")
     );
     println!("The certificate is self-signed, so each client has to trust it once. On a Mac:");
@@ -274,12 +278,14 @@ pub fn set_password() {
 
 /// `remote-desktop password --none`: lets anyone who can reach this machine's port control it.
 pub fn remove_password() {
-    write_private(&password_path(), b"").unwrap_or_else(|error| fail(&error));
-    println!(
-        "No password is needed any more: anyone who can reach port {} on this machine can see and control",
-        crate::PORT
-    );
+    clear_password();
+    println!("No password is needed any more: anyone who can reach port {} on this machine can see and control", PORT);
     println!("this desktop. Restart the host to apply: {}", restart_command());
+}
+
+/// An empty password: no password is asked for.
+fn clear_password() {
+    write_private(&password_path(), b"").unwrap_or_else(|error| fail(&error));
 }
 
 /// Writes a file only its owner can read, creating the directory it lives in.
@@ -306,10 +312,23 @@ fn without_echo<T>(action: impl FnOnce() -> T) -> T {
     result
 }
 
-fn run(program: &str, arguments: &[&str]) {
+/// Runs a command that has to succeed, or else ends with what went wrong.
+pub fn run(program: &str, arguments: &[&str]) {
     match Command::new(program).args(arguments).status() {
         Ok(status) if status.success() => {}
         Ok(status) => fail(&format!("`{program} {}` failed ({status})", arguments.join(" "))),
         Err(error) => fail(&format!("cannot run {program}: {error}")),
     }
+}
+
+/// Runs a command whose failure is fine, such as removing what may not be there, without its output.
+pub fn run_quietly(program: &str, arguments: &[&str]) -> bool {
+    let silent = Stdio::null;
+    Command::new(program)
+        .args(arguments)
+        .stdin(silent())
+        .stdout(silent())
+        .stderr(silent())
+        .status()
+        .is_ok_and(|status| status.success())
 }

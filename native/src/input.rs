@@ -17,8 +17,12 @@ const ABS_Y: u16 = 1;
 pub const KEY_LEFTSHIFT: u16 = 42;
 /// Codes from here on are pointer buttons, not keys.
 const BTN_MOUSE: u16 = 0x110;
+/// The keyboard's codes run up to this one, which the kernel calls KEY_MICMUTE; the pointer has five buttons:
+/// left, right, middle, back and forward.
+const KEYS: u16 = 248;
+const BUTTONS: u16 = 5;
 /// Pointer positions arrive normalised to this range.
-const ABS_RANGE: i32 = 65535;
+pub const ABS_RANGE: i32 = 65535;
 
 // linux/uinput.h ioctls (identical on x86_64 and arm64)
 const UI_DEV_CREATE: u32 = 0x5501;
@@ -52,10 +56,10 @@ pub struct Input {
 impl Input {
     pub fn open() -> io::Result<Self> {
         Ok(Self {
-            keyboard: device("Remote desktop keyboard", &(1..248).collect::<Vec<_>>(), &[], &[])?,
+            keyboard: device("Remote desktop keyboard", &(1..KEYS).collect::<Vec<_>>(), &[], &[])?,
             pointer: device(
                 "Remote desktop pointer",
-                &(BTN_MOUSE..BTN_MOUSE + 5).collect::<Vec<_>>(),
+                &(BTN_MOUSE..BTN_MOUSE + BUTTONS).collect::<Vec<_>>(),
                 &[REL_HWHEEL, REL_WHEEL, REL_WHEEL_HI_RES, REL_HWHEEL_HI_RES],
                 &[ABS_X, ABS_Y],
             )?,

@@ -170,8 +170,8 @@ impl Read for &Connection {
                 result => return result,
             }
             // Nothing decrypted is left: wait for the network without holding the lock the writer needs.
-            let mut poll = libc::pollfd { fd: self.socket.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            if unsafe { libc::poll(&mut poll, 1, self.patience.load(Ordering::Relaxed)) } == 0 {
+            let patience = Duration::from_millis(self.patience.load(Ordering::Relaxed) as u64);
+            if crate::fd::wait_readable([self.socket.as_raw_fd()], Some(patience)) == [false] {
                 return Err(io::ErrorKind::TimedOut.into());
             }
             let mut tls = self.tls.lock().unwrap();

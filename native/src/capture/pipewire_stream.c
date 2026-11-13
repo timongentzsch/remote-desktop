@@ -50,6 +50,12 @@ static void load(void)
 #define POINTER_SIDE_OFFERED 1024
 /* How much room a buffer needs to carry a pointer shape of this side. */
 #define POINTER_ROOM(side) (sizeof(struct spa_meta_cursor) + sizeof(struct spa_meta_bitmap) + (side) * (side) * 4)
+/* The screen size asked for where the desktop leaves it open, and the largest one taken. */
+#define SCREEN_DEFAULT_WIDTH 1920
+#define SCREEN_DEFAULT_HEIGHT 1080
+#define SCREEN_LARGEST 16384
+/* The pointer's room asked for first: an ordinary pointer's side. */
+#define POINTER_SIDE_USUAL 64
 
 struct screen {
     struct pw_main_loop *loop;
@@ -99,7 +105,7 @@ static void on_param_changed(void *data, uint32_t id, const struct spa_pod *para
     wanted[1] = spa_pod_builder_add_object(&builder,
         SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
         SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Cursor),
-        SPA_PARAM_META_size, SPA_POD_CHOICE_RANGE_Int(POINTER_ROOM(64), POINTER_ROOM(1), POINTER_ROOM(POINTER_SIDE_OFFERED)));
+        SPA_PARAM_META_size, SPA_POD_CHOICE_RANGE_Int(POINTER_ROOM(POINTER_SIDE_USUAL), POINTER_ROOM(1), POINTER_ROOM(POINTER_SIDE_OFFERED)));
     pw.pw_stream_update_params(screen->stream, wanted, 2);
 }
 
@@ -151,7 +157,7 @@ struct screen *screen_open(uint32_t node, int fps)
         SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
         SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
         SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id(3, SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_BGRA),
-        SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle(&SPA_RECTANGLE(1920, 1080), &SPA_RECTANGLE(1, 1), &SPA_RECTANGLE(16384, 16384)),
+        SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle(&SPA_RECTANGLE(SCREEN_DEFAULT_WIDTH, SCREEN_DEFAULT_HEIGHT), &SPA_RECTANGLE(1, 1), &SPA_RECTANGLE(SCREEN_LARGEST, SCREEN_LARGEST)),
         SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&SPA_FRACTION(0, 1)),
         SPA_FORMAT_VIDEO_maxFramerate, SPA_POD_CHOICE_RANGE_Fraction(&SPA_FRACTION(fps, 1), &SPA_FRACTION(1, 1), &SPA_FRACTION(fps, 1)));
     if (pw.pw_stream_connect(screen->stream, PW_DIRECTION_INPUT, node, PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS, &format, 1) < 0) {

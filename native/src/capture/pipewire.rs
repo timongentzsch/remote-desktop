@@ -91,9 +91,7 @@ impl Screen {
             _ => Err(()),
         }
     }
-}
 
-impl Screen {
     /// The pointer's shape, if the cast was asked to tell it and it has changed since this was last asked.
     fn pointer(&mut self) -> Option<Shape> {
         let mut pixels = ptr::null();

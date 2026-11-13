@@ -45,10 +45,8 @@ struct encoder *software_open(int width, int height, int fps, int kbps, int full
     param.rc.f_rf_constant = QUALITY; /* x264's "rate factor" */
     set_rate(&param, kbps, BUFFER_KBITS(kbps));
     param.vui.b_fullrange = 1;
-    param.vui.i_colorprim = 1; /* BT.709 */
-    param.vui.i_transfer = 1;
-    param.vui.i_colmatrix = 1;
-    param.vui.i_chroma_loc = 1; /* 4:2:0 chroma is the average of each 2x2 block, i.e. sited at its centre */
+    param.vui.i_colorprim = param.vui.i_transfer = param.vui.i_colmatrix = BT709;
+    param.vui.i_chroma_loc = CHROMA_AT_CENTRE; /* 4:2:0 chroma is the average of each 2x2 block */
     param.i_log_level = X264_LOG_WARNING;
 
     struct software *encoder = calloc(1, sizeof *encoder);

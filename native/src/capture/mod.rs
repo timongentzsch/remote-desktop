@@ -21,7 +21,11 @@ pub struct Settings {
     pub cursor: bool,
     /// Keep full colour resolution (4:4:4) instead of 4:2:0.
     pub full_chroma: bool,
-    pub half_size: bool,
+    /// Let the stream choose `full_chroma` itself, as encoding time and the bitrate allow (see stream/mod.rs).
+    pub auto_chroma: bool,
+    /// The most rows the picture may have: a taller screen is shrunk to this height, keeping its shape. None
+    /// leaves it at the screen's own size.
+    pub height: Option<usize>,
     /// The screen to capture, by name (see screen.rs). None, or a name no screen has, means the first.
     pub screen: Option<String>,
 }

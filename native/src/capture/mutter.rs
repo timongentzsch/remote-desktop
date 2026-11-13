@@ -6,6 +6,9 @@ use std::time::Duration;
 use super::pipewire;
 use crate::gnome::{self, Service};
 use crate::screen;
+
+/// How long GNOME may take to start the screen cast it was asked for.
+const STARTING: Duration = Duration::from_secs(5);
 use crate::stream::Stream;
 
 const SERVICE: &str = "org.gnome.Mutter.ScreenCast";
@@ -38,7 +41,7 @@ pub fn run(stream: Stream) -> Result<(), String> {
 
     // Mutter announces the stream's PipeWire node once the session has started.
     let node = loop {
-        let signal = mutter.signal(Duration::from_secs(5))?.ok_or("GNOME did not start the screen cast")?;
+        let signal = mutter.signal(STARTING)?.ok_or("GNOME did not start the screen cast")?;
         if signal.dynheader.member.as_deref() == Some("PipeWireStreamAdded") {
             break signal.body.parser().get::<u32>().map_err(gnome::unreadable)?;
         }

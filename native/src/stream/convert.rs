@@ -3,6 +3,10 @@
 //! H.264 that browsers decode in hardware is YUV, and the screen comes as RGB, so every changed frame goes
 //! through here. The matrix and range (BT.709, full) are the ones the encoders announce in the stream.
 
+use std::borrow::Cow;
+use std::sync::Arc;
+
+use pic_scale::{ImageSize, ImageStore, ImageStoreMut, Resampling, ResamplingFunction, Scaler};
 use yuv::{BufferStoreMut, YuvConversionMode, YuvPlanarImageMut, YuvRange, YuvStandardMatrix};
 
 use super::encode::Plane;
@@ -25,17 +29,47 @@ pub fn bgrx_to_yuv(pixels: &[u8], stride: usize, width: usize, height: usize, pl
         .expect("the planes were allocated for this picture size");
 }
 
-/// Averages each 2x2 block of BGRx pixels into one, halving both dimensions. `out` gets rows of `width / 2 * 4` bytes.
-pub fn halve(pixels: &[u8], stride: usize, width: usize, height: usize, out: &mut Vec<u8>) {
-    out.clear();
-    for pair in pixels.chunks_exact(stride * 2).take(height / 2) {
-        let (top, bottom) = pair.split_at(stride);
-        for (top, bottom) in top[..width / 2 * 8].as_chunks::<8>().0.iter().zip(bottom.as_chunks::<8>().0) {
-            for channel in 0..4 {
-                let sum =
-                    top[channel] as u16 + top[channel + 4] as u16 + bottom[channel] as u16 + bottom[channel + 4] as u16;
-                out.push(((sum + 2) / 4) as u8);
-            }
+/// A BGRx pixel's size: blue, green, red and a byte that is ignored.
+pub const BYTES_PER_PIXEL: usize = 4;
+
+/// Shrinks pictures of BGRx pixels from one size to a smaller one. The work is planned once for the two sizes;
+/// pic-scale does it with the processor's vector instructions.
+pub struct Shrinker {
+    plan: Arc<Resampling<u8, BYTES_PER_PIXEL>>,
+    scratch: Vec<u8>,
+    from: (usize, usize),
+    to: (usize, usize),
+}
+
+impl Shrinker {
+    pub fn new(from: (usize, usize), to: (usize, usize)) -> Result<Self, String> {
+        let size = |(width, height)| ImageSize::new(width, height);
+        // Area, after OpenCV's INTER_AREA, averages what each pixel covers and a little around it: edges soften
+        // a little, and fine patterns such as text turn to grey rather than to stray dots. The fourth byte is
+        // ignored, and so is not treated as alpha.
+        let plan = Scaler::new(ResamplingFunction::Area)
+            .plan_rgba_resampling(size(from), size(to), false)
+            .map_err(|error| format!("cannot shrink the picture: {error}"))?;
+        Ok(Self { scratch: plan.alloc_scratch(), plan, from, to })
+    }
+
+    /// Shrinks `pixels`, in rows `stride` bytes apart, into `out`, which gets rows of `to.0 * BYTES_PER_PIXEL`
+    /// bytes.
+    pub fn shrink(&mut self, pixels: &[u8], stride: usize, out: &mut Vec<u8>) {
+        let ((width, height), (to_width, to_height)) = (self.from, self.to);
+        out.resize(to_width * to_height * BYTES_PER_PIXEL, 0);
+        let source = ImageStore::<u8, BYTES_PER_PIXEL> {
+            buffer: Cow::Borrowed(pixels),
+            channels: BYTES_PER_PIXEL,
+            width,
+            height,
+            stride,
+            bit_depth: 8,
+        };
+        let shrunk = ImageStoreMut::borrow(out, to_width, to_height)
+            .and_then(|mut into| self.plan.resample_with_scratch(&source, &mut into, &mut self.scratch));
+        if let Err(error) = shrunk {
+            warn!("could not shrink the picture: {error}");
         }
     }
 }
@@ -68,12 +102,21 @@ mod tests {
     }
 
     #[test]
-    fn halving_averages_blocks() {
-        // A 4x2 image: the left block is two black and two white pixels, the right block is solid.
-        let row = |a: u8, b: u8| [[a; 4], [b; 4], [100; 4], [100; 4]].concat();
-        let pixels = [row(0, 255), row(255, 0)].concat();
+    fn shrinking_keeps_even_areas_and_averages_fine_detail() {
+        // 64x8, stored with a spare pixel at the end of each row: one-pixel stripes on the left, grey on the
+        // right.
+        let (width, height, stride) = (64, 8, 65 * BYTES_PER_PIXEL);
+        let pixel = |x: usize| match x {
+            0..32 => [if x.is_multiple_of(2) { 0 } else { 255 }; BYTES_PER_PIXEL],
+            32..64 => [100; BYTES_PER_PIXEL],
+            _ => [7; BYTES_PER_PIXEL],
+        };
+        let pixels: Vec<u8> = (0..height).flat_map(|_| (0..65).flat_map(pixel)).collect();
         let mut out = Vec::new();
-        halve(&pixels, 16, 4, 2, &mut out);
-        assert_eq!(out, [128, 128, 128, 128, 100, 100, 100, 100]);
+        Shrinker::new((width, height), (32, 4)).unwrap().shrink(&pixels, stride, &mut out);
+        assert_eq!(out.len(), 32 * 4 * BYTES_PER_PIXEL);
+        let row: Vec<u8> = out[..32 * BYTES_PER_PIXEL].iter().step_by(BYTES_PER_PIXEL).copied().collect();
+        assert!(row[4..12].iter().all(|&value| value.abs_diff(128) <= 1), "stripes turn grey: {row:?}");
+        assert!(row[20..].iter().all(|&value| value == 100), "an even area stays as it is: {row:?}");
     }
 }

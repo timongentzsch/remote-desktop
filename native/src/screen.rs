@@ -1,7 +1,7 @@
 //! The desktop's screens: which there are, which of them a client asked for, and where the pointer has to go
 //! to be at a place on it.
 
-use crate::{compositor, xserver};
+use crate::{compositor, input, xserver};
 
 /// One screen and where it lies among the others, in the desktop's own units.
 #[derive(Clone, Debug, PartialEq)]
@@ -26,7 +26,7 @@ pub fn choose<'a>(screens: &'a [Screen], wanted: Option<&str>) -> Option<&'a Scr
 /// Where the pointer device has to point to be at (x, y) of `screen`, both in the device's range of 0..=65535.
 /// The device's range covers the box around all screens, whichever is being shown.
 pub fn place(screen: &Screen, all: &[Screen], x: i32, y: i32) -> (i32, i32) {
-    const RANGE: i64 = 65535;
+    const RANGE: i64 = input::ABS_RANGE as i64;
     // One axis: the screen's start and length, the position on it, and the ends of the box.
     let along = |start: i32, length: i32, position: i32, from: i32, to: i32| {
         let on_desktop = (start - from) as i64 * RANGE + position as i64 * length as i64;

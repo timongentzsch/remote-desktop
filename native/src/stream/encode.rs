@@ -71,9 +71,13 @@ fn gpu_can_encode() -> bool {
     })
 }
 
+/// The picture the probe opens an encoder for: width, height, frame rate and bitrate.
+const PROBE_PICTURE: (usize, usize, u32, u32) = (256, 256, 30, 1000);
+
 /// What the `PROBE` command answers: whether a small ordinary picture can be encoded on the GPU.
 pub fn probe() -> bool {
-    Encoder::open_on(true, 256, 256, 30, 1000, false, 0).is_some()
+    let (width, height, fps, kbps) = PROBE_PICTURE;
+    Encoder::open_on(true, width, height, fps, kbps, false, 0).is_some()
 }
 
 pub struct Encoder {

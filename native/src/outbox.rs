@@ -4,6 +4,9 @@ use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+/// How many packets of sound may wait, at 20 ms each a fifth of a second; the oldest give way beyond that.
+const AUDIO_BACKLOG: usize = 10;
+
 /// The queue between a session's sources and its writer. It holds at most one piece of video, so a slow link makes the
 /// capture skip frames instead of queueing them, while control messages and sound are never stuck behind video.
 /// Sound that cannot leave in time is dropped: late sound is worse than a gap.
@@ -58,7 +61,7 @@ impl Outbox {
     /// Queues a packet of sound, dropping the oldest when more than a fifth of a second is waiting.
     pub fn push_audio(&self, packet: Vec<u8>) {
         let mut pending = self.pending.lock().unwrap();
-        if pending.audio.len() >= 10 {
+        if pending.audio.len() >= AUDIO_BACKLOG {
             pending.audio.pop_front();
         }
         pending.audio.push_back(packet);

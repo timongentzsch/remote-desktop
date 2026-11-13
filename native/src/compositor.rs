@@ -66,10 +66,9 @@ pub fn turn<State>(
 ) -> Result<(), String> {
     events.flush().map_err(lost)?;
     if let Some(guard) = events.prepare_read() {
-        let wait = |fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-        let mut polled = [wait(guard.connection_fd().as_raw_fd()), wait(other.unwrap_or(-1))]; // a negative one is skipped
-        unsafe { libc::poll(polled.as_mut_ptr(), 2, limit.as_millis() as i32) };
-        if polled[0].revents != 0 {
+        let [readable, _] =
+            crate::fd::wait_readable([guard.connection_fd().as_raw_fd(), other.unwrap_or(-1)], Some(limit));
+        if readable {
             guard.read().map_err(lost)?;
         }
     }

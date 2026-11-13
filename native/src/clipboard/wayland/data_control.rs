@@ -7,7 +7,6 @@ use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use super::{Device, Manager, Offer, Source, device, offer, source};
 use crate::capture::Shared;
@@ -40,7 +39,7 @@ pub fn run(inbox: &Inbox, shared: &Shared, copied: Copied) -> Result<(), String>
     };
 
     while !shared.stop.load(Ordering::Relaxed) && !clipboard.finished {
-        compositor::turn(&mut events, &mut clipboard, Some(inbox.waker()), Duration::from_millis(250))?;
+        compositor::turn(&mut events, &mut clipboard, Some(inbox.waker()), crate::clipboard::LOOK)?;
         if let Some(text) = inbox.take() {
             clipboard.set(text, &queue);
         }
