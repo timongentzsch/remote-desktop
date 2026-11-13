@@ -60,7 +60,7 @@ jobs:
   # macOS on Apple Silicon. The linker signs the binary ad hoc, which is all macOS asks of a downloaded program
   # that carries no quarantine, as curl leaves it.
   macos:
-    runs-on: macos-14
+    runs-on: macos-latest
     defaults:
       run:
         working-directory: native
