@@ -82,7 +82,7 @@ pub struct Encoded<'a> {
 }
 
 /// How many levels of effort the software encoder has, as in encoder.h: 0 is the least work for a frame.
-pub const EFFORTS: u32 = 3;
+pub const EFFORTS: u32 = 4;
 
 /// The command-line argument that makes this program report, by its exit status, whether the GPU can encode.
 pub const PROBE: &str = "probe-gpu";

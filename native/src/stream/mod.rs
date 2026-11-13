@@ -11,7 +11,7 @@ mod flv;
 
 pub use encode::{PROBE, probe};
 
-use crate::capture::{Output, Settings, Shape, Shared, Sink};
+use crate::capture::{HEIGHTS, Output, Settings, Shape, Shared, Sink};
 use convert::Shrinker;
 use encode::{EFFORTS, Encoder, MOVING_QUALITY, STILL_QUALITY, Setup};
 use flv::Packet;
@@ -64,20 +64,70 @@ impl Still {
 /// of the last `EFFORT_FRAMES` new frames were, and a frame would still be done in half the time until the
 /// next if it took `STEP_COST` times as long. Frames made while the bitrate is still climbing do not count:
 /// they are coarse on any link. When frames take longer than that half, it goes a step back and does not try
-/// again.
+/// again; so a screen too large for the first effort is soon given the least.
 const EFFORT_FRAMES: u32 = 60;
 const STEP_COST: u32 = 2;
+/// The effort a stream begins at: superfast, whose fewer bits are worth its little more time where that fits.
+const FIRST_EFFORT: u32 = 1;
 
 /// Full colour detail (4:4:4) keeps coloured text and thin lines crisp, for twice the samples of 4:2:0 to
-/// convert, encode, send and decode; browsers decode it in software only, so the client's time counts as well. Where the client leaves the choice to the host, the stream begins with it and
-/// weighs it with the effort: it gives full colour up first, when new frames take longer than the budget or the
-/// bitrate cap decided most of them, since a coarse picture loses more than colour detail does. It tries again
-/// when frames are done in a `FULL_CHROMA_COST`th of the budget and fine as they are, after a rest that
-/// doubles each time full colour had to be given up, so that a link it does not suit is not put through a
-/// keyframe again and again.
+/// convert, encode, send and decode; browsers decode it in software only, so the client's time counts as well.
+/// Where the client leaves the choice to the host, the stream begins with it and weighs it with the effort: it
+/// gives full colour up first, when new frames take longer than the budget or the bitrate cap decided most of
+/// them, since a coarse picture loses more than colour detail does. It tries again when frames are done in a
+/// `FULL_CHROMA_COST`th of the budget and fine as they are, after a `Rest`.
 const FULL_CHROMA_COST: u32 = 2;
-const CHROMA_REST: Duration = Duration::from_secs(30);
-const CHROMA_REST_LIMIT: Duration = Duration::from_secs(600);
+
+/// Where the client leaves the picture's size to the host, a link that holds the bitrate down while most new
+/// frames come out coarse makes the picture a step smaller (see `capture::HEIGHTS`): fewer pixels, each given
+/// more of the bits. It grows a step again when the link has room and frames are fine, after a `Rest`.
+///
+/// The rest before something given up is tried again, which doubles each time it has to be given up anew up to
+/// the limit, so that a link it does not suit is not put through a keyframe again and again.
+const REST: Duration = Duration::from_secs(30);
+const REST_LIMIT: Duration = Duration::from_secs(600);
+
+/// A rest before trying again what had to be given up (see `REST`).
+struct Rest {
+    until: Instant,
+    next: Duration,
+}
+
+impl Rest {
+    fn new(now: Instant) -> Self {
+        Self { until: now, next: REST }
+    }
+
+    fn over(&self, now: Instant) -> bool {
+        now >= self.until
+    }
+
+    /// Something was given up: the next try waits, longer than the last time.
+    fn begin(&mut self, now: Instant) {
+        self.until = now + self.next;
+        self.next = (self.next * 2).min(REST_LIMIT);
+    }
+}
+
+/// The picture's height limit to go on with, of `screen_height`: a step smaller when the link holds the video
+/// back, a step larger when it has room again and the rest is over.
+fn next_height(
+    height: Option<usize>,
+    screen_height: usize,
+    held_back: bool,
+    mostly_coarse: bool,
+    rested: bool,
+) -> Option<usize> {
+    let steps = HEIGHTS.into_iter().filter(|&step| step < screen_height);
+    let now = height.unwrap_or(screen_height);
+    if held_back && mostly_coarse {
+        steps.clone().find(|&step| step < now).or(height)
+    } else if !held_back && !mostly_coarse && rested && height.is_some() {
+        steps.rev().find(|&step| step > now)
+    } else {
+        height
+    }
+}
 
 /// Whether to go on with full colour detail.
 fn next_chroma(full: bool, average: Duration, budget: Duration, mostly_coarse: bool, rested: bool) -> bool {
@@ -133,8 +183,8 @@ pub struct Stream {
     weighed: Weighed,
     /// With colour detail left to the stream: when full colour may be tried again, and the rest after the
     /// next time it has to be given up.
-    chroma_rested_at: Instant,
-    chroma_rest: Duration,
+    chroma_rest: Rest,
+    size_rest: Rest,
     /// The bitrate cap in kbit/s, the frames a second and the quality target the encoder was last told.
     rate: (u32, u32, u32),
     /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
@@ -162,11 +212,11 @@ impl Stream {
             shrinker: None,
             scaled: Vec::new(),
             encoder: None,
-            effort: 0,
+            effort: FIRST_EFFORT,
             most_effort: EFFORTS - 1,
             weighed: Weighed::default(),
-            chroma_rested_at: now,
-            chroma_rest: CHROMA_REST,
+            chroma_rest: Rest::new(now),
+            size_rest: Rest::new(now),
             rate: (0, 0, 0),
             refinements_left: 0,
             still: Still::default(),
@@ -237,18 +287,31 @@ impl Stream {
         let weighed = std::mem::take(&mut self.weighed);
         let (average, budget) = (weighed.time / weighed.frames, self.frame_interval() / 2);
         let mostly_coarse = weighed.coarse * 2 > weighed.frames;
+        let now = Instant::now();
         if self.settings.auto_chroma {
             // A frame is late if either end is slow with it, and full colour detail costs the decoder as well.
             let decode = Duration::from_micros(self.shared.decode_micros.load(Ordering::Relaxed).into());
-            let (now, full) = (Instant::now(), self.settings.full_chroma);
-            let wanted = next_chroma(full, average.max(decode), budget, mostly_coarse, now >= self.chroma_rested_at);
+            let full = self.settings.full_chroma;
+            let wanted = next_chroma(full, average.max(decode), budget, mostly_coarse, self.chroma_rest.over(now));
             if wanted != full {
                 if full {
-                    self.chroma_rested_at = now + self.chroma_rest;
-                    self.chroma_rest = (self.chroma_rest * 2).min(CHROMA_REST_LIMIT);
+                    self.chroma_rest.begin(now);
                 }
                 self.settings.full_chroma = wanted;
                 self.encoder = None; // the next picture opens another, which begins with a keyframe
+                return;
+            }
+        }
+        if self.settings.auto_size {
+            let held_back = self.shared.held_back.load(Ordering::Relaxed);
+            let height = self.settings.height;
+            let wanted = next_height(height, self.screen.1, held_back, mostly_coarse, self.size_rest.over(now));
+            if wanted != height {
+                if wanted.unwrap_or(usize::MAX) < height.unwrap_or(usize::MAX) {
+                    self.size_rest.begin(now);
+                }
+                self.settings.height = wanted;
+                self.encoder = None;
                 return;
             }
         }
@@ -417,5 +480,21 @@ mod tests {
         assert!(!next_chroma(false, quick, budget, false, false), "not before the rest is over");
         assert!(!next_chroma(false, middling, budget, false, true), "twice the work would not fit");
         assert!(!next_chroma(false, quick, budget, true, true), "coarse frames want the bits elsewhere");
+    }
+
+    #[test]
+    fn auto_size_steps_down_on_a_weak_link_and_back_up_after_a_rest() {
+        let screen = 1200; // 1080, 720 and 360 are smaller
+        let (weak, fine) = ((true, true), (false, false));
+        let next = |height, (held_back, coarse), rested| next_height(height, screen, held_back, coarse, rested);
+        assert_eq!(next(None, weak, false), Some(1080), "the screen's own size, then the largest step below it");
+        assert_eq!(next(Some(1080), weak, false), Some(720));
+        assert_eq!(next(Some(360), weak, false), Some(360), "nothing below the smallest");
+        assert_eq!(next(Some(720), fine, false), Some(720), "not before the rest is over");
+        assert_eq!(next(Some(720), fine, true), Some(1080));
+        assert_eq!(next(Some(1080), fine, true), None, "back to the screen's own size");
+        assert_eq!(next(None, fine, true), None);
+        assert_eq!(next(Some(720), (true, false), true), Some(720), "held back but fine as it is: stays");
+        assert_eq!(next_height(None, 720, true, true, false), Some(360), "a screen of 720 rows begins below it");
     }
 }

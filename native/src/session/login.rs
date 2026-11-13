@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::capture::Settings;
+use crate::capture::{HEIGHTS, Settings};
 use crate::platform::virtual_screen::Window;
 use crate::rate;
 
@@ -24,10 +24,10 @@ const CURSOR_PAINTED: &str = "yes";
 const SOUND_ON: &str = "on";
 const CHROMA_FULL: &str = "444";
 const CHROMA_REDUCED: &str = "420";
-/// The panel's sizes: the host's screen (anything not below), a screen made to the client's window, or the
-/// host's screen shrunk to one of these heights.
+/// The panel's sizes: the host's screen as it is, a screen made to the client's window, or the host's screen
+/// shrunk to one of `HEIGHTS`; anything else lets the stream choose among them.
 const SIZE_CLIENT: &str = "client";
-const HEIGHTS: [usize; 3] = [1080, 720, 360];
+const SIZE_HOST: &str = "host";
 
 /// A login as the client sent it.
 pub struct Login {
@@ -48,6 +48,8 @@ impl Login {
         let ceiling = ceiling(&login["bitrate"]);
         let fps = number(&login["fps"]).and_then(|fps| FRAME_RATES.into_iter().find(|&rate| rate as i64 == fps));
         let chroma = login["chroma"].as_str();
+        let size = login["size"].as_str();
+        let height = number(&login["size"]).and_then(|height| HEIGHTS.into_iter().find(|&most| most as i64 == height));
         let settings = Settings {
             kbps: rate::start(ceiling),
             fps: fps.unwrap_or(FRAME_RATES[0]),
@@ -55,7 +57,8 @@ impl Login {
             // Auto begins with full colour detail, which the stream gives up where it does not fit.
             full_chroma: chroma != Some(CHROMA_REDUCED),
             auto_chroma: !matches!(chroma, Some(CHROMA_FULL | CHROMA_REDUCED)),
-            height: number(&login["size"]).and_then(|height| HEIGHTS.into_iter().find(|&most| most as i64 == height)),
+            height,
+            auto_size: height.is_none() && !matches!(size, Some(SIZE_HOST | SIZE_CLIENT)),
             screen: login["screen"].as_str().filter(|name| !name.is_empty()).map(str::to_owned),
         };
         Self {
@@ -165,6 +168,9 @@ mod tests {
         assert!(!Login::read(&serde_json::json!({"chroma": "420"})).settings.full_chroma);
         assert_eq!(Login::read(&serde_json::json!({"size": "720"})).settings.height, Some(720));
         assert_eq!(Login::read(&serde_json::json!({"size": "host"})).settings.height, None);
+        assert!(!Login::read(&serde_json::json!({"size": "host"})).settings.auto_size);
+        assert!(Login::read(&serde_json::json!({"size": "auto"})).settings.auto_size);
+        assert!(!Login::read(&serde_json::json!({"size": "720"})).settings.auto_size);
         assert_eq!(Login::read(&serde_json::json!({"size": "500"})).settings.height, None, "only the panel's");
     }
 }

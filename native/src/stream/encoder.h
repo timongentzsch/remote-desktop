@@ -37,7 +37,7 @@ struct encoder_setup {
 
 /* How much work the software encoder can put into a frame: 0 is the least, EFFORTS - 1 the most. More makes a
    frame of the same size look better and takes longer. The GPU's encoder has the one level. */
-#define EFFORTS 3
+#define EFFORTS 4
 
 struct encoder *software_open(const struct encoder_setup *setup);
 /* NULL when the machine has no usable hardware encoder. */

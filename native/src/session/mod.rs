@@ -351,6 +351,7 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
         let share = udp.as_ref().map_or(1.0, |udp| udp.share());
         shared.kbps.store((kbps as f64 * share) as u32, Ordering::Relaxed);
         shared.climbing.store(verdict.climbing, Ordering::Relaxed);
+        shared.held_back.store(verdict.held_back, Ordering::Relaxed);
         if let Some(udp) = &mut udp
             && udp.needs_fresh(now, reading.round_trip.unwrap_or_default())
         {

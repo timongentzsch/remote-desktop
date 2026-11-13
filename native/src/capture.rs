@@ -16,9 +16,15 @@ pub struct Settings {
     /// The most rows the picture may have: a taller screen is shrunk to this height, keeping its shape. None
     /// leaves it at the screen's own size.
     pub height: Option<usize>,
+    /// Let the stream choose `height` itself among `HEIGHTS`, as the link allows (see stream/mod.rs).
+    pub auto_size: bool,
     /// The screen to capture, by name (see screen.rs). None, or a name no screen has, means the first.
     pub screen: Option<String>,
 }
+
+/// The heights a picture may be shrunk to, largest first: those the client offers (index.html), and the steps
+/// the stream takes when it chooses.
+pub const HEIGHTS: [usize; 3] = [1080, 720, 360];
 
 /// What a session and its capture exchange while the capture runs.
 #[derive(Default)]
@@ -29,8 +35,10 @@ pub struct Shared {
     pub fresh: AtomicBool,
     /// The bitrate in kbit/s the session now allows; 0 until it sets one.
     pub kbps: AtomicU32,
-    /// Set while that bitrate is still on its way up to what the link carries or the client wants.
+    /// Set while that bitrate is still on its way up to what the link carries or the client wants,
     pub climbing: AtomicBool,
+    /// and while the link, not the client's choice, keeps it lower.
+    pub held_back: AtomicBool,
     /// How long converting and encoding the latest frame took, in microseconds.
     pub encode_micros: AtomicU32,
     /// How long the client took to decode a frame lately, in microseconds, as it says once a second; 0 until
