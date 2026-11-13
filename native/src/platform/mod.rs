@@ -1,19 +1,27 @@
 //! Everything that differs from one operating system to another, behind the one surface the rest of the host
 //! uses. Each system is a module here that provides these same names, chosen when the host is built; Linux is
 //! the only one so far. The rest of the host (the server and sessions, the bitrate, QUIC, the stream and its
-//! encoders, and the client) is the same everywhere.
+//! encoders, and the client) is the same everywhere. What Linux and macOS do alike is in unix/.
+
+#[cfg(unix)]
+mod unix;
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 use linux as os;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos as os;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("there is no platform module for this operating system yet: see platform/mod.rs");
 
 // The screen: its picture for a session (`capture(settings, shared, sink)`, see capture.rs), the screens there
 // are (`screens()`), waking those that sleep (`wake_displays(&input)`), a screen made to the client's window
-// where the desktop can make one (`virtual_screen::{VirtualScreen, Window, NAME}`), the desktop's pointer
+// where the desktop can make one (`virtual_screen::{VirtualScreen, NAME}`, for a screen::Window), the desktop's pointer
 // hidden while a client draws its own where the picture would show it too (`hide_pointer()`), and undoing
 // what a host that crashed left changed (`restore_leftovers()`).
 pub use os::capture::run as capture;

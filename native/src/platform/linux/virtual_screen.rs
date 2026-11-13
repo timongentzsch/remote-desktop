@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::hyprland;
-use crate::screen;
+use crate::screen::{self, Window};
 
 /// The output's name, which the capture finds it by.
 pub const NAME: &str = crate::NAME;
@@ -19,42 +19,8 @@ const APPEARING: Duration = Duration::from_secs(2);
 /// other settings.
 const HANDOVER: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(50);
-/// The smallest and largest size, in pixels, made for a client.
-const SMALLEST: u32 = 320;
-const LARGEST: u32 = 7680;
-/// The largest desktop scale, that of the densest phone screens.
-const LARGEST_SCALE: f64 = 4.0;
-
 /// One virtual screen at a time: it takes over the machine's screens for one client.
 static IN_USE: AtomicBool = AtomicBool::new(false);
-
-/// The client's window: its size in the page's units and how many pixels each of those has.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Window {
-    pub width: f64,
-    pub height: f64,
-    pub pixel_ratio: f64,
-}
-
-impl Window {
-    /// The screen's size in pixels: even, as 4:2:0 video needs, and within reason.
-    fn pixels(&self) -> (u32, u32) {
-        let side = |length: f64| ((length * self.pixel_ratio).round() as u32).clamp(SMALLEST, LARGEST) & !1;
-        (side(self.width), side(self.height))
-    }
-
-    /// The screen's size in the desktop's own units, as the desktop lists it: its pixels at its scale.
-    fn size(&self) -> (i32, i32) {
-        let (width, height) = self.pixels();
-        let unscaled = |pixels: u32| (pixels as f64 / self.scale()).round() as i32;
-        (unscaled(width), unscaled(height))
-    }
-
-    /// The desktop's scale for it, so that things look as large as they would on the device itself.
-    fn scale(&self) -> f64 {
-        self.pixel_ratio.clamp(1.0, LARGEST_SCALE)
-    }
-}
 
 /// The virtual screen while it is there. Dropping it brings the machine's own screens back.
 pub struct VirtualScreen {
@@ -165,21 +131,4 @@ fn switch_off(name: &str) -> Result<(), String> {
 fn restore_outputs() -> Result<(), String> {
     let reloaded = hyprland::hyprctl(&["reload"]);
     hyprland::hyprctl(&["output", "remove", NAME]).and(reloaded)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_screen_has_the_windows_pixels_evenly_and_within_reason() {
-        let window = |width, height, pixel_ratio| Window { width, height, pixel_ratio };
-        assert_eq!(window(1512.0, 982.0, 2.0).pixels(), (3024, 1964));
-        assert_eq!(window(1280.0, 719.5, 1.0).pixels(), (1280, 720), "rounded");
-        assert_eq!(window(1001.0, 701.0, 1.0).pixels(), (1000, 700), "even");
-        assert_eq!(window(100.0, 9000.0, 1.0).pixels(), (320, 7680), "within reason");
-        assert_eq!(window(390.0, 844.0, 3.0).scale(), 3.0);
-        assert_eq!(window(1512.0, 982.0, 2.0).size(), (1512, 982), "listed in the desktop's units");
-        assert_eq!(window(800.0, 600.0, 0.5).scale(), 1.0);
-    }
 }

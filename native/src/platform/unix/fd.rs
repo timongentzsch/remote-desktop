@@ -1,4 +1,4 @@
-//! Waiting on file descriptors, and waking a thread that waits on one.
+//! Waiting on file descriptors, and waking a thread that waits on one: `poll` and a pipe, which every Unix has.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -19,21 +19,33 @@ pub fn socket_readable(socket: &impl AsRawFd, limit: Duration) -> bool {
     wait_readable([socket.as_raw_fd()], Some(limit)) == [true]
 }
 
-/// A descriptor that one thread makes readable to wake another waiting on it (see `wait_readable`).
-pub struct Waker(OwnedFd);
+/// A pipe whose end one thread makes readable to wake another waiting on it (see `wait_readable`).
+pub struct Waker {
+    read: OwnedFd,
+    write: OwnedFd,
+}
 
 impl Waker {
     pub fn new() -> io::Result<Self> {
-        match unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) } {
-            -1 => Err(io::Error::last_os_error()),
-            fd => Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) })),
+        let mut ends = [0; 2];
+        if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
         }
+        let (read, write) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+        // Neither end may block, and neither is passed on to a program this one starts.
+        for end in [&read, &write] {
+            let fd = end.as_raw_fd();
+            unsafe {
+                libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK);
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+        }
+        Ok(Self { read, write })
     }
 
-    /// Makes it readable until `settle` is called.
+    /// Makes it readable until `settle` is called. A full pipe is as readable as it gets.
     pub fn wake(&self) {
-        let one = 1u64.to_ne_bytes();
-        unsafe { libc::write(self.0.as_raw_fd(), one.as_ptr().cast(), one.len()) };
+        unsafe { libc::write(self.write.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
     }
 
     /// Waits until `socket` can be read or `wake` is called, for up to `limit`, and takes back every `wake`.
@@ -44,12 +56,12 @@ impl Waker {
 
     /// Takes back every `wake` so far.
     pub fn settle(&self) {
-        let mut count = [0u8; 8];
-        unsafe { libc::read(self.0.as_raw_fd(), count.as_mut_ptr().cast(), count.len()) };
+        let mut drained = [0u8; 64];
+        while unsafe { libc::read(self.read.as_raw_fd(), drained.as_mut_ptr().cast(), drained.len()) } > 0 {}
     }
 
     pub fn fd(&self) -> RawFd {
-        self.0.as_raw_fd()
+        self.read.as_raw_fd()
     }
 }
 

@@ -10,6 +10,9 @@
 //!     remote-desktop [--listen ADDRESS]         run the host (default 0.0.0.0:8765)
 //!     remote-desktop login-screen [ADDRESS]     as root: run the host at the login screen whenever there is one
 
+// macOS has no sound and no pointer shapes for the client yet, which leaves what serves them unused there.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
 /// Tells what happened on standard error, which the service's log keeps, under the program's name.
 macro_rules! warn {
     ($($message:tt)*) => {
@@ -21,6 +24,7 @@ mod audio;
 mod capture;
 mod certificate;
 mod fec;
+mod install;
 mod outbox;
 mod platform;
 mod quic;
@@ -68,13 +72,16 @@ fn main() {
             if options.iter().any(|option| !["--tailscale", "--no-password"].contains(&option.as_str())) {
                 fail(USAGE);
             }
-            platform::install::install(given("--tailscale"), given("--no-password"))
+            install::install(given("--tailscale"), given("--no-password"))
         }
-        (Some("uninstall"), None) => platform::install::uninstall(),
-        (Some("password"), None) => platform::install::set_password(),
-        (Some("password"), Some(option)) if option == "--none" => platform::install::remove_password(),
-        (Some("certificate"), option) if is_tailscale(&option) => {
-            platform::install::renew_certificate(option.is_some())
+        (Some("uninstall"), None) => install::uninstall(),
+        (Some("password"), None) => install::set_password(),
+        (Some("password"), Some(option)) if option == "--none" => install::remove_password(),
+        (Some("certificate"), option) if is_tailscale(&option) => install::renew_certificate(option.is_some()),
+        // Not for users: what makes the virtual display on macOS (see platform/macos/virtual_screen.rs).
+        #[cfg(target_os = "macos")]
+        (Some(platform::virtual_screen::HELPER), Some(width)) => {
+            platform::virtual_screen::helper(std::iter::once(width).chain(arguments))
         }
         // Not for users: the service runs this once to learn whether the GPU can encode (see stream/encode.rs).
         (Some(stream::PROBE), None) => std::process::exit(if stream::probe() { 0 } else { 1 }),

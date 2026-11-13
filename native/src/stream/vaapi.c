@@ -11,6 +11,7 @@
    a quality under a cap fell well short of the quality (Intel's QVBR began at quantiser 48 where 20 was asked
    for), and left an unchanged picture as it was where it was to be refined. Each frame is given the quality
    target's quantiser unless the frames before it have used up what the cap allows; see `choose_qp`. */
+#include <stddef.h>
 #include "encoder.h"
 
 #ifndef __linux__

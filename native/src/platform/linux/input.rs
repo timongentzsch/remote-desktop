@@ -55,6 +55,12 @@ pub struct Input {
 
 impl Input {
     pub fn open() -> io::Result<Self> {
+        Self::create().map_err(|error| {
+            io::Error::new(error.kind(), format!("/dev/uinput: {error}; run `remote-desktop install`"))
+        })
+    }
+
+    fn create() -> io::Result<Self> {
         Ok(Self {
             keyboard: device("Remote desktop keyboard", &(1..KEYS).collect::<Vec<_>>(), &[], &[])?,
             pointer: device(

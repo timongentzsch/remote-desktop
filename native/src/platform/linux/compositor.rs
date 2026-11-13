@@ -66,7 +66,7 @@ pub fn turn<State>(
 ) -> Result<(), String> {
     events.flush().map_err(lost)?;
     if let Some(guard) = events.prepare_read() {
-        let [readable, _] = crate::platform::linux::fd::wait_readable(
+        let [readable, _] = crate::platform::unix::fd::wait_readable(
             [guard.connection_fd().as_raw_fd(), other.unwrap_or(-1)],
             Some(limit),
         );

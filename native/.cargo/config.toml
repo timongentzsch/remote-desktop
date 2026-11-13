@@ -1,0 +1,3 @@
+# The oldest macOS the host runs on: the first with ScreenCaptureKit's frame status.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "12.3"
