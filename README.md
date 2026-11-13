@@ -11,8 +11,10 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
   newer, one viewer at a time), the built-in x264 everywhere else.
 - **Nobody in between.** The browser talks to your machine directly: no account, no relay, no vendor's
   server.
-- **Made to feel local.** A still screen costs nothing, a busy one is encoded in a few milliseconds, the
-  pointer is drawn by the client, and the bitrate follows the connection. Video, sound and the pointer's
+- **Made to feel local.** A still screen costs nothing and is sharpened while it stands still, a busy one is
+  encoded in a few milliseconds, the pointer is drawn by the client, and the bitrate follows the connection.
+  On a weak connection the picture is made smaller before it is made blurry, and full colour detail is kept
+  while both ends have the time for it. Video, sound and the pointer's
   moves travel over UDP, so that a lost packet costs no wait: with one in twenty lost, frames still arrived
   on time and sound played on.
 - **Yours to weigh.** One control says what gives way when the connection is not enough, response or
@@ -30,7 +32,7 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
   "Client" gives that desktop a screen of the client window's size instead, for as long as the client is
   connected, and switches the machine's own screens off meanwhile; elsewhere it shows the machine's screen.
   The sizes 1080p, 720p and 360p shrink the machine's screen to that height before it is encoded, for links
-  that carry little.
+  that carry little; Auto, the first, does so only while the link holds the video back.
 - **Not file transfer or device sharing.** Text goes through the clipboard; files, drives, printers and USB
   devices are not passed on.
 
