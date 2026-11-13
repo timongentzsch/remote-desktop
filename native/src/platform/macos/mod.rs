@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use super::unix::{fd, hostname, write_private};
-use crate::capture::{Settings, Shared, Sink};
+use crate::capture::Shared;
 use crate::screen::{Screen, Window};
 
 const NOT_YET: &str = "this part of the host is not built for macOS yet";
@@ -27,20 +27,57 @@ pub fn password_path() -> PathBuf {
     data_directory().join("password")
 }
 
+pub mod capture;
+pub mod input;
+
+#[repr(C)]
+struct Rect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// The most displays macOS drives at once that are listed.
+const MOST_DISPLAYS: usize = 16;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGGetActiveDisplayList(most: u32, displays: *mut u32, count: *mut u32) -> i32;
+    fn CGDisplayBounds(display: u32) -> Rect;
+}
+
+fn displays() -> Vec<u32> {
+    let (mut ids, mut count) = ([0; MOST_DISPLAYS], 0);
+    unsafe { CGGetActiveDisplayList(MOST_DISPLAYS as u32, ids.as_mut_ptr(), &mut count) };
+    ids[..count as usize].to_vec()
+}
+
+/// The displays, each named by its number, where they lie in points.
 pub fn screens() -> Result<Vec<Screen>, String> {
-    not_yet()
+    let screen = |id| {
+        let bounds = unsafe { CGDisplayBounds(id) };
+        let point = |value: f64| value as i32;
+        Screen {
+            name: id.to_string(),
+            x: point(bounds.x),
+            y: point(bounds.y),
+            width: point(bounds.width),
+            height: point(bounds.height),
+        }
+    };
+    Ok(displays().into_iter().map(screen).collect())
+}
+
+/// The number of the display a session asked for by name, else the first.
+fn display(wanted: Option<&str>) -> Result<u32, String> {
+    let screens = screens()?;
+    let chosen = crate::screen::choose(&screens, wanted).ok_or("there is no display")?;
+    Ok(chosen.name.parse().unwrap())
 }
 
 /// Nothing is left changed in the desktop by a host here.
 pub fn restore_leftovers() {}
-
-pub mod capture {
-    use super::*;
-
-    pub fn run(_settings: Settings, _shared: Arc<Shared>, _sink: Sink) -> Result<(), String> {
-        not_yet()
-    }
-}
 
 pub mod displays {
     /// A sleeping display wakes for the capture by itself.
@@ -72,24 +109,6 @@ pub mod virtual_screen {
         pub fn resize(&self, _window: Window) -> Result<(), String> {
             not_yet()
         }
-    }
-}
-
-pub mod input {
-    use super::*;
-
-    pub struct Input(());
-
-    impl Input {
-        pub fn open() -> io::Result<Self> {
-            Err(io::Error::new(io::ErrorKind::Unsupported, NOT_YET))
-        }
-
-        pub fn key(&self, _code: u16, _down: bool) {}
-
-        pub fn move_to(&self, _x: i32, _y: i32) {}
-
-        pub fn scroll(&self, _horizontal: i32, _vertical: i32) {}
     }
 }
 
@@ -160,13 +179,16 @@ pub mod tcp {
 
     use crate::tls::Control;
 
+    /// As <netinet/tcp.h> has it, which the libc crate does not carry for macOS.
+    const TCP_NOTSENT_LOWAT: libc::c_int = 0x201;
+
     /// Lets the kernel hold no more than `bytes` unsent for the connection, as macOS has it too.
     pub fn limit_unsent(socket: &TcpStream, bytes: i32) {
         unsafe {
             libc::setsockopt(
                 socket.as_raw_fd(),
                 libc::IPPROTO_TCP,
-                libc::TCP_NOTSENT_LOWAT,
+                TCP_NOTSENT_LOWAT,
                 (&raw const bytes).cast(),
                 size_of::<libc::c_int>() as u32,
             )

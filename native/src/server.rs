@@ -59,9 +59,7 @@ impl Host {
             .unwrap_or_else(|_| fail("no password is set; run `remote-desktop password`"))
             .trim_ascii()
             .to_vec();
-        let input = Input::open().unwrap_or_else(|error| {
-            fail(&format!("cannot create input devices through /dev/uinput ({error}); run `remote-desktop install`"))
-        });
+        let input = Input::open().unwrap_or_else(|error| fail(&format!("cannot control the desktop: {error}")));
         let tls = certificate::configuration().unwrap_or_else(|error| fail(&error));
         let tailnet_only = certificate::tailscale_name().is_some();
         Arc::new(Self { input, password, tailnet_only, tls: Mutex::new(tls), udp: OnceLock::new() })

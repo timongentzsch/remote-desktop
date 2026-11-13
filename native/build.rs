@@ -32,6 +32,9 @@ const ENCODERS: [&str; 7] = [
 /// libva's headers, of which va/va_version.h is made from its template, with the version libva's build gives it.
 const LIBVA: &str = "libva";
 const PIPEWIRE: &str = "src/platform/linux/capture/pipewire_stream.c";
+/// macOS's screen capture, and the frameworks it uses.
+const SCREEN_CAPTURE: &str = "src/platform/macos/capture.m";
+const FRAMEWORKS: [&str; 4] = ["ScreenCaptureKit", "CoreMedia", "CoreVideo", "Foundation"];
 
 /// Makes va/va_version.h from libva's template and the VA-API version in its meson.build; returns the directory
 /// to add to the include path for it.
@@ -69,7 +72,7 @@ fn run(command: &mut Command) {
 }
 
 fn main() {
-    for file in ENCODERS.iter().chain(&[PIPEWIRE, "src/stream/encoder.h", "src/stream/nal.h", "src/stream/vaapi.h"]) {
+    for file in ENCODERS.iter().chain(&[PIPEWIRE, SCREEN_CAPTURE, "src/stream/encoder.h", "src/stream/nal.h", "src/stream/vaapi.h"]) {
         println!("cargo:rerun-if-changed={file}");
     }
     println!("cargo:rerun-if-changed=x264/x264.h");
@@ -107,6 +110,12 @@ fn main() {
             .include("pipewire/src")
             .include("pipewire/spa/include")
             .compile("pipewire_stream");
+    }
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        cc::Build::new().file(SCREEN_CAPTURE).flag("-fobjc-arc").compile("screen_capture");
+        for framework in FRAMEWORKS {
+            println!("cargo:rustc-link-lib=framework={framework}");
+        }
     }
     println!("cargo:rustc-link-search=native={}", build.display());
     println!("cargo:rustc-link-lib=static=x264");

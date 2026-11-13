@@ -17,9 +17,12 @@ time = "0.3"
 unsafe-libopus = "0.2"
 yuv = "0.8"
 
-# What the host needs on Linux alone (see src/platform/linux).
-[target.'cfg(target_os = "linux")'.dependencies]
+# What the host needs on Unix systems (see src/platform/unix),
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# and on Linux alone (see src/platform/linux).
+[target.'cfg(target_os = "linux")'.dependencies]
 pulseaudio = "0.3"
 rustbus = "0.19"
 wayland-client = "0.31"
