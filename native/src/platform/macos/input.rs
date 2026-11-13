@@ -19,6 +19,7 @@ type Event = *mut c_void;
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
+    fn CGEventSourceCreate(state: i32) -> *mut c_void;
     fn CGEventCreateKeyboardEvent(source: *mut c_void, key: u16, down: bool) -> Event;
     fn CGEventCreateMouseEvent(source: *mut c_void, kind: u32, at: Point, button: u32) -> Event;
     fn CGEventCreateScrollWheelEvent2(source: *mut c_void, units: u32, wheels: u32, y: i32, x: i32, z: i32) -> Event;
@@ -29,6 +30,8 @@ unsafe extern "C" {
 }
 
 const HID_TAP: u32 = 0;
+/// Events as from the keyboard and mouse, so that the keys they hold count everywhere, the login window too.
+const HID_SYSTEM_STATE: i32 = 1;
 const FLAGS_CHANGED: u32 = 12;
 const MOUSE_MOVED: u32 = 5;
 const SCROLL_IN_PIXELS: u32 = 0;
@@ -74,7 +77,14 @@ struct Held {
     at: Point,
 }
 
-pub struct Input(Mutex<Held>);
+pub struct Input {
+    source: *mut c_void,
+    held: Mutex<Held>,
+}
+
+// The event source is only read by the calls that make events, which may come from any thread.
+unsafe impl Send for Input {}
+unsafe impl Sync for Input {}
 
 /// Posts `event` with the modifiers held, and lets it go.
 fn post(event: Event, flags: u64) {
@@ -94,21 +104,21 @@ impl Input {
             let refused = "the host may not control this Mac: allow it under Privacy & Security, Accessibility";
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, refused));
         }
-        Ok(Self(Mutex::default()))
+        Ok(Self { source: unsafe { CGEventSourceCreate(HID_SYSTEM_STATE) }, held: Mutex::default() })
     }
 
     pub fn key(&self, code: u16, down: bool) {
-        let mut held = self.0.lock().unwrap();
+        let mut held = self.held.lock().unwrap();
         if (BTN_LEFT..BTN_LEFT + BUTTONS).contains(&code) {
             let button = code - BTN_LEFT;
             let (pressed, released, _) = BUTTON_EVENTS[(button as usize).min(2)];
             held.buttons = if down { held.buttons | 1 << button } else { held.buttons & !(1 << button) };
             let kind = if down { pressed } else { released };
-            post(unsafe { CGEventCreateMouseEvent(std::ptr::null_mut(), kind, held.at, button as u32) }, held.flags);
+            post(unsafe { CGEventCreateMouseEvent(self.source, kind, held.at, button as u32) }, held.flags);
             return;
         }
         let Some(&(_, key)) = KEYS.iter().find(|(evdev, _)| *evdev == code) else { return };
-        let event = unsafe { CGEventCreateKeyboardEvent(std::ptr::null_mut(), key, down) };
+        let event = unsafe { CGEventCreateKeyboardEvent(self.source, key, down) };
         if let Some(&(_, flag)) = MODIFIERS.iter().find(|(modifier, _)| *modifier == key) {
             held.flags = if down { held.flags | flag } else { held.flags & !flag };
             unsafe { CGEventSetType(event, FLAGS_CHANGED) };
@@ -124,7 +134,7 @@ impl Input {
         };
         let ((left, right), (top, bottom)) = (ends(|s| s.x, |s| s.width), ends(|s| s.y, |s| s.height));
         let along = |from: i32, to: i32, at: i32| from as f64 + (to - from) as f64 * at as f64 / POINTER_RANGE as f64;
-        let mut held = self.0.lock().unwrap();
+        let mut held = self.held.lock().unwrap();
         held.at = Point { x: along(left, right, x), y: along(top, bottom, y) };
         // A move while a button is held is a drag of the lowest one held.
         let kind = match held.buttons.trailing_zeros() as usize {
@@ -132,13 +142,13 @@ impl Input {
             _ => MOUSE_MOVED,
         };
         let button = held.buttons.trailing_zeros().min(BUTTONS as u32 - 1);
-        post(unsafe { CGEventCreateMouseEvent(std::ptr::null_mut(), kind, held.at, button) }, held.flags);
+        post(unsafe { CGEventCreateMouseEvent(self.source, kind, held.at, button) }, held.flags);
     }
 
     /// Scrolls by the client's pixels, up and right where positive.
     pub fn scroll(&self, horizontal: i32, vertical: i32) {
-        let held = self.0.lock().unwrap();
-        let event = unsafe { CGEventCreateScrollWheelEvent2(std::ptr::null_mut(), SCROLL_IN_PIXELS, 2, vertical, -horizontal, 0) };
+        let held = self.held.lock().unwrap();
+        let event = unsafe { CGEventCreateScrollWheelEvent2(self.source, SCROLL_IN_PIXELS, 2, vertical, -horizontal, 0) };
         post(event, held.flags);
     }
 }
