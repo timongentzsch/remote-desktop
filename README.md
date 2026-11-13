@@ -33,8 +33,8 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
   desktop of whoever logs in there. It starts no separate sessions for remote users. On Hyprland the size
   "Client" gives that desktop a screen of the client window's size instead, for as long as the client is
   connected, and switches the machine's own screens off meanwhile; elsewhere it shows the machine's screen.
-  The sizes 1080p, 720p and 360p shrink the machine's screen to that height before it is encoded, for links
-  that carry little; Auto, the first, does so only while the link holds the video back.
+  The size Auto, the first, shrinks the machine's screen before it is encoded only while the link holds the
+  video back.
 - **Not file transfer or device sharing.** Text goes through the clipboard; files, drives, printers and USB
   devices are not passed on.
 

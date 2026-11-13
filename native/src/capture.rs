@@ -24,8 +24,7 @@ pub struct Settings {
     pub hevc: bool,
 }
 
-/// The heights a picture may be shrunk to, largest first: those the client offers (index.html), and the steps
-/// the stream takes when it chooses.
+/// The heights, largest first, that the stream shrinks a picture to a step at a time while the link is weak.
 pub const HEIGHTS: [usize; 3] = [1080, 720, 360];
 
 /// What a session and its capture exchange while the capture runs.
