@@ -6,7 +6,8 @@ desktop.
 - **Nothing to install where you sit.** Open the address in Chrome, or install the page as an app from
   there. There is no client program.
 - **One file on the host, for the session you are already using.** The same binary serves GNOME, KDE,
-  Hyprland, Sway and X11 desktops, and sets itself up with one command. It is built for x86_64 and aarch64.
+  Hyprland, Sway and X11 desktops, and sets itself up with one command. It is built for x86_64 and aarch64,
+  and for Macs with Apple Silicon.
 - **Complete without configuration.** The screen as H.264, or as HEVC where both ends can, the sound as Opus,
   the clipboard, keyboard and pointer, all encrypted. The GPU's hardware encoder is used where there is one:
   NVIDIA's (driver 470 or newer, one viewer at a time), or Intel's and AMD's through VA-API (with their
@@ -31,9 +32,10 @@ desktop.
   HDR. Keys and clicks travel over TCP, and so does everything else where UDP does not get through, which
   shows on a link that loses packets.
 - **Not a session of its own.** It shows what the machine's own screen shows: the login screen, then the
-  desktop of whoever logs in there. It starts no separate sessions for remote users. On Hyprland the size
-  "Client" gives that desktop a screen of the client window's size instead, for as long as the client is
-  connected, and switches the machine's own screens off meanwhile; elsewhere it shows the machine's screen.
+  desktop of whoever logs in there. It starts no separate sessions for remote users. On Hyprland and on a Mac
+  the size "Client" gives that desktop a screen of the client window's size instead, for as long as the client
+  is connected, and switches the machine's own screens off meanwhile (on a Mac, they mirror it); elsewhere it
+  shows the machine's screen.
   The size Auto, the first, shrinks the machine's screen before it is encoded only while the link holds the
   video back.
 - **Not file transfer or device sharing.** Text goes through the clipboard; files, drives, printers and USB
