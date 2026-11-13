@@ -1,6 +1,7 @@
 # Checks and tests every push and pull request, and builds the portable binaries.
 # Pushing a tag such as v0.1.0 also publishes them as a release, with install.sh, which is what the install
-# line in the README downloads: releases/latest/download/install.sh, which fetches remote-desktop-<architecture>.
+# line in the README downloads: releases/latest/download/install.sh, which fetches remote-desktop-<architecture>
+# (remote-desktop-aarch64-macos on a Mac).
 name: Build
 
 on:
@@ -11,6 +12,7 @@ on:
 
 jobs:
   build:
+    needs: macos
     runs-on: ubuntu-24.04
     permissions:
       contents: write # to create the release for a tag
@@ -41,6 +43,10 @@ jobs:
             cp target/$architecture-unknown-linux-gnu/release/remote-desktop dist/remote-desktop-$architecture
           done
           cp ../install.sh dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: remote-desktop-macos
+          path: native/dist/
       - uses: actions/upload-artifact@v4
         with:
           name: remote-desktop
@@ -51,7 +57,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  # macOS, being built (see native/src/platform/macos): checked and tested on Apple Silicon, not yet released.
+  # macOS on Apple Silicon. The linker signs the binary ad hoc, which is all macOS asks of a downloaded program
+  # that carries no quarantine, as curl leaves it.
   macos:
     runs-on: macos-14
     defaults:
@@ -66,3 +73,10 @@ jobs:
           components: clippy
       - run: cargo clippy --release --all-targets -- --deny warnings
       - run: cargo test --release
+      - run: |
+          mkdir dist
+          cp target/release/remote-desktop dist/remote-desktop-aarch64-macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-desktop-macos
+          path: native/dist/

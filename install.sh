@@ -19,6 +19,11 @@ case $(uname -m) in
     aarch64 | arm64) architecture=aarch64 ;;
     *) echo "remote-desktop: there is no build for $(uname -m), only x86_64 and aarch64" >&2; exit 1 ;;
 esac
+# On macOS, Apple Silicon only.
+case $(uname -s) in
+    Darwin) [ "$architecture" = aarch64 ] || { echo "remote-desktop: on macOS there is a build for Apple Silicon only" >&2; exit 1; }
+            architecture=aarch64-macos ;;
+esac
 
 directory=$(mktemp -d)
 trap 'rm -rf "$directory"' EXIT

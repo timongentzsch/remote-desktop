@@ -4,6 +4,7 @@
 use std::ffi::c_void;
 use std::io;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::screen::POINTER_RANGE;
 
@@ -16,13 +17,19 @@ struct Point {
 
 type Event = *mut c_void;
 
+unsafe extern "C" {
+    /// In capture.m.
+    fn ask_permissions();
+    fn permitted() -> bool;
+}
+
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
-    fn AXIsProcessTrusted() -> bool;
     fn CGEventSourceCreate(state: i32) -> *mut c_void;
     fn CGEventCreateKeyboardEvent(source: *mut c_void, key: u16, down: bool) -> Event;
     fn CGEventCreateMouseEvent(source: *mut c_void, kind: u32, at: Point, button: u32) -> Event;
     fn CGEventCreateScrollWheelEvent2(source: *mut c_void, units: u32, wheels: u32, y: i32, x: i32, z: i32) -> Event;
+    fn CGEventSetIntegerValueField(event: Event, field: u32, value: i64);
     fn CGEventSetFlags(event: Event, flags: u64);
     fn CGEventSetType(event: Event, kind: u32);
     fn CGEventPost(tap: u32, event: Event);
@@ -35,6 +42,14 @@ const HID_SYSTEM_STATE: i32 = 1;
 const FLAGS_CHANGED: u32 = 12;
 const MOUSE_MOVED: u32 = 5;
 const SCROLL_IN_PIXELS: u32 = 0;
+/// What the user is told while the host waits for its permissions, and how often it looks whether it has them.
+pub const WAITING: &str = "waiting to be allowed under System Settings, Privacy & Security, in both Screen & \
+System Audio Recording and Accessibility";
+const PERMISSION_CHECK: Duration = Duration::from_secs(1);
+/// The field of a mouse event that says which click of a double or triple click it is.
+const CLICK_STATE: u32 = 1;
+/// Presses of the same button closer together than this are one double (or triple) click: macOS's default.
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 /// Each button's events: (down, up, dragged), as CGEventType numbers them for the left, right and other buttons.
 const BUTTON_EVENTS: [(u32, u32, u32); 3] = [(1, 2, 6), (3, 4, 7), (25, 26, 27)];
 /// The evdev codes of the pointer's buttons, left, right, middle and on, as index.html sends them.
@@ -75,6 +90,9 @@ struct Held {
     flags: u64,
     buttons: u16,
     at: Point,
+    /// The last press, of which button, and which click it was.
+    pressed: Option<(Instant, u16)>,
+    clicks: i64,
 }
 
 pub struct Input {
@@ -99,10 +117,14 @@ fn post(event: Event, flags: u64) {
 }
 
 impl Input {
+    /// Waits until the user has let the host record the screen and control the Mac, which macOS asks them.
     pub fn open() -> io::Result<Self> {
-        if !unsafe { AXIsProcessTrusted() } {
-            let refused = "the host may not control this Mac: allow it under Privacy & Security, Accessibility";
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, refused));
+        if !unsafe { permitted() } {
+            unsafe { ask_permissions() };
+            eprintln!("{}: {WAITING}", crate::NAME);
+            while !unsafe { permitted() } {
+                std::thread::sleep(PERMISSION_CHECK);
+            }
         }
         Ok(Self { source: unsafe { CGEventSourceCreate(HID_SYSTEM_STATE) }, held: Mutex::default() })
     }
@@ -113,8 +135,15 @@ impl Input {
             let button = code - BTN_LEFT;
             let (pressed, released, _) = BUTTON_EVENTS[(button as usize).min(2)];
             held.buttons = if down { held.buttons | 1 << button } else { held.buttons & !(1 << button) };
+            if down {
+                let again = held.pressed.is_some_and(|(at, last)| last == button && at.elapsed() < DOUBLE_CLICK);
+                held.clicks = if again { held.clicks + 1 } else { 1 };
+                held.pressed = Some((Instant::now(), button));
+            }
             let kind = if down { pressed } else { released };
-            post(unsafe { CGEventCreateMouseEvent(self.source, kind, held.at, button as u32) }, held.flags);
+            let event = unsafe { CGEventCreateMouseEvent(self.source, kind, held.at, button as u32) };
+            unsafe { CGEventSetIntegerValueField(event, CLICK_STATE, held.clicks) };
+            post(event, held.flags);
             return;
         }
         let Some(&(_, key)) = KEYS.iter().find(|(evdev, _)| *evdev == code) else { return };
@@ -148,7 +177,8 @@ impl Input {
     /// Scrolls by the client's pixels, up and right where positive.
     pub fn scroll(&self, horizontal: i32, vertical: i32) {
         let held = self.held.lock().unwrap();
-        let event = unsafe { CGEventCreateScrollWheelEvent2(self.source, SCROLL_IN_PIXELS, 2, vertical, -horizontal, 0) };
+        let event =
+            unsafe { CGEventCreateScrollWheelEvent2(self.source, SCROLL_IN_PIXELS, 2, vertical, -horizontal, 0) };
         post(event, held.flags);
     }
 }

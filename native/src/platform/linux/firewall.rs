@@ -4,7 +4,7 @@
 //! host then answers nobody else (see `server::on_tailnet`).
 
 use crate::PORT;
-use crate::platform::linux::install::{run, run_quietly};
+use crate::install::{run, run_quietly};
 
 /// Tailscale's network interface, the one way in for devices on the tailnet.
 const TAILNET_INTERFACE: &str = "tailscale0";

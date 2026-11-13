@@ -1,6 +1,9 @@
 /* The picture of one display, through ScreenCaptureKit, for capture.rs. Only the newest new frame is kept;
-   frames that say nothing changed are dropped, so a still screen sends nothing. */
+   frames that say nothing changed are dropped, so a still screen sends nothing.
+   Here too: asking for the permissions capture and input need, which macOS keeps per program. */
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
+
+#import <ApplicationServices/ApplicationServices.h>
 
 /* How long the stream may take to start or stop. */
 #define WAIT_SECONDS 5
@@ -56,8 +59,9 @@ static void say(char *error, int size, NSError *failed)
     snprintf(error, size, "%s", failed.localizedDescription.UTF8String);
 }
 
-/* Starts capturing `display` at its pixel size, at most `fps` frames a second, with the pointer if `cursor`. */
-void *capture_start(uint32_t display, int fps, int cursor, char *error, int error_size)
+/* Starts capturing `display` at `width` x `height` pixels, at most `fps` frames a second, with the pointer if
+   `cursor`. */
+void *capture_start(uint32_t display, size_t width, size_t height, int fps, int cursor, char *error, int error_size)
 {
     __block SCShareableContent *content = nil;
     NSError *failed = wait_for(^(void (^done)(NSError *)) {
@@ -80,10 +84,8 @@ void *capture_start(uint32_t display, int fps, int cursor, char *error, int erro
     }
 
     SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
-    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
-    configuration.width = CGDisplayModeGetPixelWidth(mode);
-    configuration.height = CGDisplayModeGetPixelHeight(mode);
-    CGDisplayModeRelease(mode);
+    configuration.width = width;
+    configuration.height = height;
     configuration.pixelFormat = kCVPixelFormatType_32BGRA;
     configuration.minimumFrameInterval = CMTimeMake(1, fps);
     configuration.showsCursor = cursor;
@@ -139,4 +141,27 @@ void capture_stop(void *handle)
     wait_for(^(void (^done)(NSError *)) { [capture.stream stopCaptureWithCompletionHandler:done]; });
     CVPixelBufferRelease(capture.latest);
     capture.stream = nil;
+}
+
+/* The display's size in pixels, or 0 x 0 where it is gone. A display that came after this process started has
+   no mode to it here, which gives the pixels, and so its size in points stands in for them. */
+void display_pixels(uint32_t display, size_t *width, size_t *height)
+{
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
+    *width = mode ? CGDisplayModeGetPixelWidth(mode) : CGDisplayPixelsWide(display);
+    *height = mode ? CGDisplayModeGetPixelHeight(mode) : CGDisplayPixelsHigh(display);
+    CGDisplayModeRelease(mode);
+}
+
+/* Asks the user, once, to let this program record the screen and control the Mac. */
+void ask_permissions(void)
+{
+    CGRequestScreenCaptureAccess();
+    AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef) @{(__bridge id)kAXTrustedCheckOptionPrompt : @YES});
+}
+
+/* Whether it may do both. */
+bool permitted(void)
+{
+    return CGPreflightScreenCaptureAccess() && AXIsProcessTrusted();
 }

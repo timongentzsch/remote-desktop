@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 pub use super::unix::{fd, hostname, write_private};
 use crate::capture::Shared;
-use crate::screen::{Screen, Window};
+use crate::screen::Screen;
 
 const NOT_YET: &str = "this part of the host is not built for macOS yet";
 
@@ -29,6 +29,8 @@ pub fn password_path() -> PathBuf {
 
 pub mod capture;
 pub mod input;
+pub mod install;
+pub mod virtual_screen;
 
 #[repr(C)]
 struct Rect {
@@ -45,21 +47,26 @@ const MOST_DISPLAYS: usize = 16;
 unsafe extern "C" {
     fn CGGetActiveDisplayList(most: u32, displays: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayBounds(display: u32) -> Rect;
+    fn CGDisplayMirrorsDisplay(display: u32) -> u32;
 }
 
+/// The displays that show a picture of their own: not those that mirror another.
 fn displays() -> Vec<u32> {
     let (mut ids, mut count) = ([0; MOST_DISPLAYS], 0);
     unsafe { CGGetActiveDisplayList(MOST_DISPLAYS as u32, ids.as_mut_ptr(), &mut count) };
-    ids[..count as usize].to_vec()
+    ids[..count as usize].iter().copied().filter(|&id| unsafe { CGDisplayMirrorsDisplay(id) } == 0).collect()
 }
 
-/// The displays, each named by its number, where they lie in points.
+/// The displays, each named by its number but the virtual one (see virtual_screen.rs), where they lie in points.
 pub fn screens() -> Result<Vec<Screen>, String> {
     let screen = |id| {
         let bounds = unsafe { CGDisplayBounds(id) };
         let point = |value: f64| value as i32;
         Screen {
-            name: id.to_string(),
+            name: match id == virtual_screen::DISPLAY.load(std::sync::atomic::Ordering::SeqCst) {
+                true => virtual_screen::NAME.to_owned(),
+                false => id.to_string(),
+            },
             x: point(bounds.x),
             y: point(bounds.y),
             width: point(bounds.width),
@@ -69,11 +76,15 @@ pub fn screens() -> Result<Vec<Screen>, String> {
     Ok(displays().into_iter().map(screen).collect())
 }
 
-/// The number of the display a session asked for by name, else the first.
+/// The number of the display a session asked for by name, else the first. The virtual display's is 0 while it is
+/// being made; where there is none, the first stands in for it.
 fn display(wanted: Option<&str>) -> Result<u32, String> {
+    if wanted == Some(virtual_screen::NAME) && virtual_screen::in_use() {
+        return Ok(virtual_screen::DISPLAY.load(std::sync::atomic::Ordering::SeqCst));
+    }
     let screens = screens()?;
     let chosen = crate::screen::choose(&screens, wanted).ok_or("there is no display")?;
-    Ok(chosen.name.parse().unwrap())
+    Ok(chosen.name.parse().unwrap_or_default())
 }
 
 /// Nothing is left changed in the desktop by a host here.
@@ -90,25 +101,6 @@ pub mod pointer {
 
     pub fn hide() -> Option<HiddenPointer> {
         None
-    }
-}
-
-pub mod virtual_screen {
-    use super::*;
-
-    pub const NAME: &str = crate::NAME;
-
-    /// No screen is made to a client's window here.
-    pub struct VirtualScreen(());
-
-    impl VirtualScreen {
-        pub fn create(_window: Window, _fps: u32) -> Result<Self, String> {
-            not_yet()
-        }
-
-        pub fn resize(&self, _window: Window) -> Result<(), String> {
-            not_yet()
-        }
     }
 }
 
@@ -145,30 +137,6 @@ pub mod greeter {
     /// macOS lets no program show its login window.
     pub fn run(_address: &str) -> ! {
         crate::fail("there is no login screen to show on macOS")
-    }
-}
-
-pub mod install {
-    use crate::fail;
-
-    pub fn install(_tailscale: bool, _no_password: bool) {
-        fail(super::NOT_YET)
-    }
-
-    pub fn uninstall() {
-        fail(super::NOT_YET)
-    }
-
-    pub fn renew_certificate(_tailscale: bool) {
-        fail(super::NOT_YET)
-    }
-
-    pub fn set_password() {
-        fail(super::NOT_YET)
-    }
-
-    pub fn remove_password() {
-        fail(super::NOT_YET)
     }
 }
 

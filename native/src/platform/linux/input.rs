@@ -55,7 +55,9 @@ pub struct Input {
 
 impl Input {
     pub fn open() -> io::Result<Self> {
-        Self::create().map_err(|error| io::Error::new(error.kind(), format!("/dev/uinput: {error}; run `remote-desktop install`")))
+        Self::create().map_err(|error| {
+            io::Error::new(error.kind(), format!("/dev/uinput: {error}; run `remote-desktop install`"))
+        })
     }
 
     fn create() -> io::Result<Self> {
