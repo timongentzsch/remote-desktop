@@ -1,6 +1,7 @@
 # Remote desktop
 
-Your running Linux desktop in a browser tab. One file on the host, nothing on the other device, any desktop.
+Your running Linux desktop, or Mac, in a browser tab. One file on the host, nothing on the other device, any
+desktop.
 
 - **Nothing to install where you sit.** Open the address in Chrome, or install the page as an app from
   there. There is no client program.
@@ -48,6 +49,9 @@ Any Linux distribution, with any desktop, on Wayland or X11. The exceptions:
   the `ext-image-copy-capture-v1` or the `wlr-screencopy` protocol.)
 - Without PipeWire or PulseAudio there is no sound.
 
+macOS 12.3 or newer on Apple Silicon, without sound or the clipboard yet. Its size Client makes a virtual
+display, through an interface of macOS's that is not public, which display tools use as well.
+
 The client needs WebCodecs, and Keyboard Lock to send system shortcuts such as Alt+Tab to the remote side,
 which works in full screen. Video over UDP needs WebTransport; without it, or where the network lets no UDP
 through, the video takes the same connection as everything else. It is developed and tested with Chrome.
@@ -82,6 +86,12 @@ options given:
 
 and prints the address to open. `remote-desktop uninstall` undoes all of it except the password and the
 certificate.
+
+On a Mac, the same line copies the binary to `/usr/local/bin/remote-desktop` (asking for sudo) and runs it as
+a LaunchAgent from login on, logging to `~/Library/Logs/remote-desktop.log`; the password and the certificate
+are kept in `~/Library/Application Support/remote-desktop/`. macOS then asks to allow the host under System
+Settings, Privacy & Security, in both Screen & System Audio Recording and Accessibility; `install` waits until
+it is allowed. macOS asks again after each new version of the binary.
 
 While the machine shows its login screen, the system service shows it too, under the same address and
 password. When you log in there it leaves the port to the desktop's own host, and the page, which takes up a
@@ -172,12 +182,14 @@ builds them and publishes them when a version tag is pushed.
       quic.rs, fec.rs          the UDP side that video takes; its spare datagrams against loss
       rate.rs                  the bitrate a connection is given, from how well frames get through
       tls.rs, certificate.rs   the encrypted connection; the certificate behind it
+      install.rs               install, uninstall, the password and the certificate; each platform's part
       capture.rs, screen.rs    what a session asks of a capture; the screens and where the pointer goes
       stream/                  pictures to video: pacing, size, colour detail, the encoders, the FLV they go in
       audio.rs                 the desktop's sound as Opus
       platform/                what differs from one operating system to another, behind one surface (mod.rs)
         linux/                 Wayland and X11 capture, PipeWire and PulseAudio, uinput, the clipboard,
                                the login screen, install with systemd, ufw and firewalld, the virtual screen
+        macos/                 ScreenCaptureKit, CGEvent input, the virtual display, install as a LaunchAgent
     tests/                     the regression on every kind of desktop, and tools for measuring
 
 To extend it: another operating system is a module in `platform/` that provides the names `platform/mod.rs`

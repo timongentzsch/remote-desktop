@@ -1,9 +1,8 @@
 /* The picture of one display, through ScreenCaptureKit, for capture.rs. Only the newest new frame is kept;
-   frames that say nothing changed are dropped, so a still screen sends nothing.
-   Here too: asking for the permissions capture and input need, which macOS keeps per program. */
-#import <ScreenCaptureKit/ScreenCaptureKit.h>
-
+   frames that say nothing changed are dropped, so a still screen sends nothing. Here too: asking for the
+   permissions that capture and input need, which macOS keeps per program. */
 #import <ApplicationServices/ApplicationServices.h>
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
 
 /* How long the stream may take to start or stop. */
 #define WAIT_SECONDS 5

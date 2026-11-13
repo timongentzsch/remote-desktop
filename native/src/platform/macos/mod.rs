@@ -1,11 +1,11 @@
-//! macOS, being built. Every part the host needs from a platform (see ../mod.rs) is here, and says so where it
-//! is not built yet, so that the rest of the host builds and its tests run on a Mac. The parts to come:
-//! ScreenCaptureKit for the picture and the sound, CGEvent for keys and the pointer, NSPasteboard for the
-//! clipboard, and a LaunchAgent for the install.
+//! macOS: the picture through ScreenCaptureKit (capture.rs), keys and the pointer as CGEvents (input.rs), a
+//! virtual display for a client's size (virtual_screen.rs), and a LaunchAgent (install.rs). Sound and the
+//! clipboard are not built yet, and say so.
 
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 pub use super::unix::{fd, hostname, write_private};
 use crate::capture::Shared;
@@ -63,9 +63,10 @@ pub fn screens() -> Result<Vec<Screen>, String> {
         let bounds = unsafe { CGDisplayBounds(id) };
         let point = |value: f64| value as i32;
         Screen {
-            name: match id == virtual_screen::DISPLAY.load(std::sync::atomic::Ordering::SeqCst) {
-                true => virtual_screen::NAME.to_owned(),
-                false => id.to_string(),
+            name: if id == virtual_screen::DISPLAY.load(Ordering::SeqCst) {
+                virtual_screen::NAME.to_owned()
+            } else {
+                id.to_string()
             },
             x: point(bounds.x),
             y: point(bounds.y),
@@ -80,7 +81,7 @@ pub fn screens() -> Result<Vec<Screen>, String> {
 /// being made; where there is none, the first stands in for it.
 fn display(wanted: Option<&str>) -> Result<u32, String> {
     if wanted == Some(virtual_screen::NAME) && virtual_screen::in_use() {
-        return Ok(virtual_screen::DISPLAY.load(std::sync::atomic::Ordering::SeqCst));
+        return Ok(virtual_screen::DISPLAY.load(Ordering::SeqCst));
     }
     let screens = screens()?;
     let chosen = crate::screen::choose(&screens, wanted).ok_or("there is no display")?;

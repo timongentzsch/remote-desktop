@@ -63,7 +63,6 @@ static bool in_mode(CGDirectDisplayID display, unsigned width, unsigned height, 
    each way; NULL if it cannot. Its number goes to *id. */
 void *virtual_display_create(const char *name, unsigned width, unsigned height, unsigned scale, unsigned fps, uint32_t *id)
 {
-    @autoreleasepool {
     CGVirtualDisplayDescriptor *descriptor = [[CGVirtualDisplayDescriptor alloc] init];
     descriptor.queue = dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0);
     descriptor.name = @(name);
@@ -84,5 +83,4 @@ void *virtual_display_create(const char *name, unsigned width, unsigned height, 
         return NULL;
     *id = display.displayID;
     return (__bridge_retained void *)display;
-    }
 }

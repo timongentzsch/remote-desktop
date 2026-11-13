@@ -26,10 +26,6 @@ pub static SIZE: Mutex<[u32; 3]> = Mutex::new([0; 3]);
 /// One at a time: a session's is gone, and the Mac's own displays back, before the next one makes its own.
 static IN_USE: AtomicBool = AtomicBool::new(false);
 
-/// Whether a session has the virtual display, or is making it.
-pub fn in_use() -> bool {
-    IN_USE.load(Ordering::SeqCst)
-}
 /// macOS draws one or two pixels to a point: two from this scale on.
 const HIDPI_FROM: f64 = 1.5;
 /// How long the display may take to appear, and to go, as when a session ends and the next one wants it.
@@ -51,6 +47,11 @@ unsafe extern "C" {
     fn CGBeginDisplayConfiguration(config: *mut *mut c_void) -> i32;
     fn CGConfigureDisplayMirrorOfDisplay(config: *mut c_void, display: u32, master: u32) -> i32;
     fn CGCompleteDisplayConfiguration(config: *mut c_void, option: u32) -> i32;
+}
+
+/// Whether a session has the virtual display, or is making it.
+pub fn in_use() -> bool {
+    IN_USE.load(Ordering::SeqCst)
 }
 
 /// The virtual screen while it is there: its helper, at the size it is now. Dropping it takes it away.

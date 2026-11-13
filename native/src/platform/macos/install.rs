@@ -11,7 +11,9 @@ use crate::{NAME, PORT, fail};
 
 pub const BINARY: &str = "/usr/local/bin/remote-desktop";
 const LABEL: &str = "remote-desktop";
-/// How long `install` waits for the user to allow the host, and how often it looks.
+/// How long the host takes to start where it is allowed, how long `install` waits for the user to allow it, and
+/// how often it looks.
+const STARTING: Duration = Duration::from_secs(2);
 const LONGEST_WAIT: Duration = Duration::from_secs(600);
 const CHECK: Duration = Duration::from_secs(1);
 
@@ -44,13 +46,17 @@ fn agent_path() -> PathBuf {
     home().join("Library/LaunchAgents").join(format!("{LABEL}.plist"))
 }
 
-/// The user's session, which launchd runs agents in.
+/// The user's session, which launchd runs agents in, and the agent in it.
 fn domain() -> String {
     format!("gui/{}", unsafe { libc::getuid() })
 }
 
+fn service() -> String {
+    format!("{}/{LABEL}", domain())
+}
+
 pub fn restart_command() -> String {
-    format!("launchctl kickstart -k {}/{LABEL}", domain())
+    format!("launchctl kickstart -k {}", service())
 }
 
 /// Copies this binary into place (through sudo) and starts the host as the user's LaunchAgent.
@@ -59,7 +65,7 @@ pub fn start(_tailnet_only: bool) {
     run("sudo", &["mkdir", "-p", "/usr/local/bin"]);
     run("sudo", &["install", "-m755", &this.to_string_lossy(), BINARY]);
     write(&agent_path(), &agent());
-    run_quietly("launchctl", &["bootout", &format!("{}/{LABEL}", domain())]);
+    run_quietly("launchctl", &["bootout", &service()]);
     run("launchctl", &["bootstrap", &domain(), &agent_path().to_string_lossy()]);
     println!("Installed {BINARY} and started it; from now on it starts at login.");
     wait_until_serving();
@@ -69,6 +75,7 @@ pub fn start(_tailnet_only: bool) {
 fn wait_until_serving() {
     let serving = || TcpStream::connect(("127.0.0.1", PORT)).is_ok();
     let since = Instant::now();
+    std::thread::sleep(STARTING);
     if !serving() {
         println!("On the Mac, remote-desktop is {}.", input::WAITING);
     }
@@ -84,7 +91,7 @@ fn wait_until_serving() {
 
 /// Undoes `start`.
 pub fn stop() {
-    run_quietly("launchctl", &["bootout", &format!("{}/{LABEL}", domain())]);
+    run_quietly("launchctl", &["bootout", &service()]);
     let _ = std::fs::remove_file(agent_path());
     run("sudo", &["rm", "-f", BINARY]);
 }

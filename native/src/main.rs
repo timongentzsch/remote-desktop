@@ -10,6 +10,9 @@
 //!     remote-desktop [--listen ADDRESS]         run the host (default 0.0.0.0:8765)
 //!     remote-desktop login-screen [ADDRESS]     as root: run the host at the login screen whenever there is one
 
+// macOS has no sound and no pointer shapes for the client yet, which leaves what serves them unused there.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
 /// Tells what happened on standard error, which the service's log keeps, under the program's name.
 macro_rules! warn {
     ($($message:tt)*) => {
