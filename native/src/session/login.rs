@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::capture::Settings;
-use crate::platform::virtual_screen::Window;
 use crate::rate;
+use crate::screen::Window;
 
 /// How long after a wrong password no login is accepted, which limits guessing to this pace overall.
 const GUESS_INTERVAL: Duration = Duration::from_secs(1);

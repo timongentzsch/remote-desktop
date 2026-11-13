@@ -55,6 +55,14 @@ fn libva_version() -> PathBuf {
     directory
 }
 
+/// The system part of the target as x264's configure script takes it.
+fn x264_system() -> &'static str {
+    match env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("macos") => "apple-darwin",
+        _ => "linux",
+    }
+}
+
 fn run(command: &mut Command) {
     let status = command.status().unwrap_or_else(|error| panic!("cannot run {command:?}: {error}"));
     assert!(status.success(), "{command:?} failed");
@@ -75,7 +83,7 @@ fn main() {
         run(Command::new(source.join("configure"))
             .current_dir(&build)
             .args(["--enable-static", "--enable-pic", "--disable-cli", "--disable-opencl", "--bit-depth=8"])
-            .arg(format!("--host={}-linux", env::var("CARGO_CFG_TARGET_ARCH").unwrap()))
+            .arg(format!("--host={}-{}", env::var("CARGO_CFG_TARGET_ARCH").unwrap(), x264_system()))
             .env("CC", words(&tools.get_compiler().to_command()))
             .env("AR", words(&tools.get_archiver()))
             .env("RANLIB", words(&tools.get_ranlib())));

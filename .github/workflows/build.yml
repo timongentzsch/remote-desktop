@@ -50,3 +50,19 @@ jobs:
         run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # macOS, being built (see native/src/platform/macos): checked and tested on Apple Silicon, not yet released.
+  macos:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --release --all-targets -- --deny warnings
+      - run: cargo test --release

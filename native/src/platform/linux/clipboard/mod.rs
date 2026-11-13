@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crate::capture::Shared;
 use crate::platform::linux::compositor;
-use crate::platform::linux::fd::{self, Waker};
+use crate::platform::unix::fd::{self, Waker};
 
 /// Longer clipboard contents are not passed on.
 const LIMIT: usize = 1 << 20;

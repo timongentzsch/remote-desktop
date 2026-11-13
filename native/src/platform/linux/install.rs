@@ -2,11 +2,11 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use crate::platform::linux::firewall;
+use crate::platform::unix::write_private;
 use crate::{NAME, PORT, certificate, fail};
 
 const BINARY: &str = "/usr/local/bin/remote-desktop";
@@ -287,14 +287,6 @@ pub fn remove_password() {
 /// An empty password: no password is asked for.
 fn clear_password() {
     write_private(&password_path(), b"").unwrap_or_else(|error| fail(&error));
-}
-
-/// Writes a file only its owner can read, creating the directory it lives in.
-pub fn write_private(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
-    fs::create_dir_all(path.parent().unwrap())
-        .and_then(|()| fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path))
-        .and_then(|mut file| file.write_all(contents))
-        .map_err(|error| format!("cannot write {}: {error}", path.display()))
 }
 
 /// Runs `action` with terminal echo off, if standard input is a terminal.

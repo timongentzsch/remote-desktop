@@ -49,7 +49,7 @@ pub fn run(shared: Arc<Shared>, sound: &mut Sound) -> Result<(), String> {
     let mut chunk = Vec::new();
     while !shared.stop.load(Ordering::Relaxed) {
         if server.buffer().is_empty()
-            && crate::platform::linux::fd::wait_readable([server.get_ref().as_raw_fd()], Some(LOOK)) == [false]
+            && crate::platform::unix::fd::wait_readable([server.get_ref().as_raw_fd()], Some(LOOK)) == [false]
         {
             continue;
         }
