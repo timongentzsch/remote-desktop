@@ -51,12 +51,12 @@ impl Still {
         kbps as usize * 125 / REFINE_FPS as usize
     }
 
-    /// Takes the size of the picture's latest frame, the share it could have taken and whether it came out
-    /// coarse; says whether the picture is finished. A frame the bitrate cap held back says nothing of that: an
-    /// encoder that leaves the quantiser to the cap adds nothing at a coarser one than the picture already has,
-    /// and so sends small frames long before the picture is as good as it should be.
-    pub fn finished(&mut self, size: usize, share: usize, coarse: bool) -> bool {
-        if coarse {
+    /// Takes the size of the picture's latest frame, the share it could have taken and whether the cap's budget
+    /// held it back; says whether the picture is finished. A frame held back says nothing of that: at a coarser
+    /// quantiser than the picture already has an encoder adds nothing, and so sends small frames long before the
+    /// picture is as good as it should be.
+    pub fn finished(&mut self, size: usize, share: usize, held_back: bool) -> bool {
+        if held_back {
             self.level_frames = 0;
             return false;
         }
@@ -420,14 +420,15 @@ impl Stream {
             self.settings.kbps = wanted;
         }
         let encoded = encoder.encode(fresh)?;
-        let (unit, keyframe, coarse) = (encoded.unit.to_vec(), encoded.keyframe, encoded.coarse);
+        let (unit, keyframe, coarse, held_back) =
+            (encoded.unit.to_vec(), encoded.keyframe, encoded.coarse, encoded.held_back);
         let took = started.elapsed();
         self.shared.encode_micros.store(took.as_micros() as u32, Ordering::Relaxed);
         // Only a new picture says whether the bitrate holds the video back: a refined one aims higher than that.
         if frame == Frame::New {
             self.shared.coarse.fetch_add(coarse as u32, Ordering::Relaxed);
         }
-        if self.still.finished(unit.len(), Still::share(self.rate.0), coarse) {
+        if self.still.finished(unit.len(), Still::share(self.rate.0), held_back) {
             self.refinements_left = 0;
         }
         self.encoded = Instant::now();

@@ -12,7 +12,7 @@ struct encoder_ops {
     /* The parameter sets, raw (without start code or length), in the order the codec's decoder configuration
        lists them: H.264's SPS and PPS, HEVC's VPS, SPS and PPS. Returns how many, or -1. */
     int (*headers)(struct encoder *encoder, uint8_t **sets, int *sizes);
-    int (*encode)(struct encoder *encoder, int fresh, uint8_t **data, int *keyframe, int *coarse);
+    int (*encode)(struct encoder *encoder, int fresh, uint8_t **data, int *keyframe, int *flags);
     /* The bitrate at the frame rate the encoder was opened with, the most one frame may take, and the quality
        target. */
     int (*set_rate)(struct encoder *encoder, int kbps, int buffer_kbits, int quality);
@@ -28,6 +28,12 @@ struct encoder {
 
 /* A frame counts as coarse when the cap made it this much worse than the quality target, in quantiser steps. */
 #define COARSE_MARGIN 1
+
+/* What an encoder says of a frame, in the flags encode sets: the bitrate cap, not the quality target, decided
+   how good it is (FRAME_COARSE); and the cap's budget held it back so far that its size says nothing of how
+   good the picture is by now (FRAME_HELD_BACK), which only an encoder that keeps the budget itself can say. */
+#define FRAME_COARSE 1
+#define FRAME_HELD_BACK 2
 
 /* How much one frame may take at most: what the bitrate cap allows in a fifth of a second. */
 #define BUFFER_KBITS(kbps) ((kbps) / 5)

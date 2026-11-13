@@ -23,7 +23,7 @@ unsafe extern "C" {
         fresh: c_int,
         data: *mut *mut u8,
         keyframe: *mut c_int,
-        coarse: *mut c_int,
+        flags: *mut c_int,
     ) -> c_int;
     fn encoder_set_rate(encoder: *mut Raw, kbps: c_int, fps: c_int, quality: c_int) -> c_int;
     fn encoder_name(encoder: *mut Raw) -> *const c_char;
@@ -68,6 +68,10 @@ impl Setup {
     }
 }
 
+/// What an encoder says of a frame, as encoder.h has it.
+const FRAME_COARSE: c_int = 1;
+const FRAME_HELD_BACK: c_int = 2;
+
 /// What the stream is encoded as, as nal.h numbers it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Codec {
@@ -97,8 +101,11 @@ pub struct Encoded<'a> {
     /// The access unit, as length-prefixed NAL units.
     pub unit: &'a [u8],
     pub keyframe: bool,
-    /// The bitrate cap, not the quality target, decided how good the frame is. Only x264 says so.
+    /// The bitrate cap, not the quality target, decided how good the frame is (x264 and VA-API say so), and its
+    /// budget held the frame back so far that its size says nothing of how good the picture is (VA-API, which
+    /// keeps the budget itself, says so).
     pub coarse: bool,
+    pub held_back: bool,
 }
 
 /// How many levels of effort the software encoder has, as in encoder.h: 0 is the least work for a frame.
@@ -209,13 +216,14 @@ impl Encoder {
 
     /// Encodes the picture in `planes`; as a frame that needs none before it, if `fresh`.
     pub fn encode(&mut self, fresh: bool) -> Option<Encoded<'_>> {
-        let (mut data, mut keyframe, mut coarse) = (ptr::null_mut(), 0, 0);
-        let size = unsafe { encoder_encode(self.raw, fresh as c_int, &mut data, &mut keyframe, &mut coarse) };
+        let (mut data, mut keyframe, mut flags) = (ptr::null_mut(), 0, 0);
+        let size = unsafe { encoder_encode(self.raw, fresh as c_int, &mut data, &mut keyframe, &mut flags) };
         // The access unit stays valid until the next call into the encoder, which needs `&mut self`.
         (size > 0).then(|| Encoded {
             unit: unsafe { slice::from_raw_parts(data, size as usize) },
             keyframe: keyframe != 0,
-            coarse: coarse != 0,
+            coarse: flags & FRAME_COARSE != 0,
+            held_back: flags & FRAME_HELD_BACK != 0,
         })
     }
 }
@@ -360,9 +368,9 @@ mod tests {
             still.finished(first, Still::share(kbps), false);
             loop {
                 let encoded = encoder.encode(false).expect("a frame in gives a frame out");
-                let (size, coarse) = (encoded.unit.len(), encoded.coarse);
+                let (size, held_back) = (encoded.unit.len(), encoded.held_back);
                 sizes.push(size);
-                if still.finished(size, Still::share(kbps), coarse) {
+                if still.finished(size, Still::share(kbps), held_back) {
                     break;
                 }
                 assert!(

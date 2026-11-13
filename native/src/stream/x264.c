@@ -96,7 +96,7 @@ static int software_headers(struct encoder *base, uint8_t **sets, int *sizes)
     return 2;
 }
 
-static int software_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *coarse)
+static int software_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *flags)
 {
     struct software *encoder = (struct software *)base;
     x264_nal_t *nal;
@@ -108,7 +108,9 @@ static int software_encode(struct encoder *base, int fresh, uint8_t **data, int 
     if (size > 0) {
         *data = nal[0].p_payload;
         *keyframe = out.b_keyframe;
-        *coarse = out.prop.f_crf_avg > encoder->quality + COARSE_MARGIN; /* the rate factor the cap left it with */
+        /* The rate factor the cap left it with. That x264 does not hold back by the budget alone: on two cores it
+           reported a still picture's empty refinements as coarse. */
+        *flags = out.prop.f_crf_avg > encoder->quality + COARSE_MARGIN ? FRAME_COARSE : 0;
     }
     return size;
 }

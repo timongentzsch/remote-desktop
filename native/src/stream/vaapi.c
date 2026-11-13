@@ -263,7 +263,7 @@ done:
     return size;
 }
 
-static int vaapi_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *coarse)
+static int vaapi_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *flags)
 {
     struct vaapi *encoder = (struct vaapi *)base;
     int idr = fresh || encoder->reference == 0, size = -1;
@@ -292,7 +292,8 @@ static int vaapi_encode(struct encoder *base, int fresh, uint8_t **data, int *ke
         return size;
     *data = encoder->unit.bytes;
     *keyframe = idr;
-    *coarse = qp > encoder->quality + COARSE_MARGIN; /* the cap, not the quality target, set the quantiser */
+    /* The cap, not the quality target, set the quantiser, as the budget this file keeps said. */
+    *flags = qp > encoder->quality + COARSE_MARGIN ? FRAME_COARSE | FRAME_HELD_BACK : 0;
     encoder->last_qp = qp;
     encoder->last_bits = size * 8;
     encoder->allowance -= size * 8.0;

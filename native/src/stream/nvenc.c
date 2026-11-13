@@ -278,9 +278,9 @@ static int nvenc_headers(struct encoder *base, uint8_t **sets, int *sizes)
     return 2;
 }
 
-static int nvenc_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *coarse)
+static int nvenc_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *flags)
 {
-    (void)coarse; /* stays unset: this encoder does not say */
+    (void)flags; /* stay unset: this encoder does not say */
     struct nvenc *encoder = (struct nvenc *)base;
     int size = -1;
     enter();
