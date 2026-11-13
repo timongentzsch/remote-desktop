@@ -70,7 +70,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     // it lasts as long as the session.
     let mut settings = login.settings;
     let made = login.device.and_then(|window| {
-        VirtualScreen::create(window, settings.fps)
+        VirtualScreen::create(window, settings.fps, !settings.cursor)
             .map_err(|error| warn!("showing the machine's own screen: {error}"))
             .ok()
     });

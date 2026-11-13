@@ -62,8 +62,11 @@ pub struct VirtualScreen {
 }
 
 impl VirtualScreen {
-    /// Makes the screen for `window` at `fps` frames a second and switches the machine's own screens off.
-    pub fn create(window: Window, fps: u32) -> Result<Self, String> {
+    /// Makes the screen for `window` at `fps` frames a second and switches the machine's own screens off. Where
+    /// the client draws the pointer itself (`pointer_drawn_by_client`), the desktop's own is hidden: a screen
+    /// without a display behind it has no layer of its own for the pointer, so the desktop paints the pointer
+    /// into the picture even for a capture that asked for it without, and the client would show two.
+    pub fn create(window: Window, fps: u32, pointer_drawn_by_client: bool) -> Result<Self, String> {
         if !hyprland::running() {
             return Err("this desktop cannot make a screen of the client's size".into());
         }
@@ -87,6 +90,18 @@ impl VirtualScreen {
         }
         for own in screen::list().into_iter().filter(|screen| screen.name != NAME) {
             hyprland::switch_off(&own.name)?;
+        }
+        // The session places the pointer by the screens the desktop lists once this returns. Until the others
+        // are gone, the list still has them, and this screen beside them rather than where it ends up alone.
+        let alone = wait_for(APPEARING, || {
+            let screens = screen::list();
+            screens.len() == 1 && screens[0].name == NAME && (screens[0].x, screens[0].y) == (0, 0)
+        });
+        if !alone {
+            return Err("the machine's own screens did not go off".into());
+        }
+        if pointer_drawn_by_client {
+            hyprland::hide_pointer()?;
         }
         Ok(made)
     }
@@ -159,7 +174,13 @@ mod hyprland {
         monitor(&format!(r#"{{ output = "{name}", disabled = true }}"#), &format!("{name},disable"))
     }
 
-    /// Reading the configuration again brings its screens back as they were set up; then the headless one goes.
+    /// Nobody sits at the machine while its screens are off; `restore` shows the pointer again.
+    pub fn hide_pointer() -> Result<(), String> {
+        setting(r#"{ cursor = { invisible = true } }"#, &["cursor:invisible", "true"])
+    }
+
+    /// Reading the configuration again brings its screens back as they were set up, and its pointer; then the
+    /// headless one goes.
     pub fn restore() -> Result<(), String> {
         let reloaded = hyprctl(&["reload"]);
         hyprctl(&["output", "remove", NAME]).and(reloaded)
@@ -168,6 +189,11 @@ mod hyprland {
     /// A monitor rule: as the Lua table `lua`, or else in the older form `legacy`.
     fn monitor(lua: &str, legacy: &str) -> Result<(), String> {
         hyprctl(&["eval", &format!("hl.monitor({lua})")]).or_else(|_| hyprctl(&["keyword", "monitor", legacy]))
+    }
+
+    /// A setting: as the Lua table `lua`, or else as the older form's keyword and value, `legacy`.
+    fn setting(lua: &str, legacy: &[&str; 2]) -> Result<(), String> {
+        hyprctl(&["eval", &format!("hl.config({lua})")]).or_else(|_| hyprctl(&["keyword", legacy[0], legacy[1]]))
     }
 
     /// Runs `hyprctl`, which says "ok" when it did what it was told.
