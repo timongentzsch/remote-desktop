@@ -22,7 +22,7 @@ const BTN_MOUSE: u16 = 0x110;
 const KEYS: u16 = 248;
 const BUTTONS: u16 = 5;
 /// Pointer positions arrive normalised to this range.
-pub const ABS_RANGE: i32 = 65535;
+const ABS_RANGE: i32 = crate::screen::POINTER_RANGE;
 
 // linux/uinput.h ioctls (identical on x86_64 and arm64)
 const UI_DEV_CREATE: u32 = 0x5501;

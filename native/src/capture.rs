@@ -1,18 +1,8 @@
-//! Screen capture. Desktops hand out the screen's picture in different ways. Each way is a module here with one
-//! function, `run`, which feeds pictures to a `Stream` for as long as the stream wants them.
+//! What a session asks of a capture and what a capture hands back. Desktops hand out the screen's picture in
+//! different ways, each a capture of the platform's (see platform/), which feeds pictures to a `Stream` for as
+//! long as the stream wants them.
 
-mod kwin;
-mod memory;
-mod mutter;
-mod pipewire;
-mod wayland;
-mod x11;
-
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32};
-
-use crate::compositor;
-use crate::stream::Stream;
 
 pub struct Settings {
     pub kbps: u32,
@@ -81,24 +71,6 @@ pub enum Output<'a> {
 
 /// Receives what the capture puts out; returns false once nobody is listening any more.
 pub type Sink = Box<dyn FnMut(Output) -> bool + Send>;
-
-/// Captures the chosen screen until `shared.stop` is set, the sink declines a piece, or the desktop ends it.
-pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), String> {
-    let stream = Stream::new(settings, shared, sink);
-    if !compositor::available() {
-        return x11::run(stream);
-    }
-    let offered = compositor::protocols()?;
-    let offers = |protocol: &str| offered.iter().any(|name| name == protocol);
-    if wayland::offered(&offered) {
-        wayland::run(stream)
-    } else if offers(kwin::PROTOCOL) {
-        kwin::run(stream)
-    } else {
-        // GNOME's compositor has no Wayland protocol for this; it is asked over D-Bus.
-        mutter::run(stream)
-    }
-}
 
 #[cfg(test)]
 mod tests {

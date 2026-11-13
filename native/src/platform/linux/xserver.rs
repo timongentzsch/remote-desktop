@@ -35,7 +35,7 @@ impl Events {
         x.flush()?;
         self.ahead = x.poll_for_event()?;
         if self.ahead.is_none() {
-            crate::fd::wait_readable([x.stream().as_raw_fd(), other.unwrap_or(-1)], Some(limit));
+            crate::platform::linux::fd::wait_readable([x.stream().as_raw_fd(), other.unwrap_or(-1)], Some(limit));
         }
         Ok(())
     }

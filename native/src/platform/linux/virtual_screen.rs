@@ -43,6 +43,13 @@ impl Window {
         (side(self.width), side(self.height))
     }
 
+    /// The screen's size in the desktop's own units, as the desktop lists it: its pixels at its scale.
+    fn size(&self) -> (i32, i32) {
+        let (width, height) = self.pixels();
+        let unscaled = |pixels: u32| (pixels as f64 / self.scale()).round() as i32;
+        (unscaled(width), unscaled(height))
+    }
+
     /// The desktop's scale for it, so that things look as large as they would on the device itself.
     fn scale(&self) -> f64 {
         self.pixel_ratio.clamp(1.0, LARGEST_SCALE)
@@ -69,7 +76,12 @@ impl VirtualScreen {
         std::fs::write(marker(), NAME).map_err(|error| format!("cannot note the virtual screen: {error}"))?;
         hyprland::create()?;
         made.resize(window)?;
-        let appeared = wait_for(APPEARING, || screen::list().iter().any(|screen| screen.name == NAME));
+        // The compositor makes the output at a size of its own and gives it the one asked for a moment later;
+        // a capture that began before would start over at the new size.
+        let size = window.size();
+        let appeared = wait_for(APPEARING, || {
+            screen::list().iter().any(|screen| screen.name == NAME && (screen.width, screen.height) == size)
+        });
         if !appeared {
             return Err("the virtual screen did not appear".into());
         }
@@ -183,6 +195,7 @@ mod tests {
         assert_eq!(window(1001.0, 701.0, 1.0).pixels(), (1000, 700), "even");
         assert_eq!(window(100.0, 9000.0, 1.0).pixels(), (320, 7680), "within reason");
         assert_eq!(window(390.0, 844.0, 3.0).scale(), 3.0);
+        assert_eq!(window(1512.0, 982.0, 2.0).size(), (1512, 982), "listed in the desktop's units");
         assert_eq!(window(800.0, 600.0, 0.5).scale(), 1.0);
     }
 }

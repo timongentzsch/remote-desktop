@@ -20,16 +20,9 @@ macro_rules! warn {
 mod audio;
 mod capture;
 mod certificate;
-mod clipboard;
-mod compositor;
-mod fd;
 mod fec;
-mod firewall;
-mod gnome;
-mod greeter;
-mod input;
-mod install;
 mod outbox;
+mod platform;
 mod quic;
 mod rate;
 mod screen;
@@ -37,9 +30,7 @@ mod server;
 mod session;
 mod stream;
 mod tls;
-mod virtual_screen;
 mod ws;
-mod xserver;
 
 /// The program's name: that of its binary, its services and the directory its settings are kept in.
 const NAME: &str = "remote-desktop";
@@ -70,19 +61,21 @@ fn main() {
         (None, _) => server::run(&listen_everywhere()),
         (Some("--listen"), Some(address)) => server::run(&address),
         // What the system service that `install` sets up runs.
-        (Some("login-screen"), address) => greeter::run(&address.unwrap_or_else(listen_everywhere)),
+        (Some("login-screen"), address) => platform::login_screen(&address.unwrap_or_else(listen_everywhere)),
         (Some("install"), first) => {
             let options: Vec<String> = first.into_iter().chain(arguments).collect();
             let given = |option: &str| options.iter().any(|given| given == option);
             if options.iter().any(|option| !["--tailscale", "--no-password"].contains(&option.as_str())) {
                 fail(USAGE);
             }
-            install::install(given("--tailscale"), given("--no-password"))
+            platform::install::install(given("--tailscale"), given("--no-password"))
         }
-        (Some("uninstall"), None) => install::uninstall(),
-        (Some("password"), None) => install::set_password(),
-        (Some("password"), Some(option)) if option == "--none" => install::remove_password(),
-        (Some("certificate"), option) if is_tailscale(&option) => install::renew_certificate(option.is_some()),
+        (Some("uninstall"), None) => platform::install::uninstall(),
+        (Some("password"), None) => platform::install::set_password(),
+        (Some("password"), Some(option)) if option == "--none" => platform::install::remove_password(),
+        (Some("certificate"), option) if is_tailscale(&option) => {
+            platform::install::renew_certificate(option.is_some())
+        }
         // Not for users: the service runs this once to learn whether the GPU can encode (see stream/encode.rs).
         (Some(stream::PROBE), None) => std::process::exit(if stream::probe() { 0 } else { 1 }),
         _ => fail(USAGE),

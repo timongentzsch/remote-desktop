@@ -21,7 +21,7 @@ use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_powe
 };
 
 use super::memory::Memory;
-use crate::compositor::{self, bind};
+use crate::platform::linux::compositor::{self, bind};
 use crate::stream::Stream;
 
 /// Whether a compositor that offers these protocols can be captured from here.

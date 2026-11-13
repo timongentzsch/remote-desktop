@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use super::pipewire;
-use crate::gnome::{self, Service};
+use crate::platform::linux::gnome::{self, Service};
 use crate::screen;
 
 /// How long GNOME may take to start the screen cast it was asked for.

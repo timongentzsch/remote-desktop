@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::capture::Settings;
+use crate::platform::virtual_screen::Window;
 use crate::rate;
-use crate::virtual_screen::Window;
 
 /// How long after a wrong password no login is accepted, which limits guessing to this pace overall.
 const GUESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -38,7 +38,7 @@ pub struct Login {
     pub ceiling: u32,
     pub patience: u32,
     pub sound: bool,
-    /// Its window, when it asked for a screen of that size (see virtual_screen.rs).
+    /// Its window, when it asked for a screen of that size (see platform/linux/virtual_screen.rs).
     pub device: Option<Window>,
 }
 

@@ -16,7 +16,7 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use super::{Copied, Inbox, LIMIT};
 use crate::capture::Shared;
-use crate::xserver::Events;
+use crate::platform::linux::xserver::Events;
 
 pub fn run(inbox: &Inbox, shared: &Shared, copied: Copied) -> Result<(), String> {
     share(inbox, shared, copied).map_err(|error| format!("the X server: {error}"))

@@ -10,8 +10,8 @@ use std::sync::atomic::Ordering;
 
 use super::{Device, Manager, Offer, Source, device, offer, source};
 use crate::capture::Shared;
-use crate::clipboard::{Copied, Inbox, TEXT_TYPES, read_text};
-use crate::compositor::{self, bind};
+use crate::platform::linux::clipboard::{Copied, Inbox, TEXT_TYPES, read_text};
+use crate::platform::linux::compositor::{self, bind};
 use wayland_client::backend::ObjectId;
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
@@ -39,7 +39,7 @@ pub fn run(inbox: &Inbox, shared: &Shared, copied: Copied) -> Result<(), String>
     };
 
     while !shared.stop.load(Ordering::Relaxed) && !clipboard.finished {
-        compositor::turn(&mut events, &mut clipboard, Some(inbox.waker()), crate::clipboard::LOOK)?;
+        compositor::turn(&mut events, &mut clipboard, Some(inbox.waker()), crate::platform::linux::clipboard::LOOK)?;
         if let Some(text) = inbox.take() {
             clipboard.set(text, &queue);
         }

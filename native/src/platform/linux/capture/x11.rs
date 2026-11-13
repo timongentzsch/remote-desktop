@@ -10,11 +10,11 @@ use x11rb::protocol::shm::ConnectionExt as _;
 use x11rb::protocol::xfixes::{ConnectionExt as _, CursorNotifyMask, GetCursorImageReply};
 use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _, EventMask, ImageFormat, ImageOrder};
 
-use super::Shape;
 use super::memory::Memory;
+use crate::capture::Shape;
+use crate::platform::linux::xserver::{self, Events};
 use crate::screen;
 use crate::stream::Stream;
-use crate::xserver::{self, Events};
 
 /// Captures the chosen screen until the stream is no longer wanted.
 pub fn run(mut stream: Stream) -> Result<(), String> {

@@ -5,7 +5,7 @@ mod wlr;
 
 use super::{Copied, Inbox};
 use crate::capture::Shared;
-use crate::compositor;
+use crate::platform::linux::compositor;
 
 /// Whether a compositor that offers these protocols has one for the clipboard.
 pub fn offered(protocols: &[String]) -> bool {

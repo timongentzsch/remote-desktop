@@ -18,9 +18,10 @@ fn words(command: &Command) -> OsString {
     joined
 }
 
-/// The C sources: the encoders behind stream/encode.rs, and PipeWire's stream behind capture/pipewire.rs.
+/// The C sources: the encoders behind stream/encode.rs, and on Linux PipeWire's stream behind
+/// platform/linux/capture/pipewire.rs.
 const ENCODERS: [&str; 3] = ["src/stream/encoder.c", "src/stream/x264.c", "src/stream/nvenc.c"];
-const PIPEWIRE: &str = "src/capture/pipewire_stream.c";
+const PIPEWIRE: &str = "src/platform/linux/capture/pipewire_stream.c";
 
 fn run(command: &mut Command) {
     let status = command.status().unwrap_or_else(|error| panic!("cannot run {command:?}: {error}"));
@@ -58,7 +59,13 @@ fn main() {
         .include(&build)
         .include("nv-codec-headers/include")
         .compile("encoder");
-    cc::Build::new().file(PIPEWIRE).include("pipewire/src").include("pipewire/spa/include").compile("pipewire_stream");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        cc::Build::new()
+            .file(PIPEWIRE)
+            .include("pipewire/src")
+            .include("pipewire/spa/include")
+            .compile("pipewire_stream");
+    }
     println!("cargo:rustc-link-search=native={}", build.display());
     println!("cargo:rustc-link-lib=static=x264");
 }

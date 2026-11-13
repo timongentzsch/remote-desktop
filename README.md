@@ -160,34 +160,29 @@ builds them and publishes them when a version tag is pushed.
     install.sh                 the one-line install: fetches the binary, runs `remote-desktop install`
     index.html                 the client: page, styles and script in one file
     fonts/                     its typeface, JetBrains Mono, which the host serves along
-    native/src/
-      main.rs, install.rs      the command line and the names it shares; install, uninstall, password
-      firewall.rs              the port in ufw or firewalld, for everyone or the tailnet only
+    native/src/                what is the same on every operating system:
+      main.rs                  the command line, and the names the rest shares
       server.rs                HTTPS and the client page, and who is answered
       session/                 one client's session: its login, threads and input, and its datagrams
-      virtual_screen.rs        a screen of the client window's size (Hyprland)
-      greeter.rs               the same host at the login screen, as the display manager's user
       outbox.rs, ws.rs         what waits to be sent to a client; WebSocket framing
       quic.rs, fec.rs          the UDP side that video takes; its spare datagrams against loss
       rate.rs                  the bitrate a connection is given, from how well frames get through
-      screen.rs                the desktop's screens, and where the pointer goes on the one shown
       tls.rs, certificate.rs   the encrypted connection; the certificate behind it
-      capture/                 the screen's picture, one module per way of getting it
-      stream/                  pictures to video: pacing, colour detail, the encoders, the FLV they go in
-      clipboard/               clipboard text in both directions, one module per kind of desktop
-      audio.rs, input.rs       sound as Opus; keyboard and pointer through uinput
-      compositor.rs, gnome.rs, xserver.rs
-                               the display servers' connections that the above share
-      fd.rs                    waiting on file descriptors, and waking a thread that does
+      capture.rs, screen.rs    what a session asks of a capture; the screens and where the pointer goes
+      stream/                  pictures to video: pacing, size, colour detail, the encoders, the FLV they go in
+      audio.rs                 the desktop's sound as Opus
+      platform/                what differs from one operating system to another, behind one surface (mod.rs)
+        linux/                 Wayland and X11 capture, PipeWire and PulseAudio, uinput, the clipboard,
+                               the login screen, install with systemd, ufw and firewalld, the virtual screen
     tests/                     the regression on every kind of desktop, and tools for measuring
 
-To extend it: another way of capturing a screen is a module in `capture/` with one function, `run`, that
-feeds a `Stream`; another encoder implements `encoder_ops` in `stream/encoder.h`; another desktop's
-clipboard is a module in `clipboard/`; another desktop's virtual screen is a module in `virtual_screen.rs`
-beside Hyprland's; and another kind of message gets its number in `ws.rs` and a handler in the client's table
-of them. The client and the host share a protocol but no code: each value they must agree on is named on both
-sides, with a note where the other side has it (`session/login.rs` for the login, `ws.rs`, `stream/flv.rs` and
-`quic.rs` for the binary ones).
+To extend it: another operating system is a module in `platform/` that provides the names `platform/mod.rs`
+lists; another way of capturing a screen on Linux is a module in `platform/linux/capture/` with one function,
+`run`, that feeds a `Stream`, and another desktop's clipboard one in `platform/linux/clipboard/`; another
+encoder implements `encoder_ops` in `stream/encoder.h`; and another kind of message gets its number in `ws.rs`
+and a handler in the client's table of them. The client and the host share a protocol but no code: each value
+they must agree on is named on both sides, with a note where the other side has it (`session/login.rs` for the
+login, `ws.rs`, `stream/flv.rs` and `quic.rs` for the binary ones).
 
 ## Licence
 

@@ -8,7 +8,7 @@ use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_frame_v1::{se
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 
 use super::{Capture, Protocol};
-use crate::compositor::bind_versions;
+use crate::platform::linux::compositor::bind_versions;
 
 /// The protocol's name, by which a compositor announces it.
 pub const PROTOCOL: &str = "zwlr_screencopy_manager_v1";

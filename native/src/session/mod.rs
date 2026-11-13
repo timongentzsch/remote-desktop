@@ -2,7 +2,6 @@
 //! input it sends back.
 
 use std::collections::HashSet;
-use std::fs;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -10,15 +9,16 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::capture::{self, Output, Shared};
-use crate::input::{Input, KEY_LEFTSHIFT};
+use crate::audio::Sound;
+use crate::capture::{Output, Shared};
 use crate::outbox::{Next, Outbox};
+use crate::platform::virtual_screen::{self, VirtualScreen};
+use crate::platform::{self, clipboard};
 use crate::quic::Link;
 use crate::rate::{self, Controller, Reading};
 use crate::server::Host;
 use crate::tls::Connection;
-use crate::virtual_screen::{self, VirtualScreen};
-use crate::{audio, clipboard, screen, ws};
+use crate::{screen, ws};
 
 mod datagrams;
 mod login;
@@ -40,12 +40,6 @@ const REPORT: Duration = Duration::from_secs(1);
 const LONGEST_ROUND_TRIP: i64 = 60_000;
 /// Where padding's noise begins (see `padding`); any number but zero does.
 const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
-/// The kernel's displays, whose power state says whether one sleeps, and how long one may take to wake and how
-/// often that is looked at.
-const DISPLAYS: &str = "/sys/class/drm";
-const WAKING: Duration = Duration::from_secs(3);
-const WAKE_LOOK: Duration = Duration::from_millis(100);
-
 /// What the client's messages tell the session's writer.
 struct FromClient {
     /// The highest bitrate it wants, in kbit/s.
@@ -70,7 +64,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
         return;
     }
     connection.set_patience(SILENCE_LIMIT);
-    wake_displays(&host.input);
+    platform::wake_displays(&host.input);
 
     // A client that asked to match its device is shown a screen of its window's size, where one can be made;
     // it lasts as long as the session.
@@ -135,7 +129,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
                         }
                     }
                 });
-                if let Err(reason) = capture::run(settings, shared, sink) {
+                if let Err(reason) = platform::capture(settings, shared, sink) {
                     warn!("capture ended: {reason}");
                 }
                 outbox.close();
@@ -158,7 +152,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
         let (outbox, shared) = (outbox.clone(), shared.clone());
         threads.push(thread::spawn(move || {
             let packet = Box::new(move |packet: &[u8]| outbox.push_audio([&[ws::SOUND], packet].concat()));
-            if let Err(reason) = audio::run(shared, packet) {
+            if let Err(reason) = Sound::new(packet).and_then(|mut sound| platform::record_sound(shared, &mut sound)) {
                 warn!("no sound: {reason}");
             }
         }));
@@ -415,26 +409,6 @@ fn padding(length: usize, noise: &mut u64) -> Vec<u8> {
         message.extend(noise.to_le_bytes());
     }
     message
-}
-
-/// Capture gets no frames from a sleeping display, and a key press wakes it.
-fn wake_displays(input: &Input) {
-    let asleep = || {
-        fs::read_dir(DISPLAYS).into_iter().flatten().flatten().any(|connector| {
-            let read = |name: &str| fs::read_to_string(connector.path().join(name)).unwrap_or_default();
-            read("status") == "connected\n" && read("dpms") != "On\n"
-        })
-    };
-    if asleep() {
-        input.key(KEY_LEFTSHIFT, true);
-        input.key(KEY_LEFTSHIFT, false);
-        for _ in 0..WAKING.as_millis() / WAKE_LOOK.as_millis() {
-            if !asleep() {
-                break;
-            }
-            thread::sleep(WAKE_LOOK);
-        }
-    }
 }
 
 #[cfg(test)]

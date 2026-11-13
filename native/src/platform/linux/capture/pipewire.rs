@@ -5,7 +5,7 @@ use std::ffi::c_int;
 use std::time::Duration;
 use std::{ptr, slice};
 
-use super::Shape;
+use crate::capture::Shape;
 use crate::stream::Stream;
 
 /// Feeds the pictures of PipeWire node `node` to the stream until the stream is no longer wanted or the

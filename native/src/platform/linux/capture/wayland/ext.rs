@@ -18,7 +18,7 @@ use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_captu
 };
 
 use super::{Capture, Pixels, Protocol};
-use crate::compositor::bind;
+use crate::platform::linux::compositor::bind;
 
 /// The protocol's name, by which a compositor announces it.
 pub const PROTOCOL: &str = "ext_image_copy_capture_manager_v1";

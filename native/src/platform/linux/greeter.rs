@@ -77,7 +77,7 @@ fn wait() -> Greeter {
         }
         let watching = Path::new(SESSIONS).is_dir() && watch >= 0;
         let patience = (looks_left > 0 || !watching).then_some(LOOK);
-        if crate::fd::wait_readable([watch], patience) == [true] {
+        if crate::platform::linux::fd::wait_readable([watch], patience) == [true] {
             let mut events = [0u8; 4096];
             unsafe { libc::read(watch, events.as_mut_ptr().cast(), events.len()) };
             looks_left = LOOKS;

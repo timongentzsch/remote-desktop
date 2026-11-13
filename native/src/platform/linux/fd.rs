@@ -14,6 +14,11 @@ pub fn wait_readable<const N: usize>(fds: [RawFd; N], limit: Option<Duration>) -
     polled.map(|polled| polled.revents != 0)
 }
 
+/// Waits until `socket` can be read, for up to `limit`, and says whether it can.
+pub fn socket_readable(socket: &impl AsRawFd, limit: Duration) -> bool {
+    wait_readable([socket.as_raw_fd()], Some(limit)) == [true]
+}
+
 /// A descriptor that one thread makes readable to wake another waiting on it (see `wait_readable`).
 pub struct Waker(OwnedFd);
 
@@ -29,6 +34,12 @@ impl Waker {
     pub fn wake(&self) {
         let one = 1u64.to_ne_bytes();
         unsafe { libc::write(self.0.as_raw_fd(), one.as_ptr().cast(), one.len()) };
+    }
+
+    /// Waits until `socket` can be read or `wake` is called, for up to `limit`, and takes back every `wake`.
+    pub fn wait(&self, socket: &impl AsRawFd, limit: Duration) {
+        wait_readable([socket.as_raw_fd(), self.fd()], Some(limit));
+        self.settle();
     }
 
     /// Takes back every `wake` so far.

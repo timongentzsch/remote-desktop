@@ -6,24 +6,27 @@ license = "GPL-2.0-or-later"
 
 [dependencies]
 bytes = "1"
-libc = "0.2"
 pic-scale = { version = "0.7.12", default-features = false, features = ["neon", "sse", "avx"] }
-pulseaudio = "0.3"
 quinn-proto = { version = "0.11", default-features = false, features = ["rustls-ring"] }
 rcgen = "0.14"
 ring = "0.17"
-rustbus = "0.19"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde_json = "1"
 sha1_smol = "1"
 time = "0.3"
 unsafe-libopus = "0.2"
+yuv = "0.8"
+
+# What the host needs on Linux alone (see src/platform/linux).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+pulseaudio = "0.3"
+rustbus = "0.19"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 x11rb = { version = "0.14", default-features = false, features = ["damage", "randr", "shm", "xfixes"] }
-yuv = "0.8"
 
 [build-dependencies]
 cc = "1"

@@ -16,7 +16,7 @@ use rustbus::wire::unmarshal::traits::Variant;
 
 use super::{Copied, Inbox, TEXT_TYPES, read_text};
 use crate::capture::Shared;
-use crate::gnome::{self, Service, unreadable};
+use crate::platform::linux::gnome::{self, Service, unreadable};
 
 pub const SERVICE: &str = "org.gnome.Mutter.RemoteDesktop";
 const SESSION: &str = "org.gnome.Mutter.RemoteDesktop.Session";

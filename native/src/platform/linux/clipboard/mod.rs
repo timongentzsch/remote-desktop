@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::capture::Shared;
-use crate::compositor;
-use crate::fd::{self, Waker};
+use crate::platform::linux::compositor;
+use crate::platform::linux::fd::{self, Waker};
 
 /// Longer clipboard contents are not passed on.
 const LIMIT: usize = 1 << 20;

@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use rustls::ServerConfig;
 
-use crate::input::Input;
+use crate::platform::{self, Input, virtual_screen};
 use crate::tls::Connection;
-use crate::{certificate, fail, install, quic, session, virtual_screen, ws};
+use crate::{certificate, fail, quic, session, ws};
 
 /// The client, compiled into the binary: path, content type, body.
 const PAGES: [(&str, &str, &[u8]); 5] = [
@@ -55,7 +55,7 @@ pub struct Host {
 impl Host {
     /// Reads the password and the certificate and creates the input devices.
     pub fn open() -> Arc<Self> {
-        let password = fs::read(install::password_path())
+        let password = fs::read(platform::password_path())
             .unwrap_or_else(|_| fail("no password is set; run `remote-desktop password`"))
             .trim_ascii()
             .to_vec();

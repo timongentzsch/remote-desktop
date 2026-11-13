@@ -12,7 +12,7 @@ use wayland_protocols_plasma::screencast::v1::client::zkde_screencast_stream_uns
 use wayland_protocols_plasma::screencast::v1::client::zkde_screencast_unstable_v1::ZkdeScreencastUnstableV1;
 
 use super::pipewire;
-use crate::compositor::{self, bind, lost};
+use crate::platform::linux::compositor::{self, bind, lost};
 use crate::stream::Stream;
 
 /// The protocol's name, by which a compositor announces it.

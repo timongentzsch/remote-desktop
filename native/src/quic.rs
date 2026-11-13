@@ -9,7 +9,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, ErrorKind};
 use std::net::UdpSocket;
-use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -27,7 +26,7 @@ use ring::rand::SecureRandom;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use crate::certificate::{self, RENEWAL};
-use crate::fd::{self, Waker};
+use crate::platform::Waker;
 use crate::rate::Mark;
 
 /// Browsers accept a certificate by its fingerprint alone, without anyone having to trust it first, if it is
@@ -538,8 +537,7 @@ fn serve(
     let mut due: Option<Instant> = None;
     loop {
         let patience = due.map_or(RENEWAL, |due| due.saturating_duration_since(Instant::now())).min(RENEWAL);
-        fd::wait_readable([socket.as_raw_fd(), shared.waker.fd()], Some(patience));
-        shared.waker.settle();
+        shared.waker.wait(&socket, patience);
         let now = Instant::now();
         loop {
             let (size, remote) = match socket.recv_from(&mut packet) {

@@ -11,7 +11,7 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use time::{Duration, OffsetDateTime};
 
-use crate::install::{data_directory, write_private};
+use crate::platform::{self, data_directory, write_private};
 
 /// How often the certificates are looked at again: Tailscale's renewed when it is due, and the UDP side's own
 /// made anew (see quic.rs).
@@ -89,11 +89,7 @@ fn fetch_tailscale_certificate(name: &str) -> Result<(), String> {
 
 /// The names and addresses clients may use for this machine, which the certificate has to list.
 pub fn names() -> Vec<String> {
-    let mut buffer = [0u8; 256];
-    let host = match unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len() - 1) } {
-        0 => String::from_utf8_lossy(&buffer[..buffer.iter().position(|&byte| byte == 0).unwrap_or(0)]).into_owned(),
-        _ => String::new(),
-    };
+    let host = platform::hostname();
     let mut names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
     if !host.is_empty() {
         names.extend([format!("{host}.local"), host]);

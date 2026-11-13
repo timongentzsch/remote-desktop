@@ -6,7 +6,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use crate::{NAME, PORT, certificate, fail, firewall};
+use crate::platform::linux::firewall;
+use crate::{NAME, PORT, certificate, fail};
 
 const BINARY: &str = "/usr/local/bin/remote-desktop";
 /// The user service that runs the host in the desktop session, and the system service at the login screen.
