@@ -1,14 +1,23 @@
 /* The encoders behind one interface, so that the Rust side depends neither on which one is in use nor on the
    layout of their structs: x264 in x264.c, and the GPU's encoder in nvenc.c on NVIDIA's and vaapi.c on
    Intel's and AMD's. */
+#include <stddef.h>
 #include "encoder.h"
+#include "nal.h"
 
-/* Opens the GPU's encoder if `gpu` is set, x264 otherwise. NULL if that one cannot be used. */
+/* Opens the GPU's encoder if `gpu` is set, x264 otherwise. NULL if that one cannot be used. On the GPU, HEVC
+   where the client decodes it and the GPU has it, H.264 otherwise. */
 struct encoder *encoder_open(const struct encoder_setup *setup, int gpu)
 {
-    struct encoder *encoder = !gpu ? software_open(setup) : nvenc_open(setup);
+    struct encoder *encoder = NULL;
+    if (!gpu)
+        encoder = software_open(setup);
+    if (gpu && setup->hevc)
+        encoder = vaapi_open(setup, CODEC_HEVC);
     if (gpu && !encoder)
-        encoder = vaapi_open(setup);
+        encoder = nvenc_open(setup);
+    if (gpu && !encoder)
+        encoder = vaapi_open(setup, CODEC_H264);
     if (encoder)
         encoder->fps = setup->fps;
     return encoder;
@@ -20,10 +29,17 @@ uint8_t *encoder_plane(struct encoder *encoder, int index, int *stride)
     return encoder->ops->plane(encoder, index, stride);
 }
 
-/* Points sps/pps at the raw parameter sets (without start code or length prefix). Returns 0 on success. */
-int encoder_headers(struct encoder *encoder, uint8_t **sps, int *sps_size, uint8_t **pps, int *pps_size)
+/* Points `sets` at the raw parameter sets (see encoder_ops.headers), of which there are room for
+   MOST_PARAMETER_SETS. Returns how many there are, or -1. */
+int encoder_headers(struct encoder *encoder, uint8_t **sets, int *sizes)
 {
-    return encoder->ops->headers(encoder, sps, sps_size, pps, pps_size);
+    return encoder->ops->headers(encoder, sets, sizes);
+}
+
+/* Which codec it encodes: CODEC_H264 or CODEC_HEVC. */
+int encoder_codec(struct encoder *encoder)
+{
+    return encoder->codec;
 }
 
 /* Encodes the picture in the planes. Returns the size of the access unit at *data (length-prefixed NAL

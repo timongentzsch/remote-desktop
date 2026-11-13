@@ -6,6 +6,8 @@ use std::ptr;
 use std::slice;
 use std::sync::OnceLock;
 
+use super::record;
+
 #[repr(C)]
 struct Raw {
     _opaque: [u8; 0],
@@ -14,13 +16,8 @@ struct Raw {
 unsafe extern "C" {
     fn encoder_open(setup: *const Setup, gpu: c_int) -> *mut Raw;
     fn encoder_plane(encoder: *mut Raw, index: c_int, stride: *mut c_int) -> *mut u8;
-    fn encoder_headers(
-        encoder: *mut Raw,
-        sps: *mut *mut u8,
-        sps_size: *mut c_int,
-        pps: *mut *mut u8,
-        pps_size: *mut c_int,
-    ) -> c_int;
+    fn encoder_headers(encoder: *mut Raw, sets: *mut *mut u8, sizes: *mut c_int) -> c_int;
+    fn encoder_codec(encoder: *mut Raw) -> c_int;
     fn encoder_encode(
         encoder: *mut Raw,
         fresh: c_int,
@@ -51,6 +48,8 @@ pub struct Setup {
     pub full_chroma: c_int,
     /// For x264: 0 is the least work for a frame, `EFFORTS - 1` the most.
     pub effort: c_int,
+    /// The client decodes HEVC, which the GPU's encoder then uses where it has it.
+    pub hevc: c_int,
 }
 
 impl Setup {
@@ -64,9 +63,29 @@ impl Setup {
             quality: MOVING_QUALITY as c_int,
             full_chroma: full_chroma as c_int,
             effort: effort as c_int,
+            hevc: 0,
         }
     }
 }
+
+/// What the stream is encoded as, as nal.h numbers it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Codec {
+    H264,
+    Hevc,
+}
+
+impl Codec {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::H264 => "H.264",
+            Self::Hevc => "HEVC",
+        }
+    }
+}
+
+/// The most parameter sets a codec has, as encoder.h says: HEVC's VPS, SPS and PPS.
+const MOST_PARAMETER_SETS: usize = 3;
 
 /// One plane of the picture to encode: its bytes and the length of a row in them.
 pub struct Plane<'a> {
@@ -116,6 +135,7 @@ pub struct Encoder {
     /// Whether the GPU does the encoding, and which encoder it is: "x264", "nvenc" or "vaapi".
     pub gpu: bool,
     pub name: &'static str,
+    pub codec: Codec,
 }
 
 impl Encoder {
@@ -141,7 +161,8 @@ impl Encoder {
         }
         // The name is a string constant of the C side's.
         let name = unsafe { CStr::from_ptr(encoder_name(raw)) }.to_str().unwrap_or("?");
-        Some(Self { raw, width, height, full_chroma, gpu, name })
+        let codec = if unsafe { encoder_codec(raw) } == 1 { Codec::Hevc } else { Codec::H264 };
+        Some(Self { raw, width, height, full_chroma, gpu, name, codec })
     }
 
     /// The Y, U and V planes to fill before calling `encode`.
@@ -162,26 +183,21 @@ impl Encoder {
         })
     }
 
-    /// The decoder configuration record (avcC) describing this stream.
+    /// The decoder configuration record describing this stream (see record.rs).
     pub fn configuration(&mut self) -> Vec<u8> {
-        let (mut sps, mut pps) = (ptr::null_mut(), ptr::null_mut());
-        let (mut sps_size, mut pps_size) = (0, 0);
-        let status = unsafe { encoder_headers(self.raw, &mut sps, &mut sps_size, &mut pps, &mut pps_size) };
-        assert!(status == 0 && !sps.is_null() && !pps.is_null(), "the encoder returned no parameter sets");
-        let (sps, pps) =
-            unsafe { (slice::from_raw_parts(sps, sps_size as usize), slice::from_raw_parts(pps, pps_size as usize)) };
-
-        let mut record = vec![1, sps[1], sps[2], sps[3], 0xFF, 0xE1];
-        record.extend((sps.len() as u16).to_be_bytes());
-        record.extend(sps);
-        record.push(1);
-        record.extend((pps.len() as u16).to_be_bytes());
-        record.extend(pps);
-        if matches!(sps[1], 100 | 110 | 122 | 244) {
-            // High profiles also state the chroma format (1 = 4:2:0, 3 = 4:4:4) and 8-bit depth.
-            record.extend([0xFC | if self.full_chroma { 3 } else { 1 }, 0xF8, 0xF8, 0]);
+        let (mut sets, mut sizes) = ([ptr::null_mut(); MOST_PARAMETER_SETS], [0; MOST_PARAMETER_SETS]);
+        let count = unsafe { encoder_headers(self.raw, sets.as_mut_ptr(), sizes.as_mut_ptr()) };
+        let expected: usize = if self.codec == Codec::Hevc { 3 } else { 2 };
+        assert!(
+            count == expected as c_int && sets[..expected].iter().all(|set| !set.is_null()),
+            "the encoder returned no parameter sets"
+        );
+        // The encoder keeps them while it is open.
+        let set = |at: usize| unsafe { slice::from_raw_parts(sets[at], sizes[at] as usize) };
+        match self.codec {
+            Codec::H264 => record::avc(set(0), set(1), self.full_chroma),
+            Codec::Hevc => record::hevc(set(0), set(1), set(2)),
         }
-        record
     }
 
     /// Tells the running encoder the bitrate cap and how many frames a second it will get from now on (a frame
@@ -290,6 +306,26 @@ mod tests {
         assert!(open().is_none(), "a second encoder while the first is open");
         drop(first);
         assert!(open().is_some(), "an encoder once the first is closed");
+    }
+
+    /// For a client that decodes HEVC, a GPU that encodes it does: an IDR, then frames that refer to the one before,
+    /// each a single slice, and a record that lists the three parameter sets.
+    #[test]
+    fn the_gpu_encodes_hevc_for_a_client_that_decodes_it() {
+        let _alone = GPU.lock();
+        let setup = Setup { hevc: 1, ..Setup::new(640, 480, 60, 2000, false, 0) };
+        let Some(mut encoder) = Encoder::open_on(true, setup).filter(|encoder| encoder.codec == Codec::Hevc) else {
+            return; // this machine's GPU does not encode HEVC
+        };
+        let record = encoder.configuration();
+        assert_eq!((record[0], record[22]), (1, 3), "an hvcC record with three arrays");
+        draw_detail(&mut encoder);
+        // HEVC's NAL unit type is in the first byte after the length: IDR_W_RADL is 19, TRAIL_R 1.
+        for (frame, expected_type) in [(0, 19), (1, 1), (2, 1)] {
+            let encoded = encoder.encode(false).expect("a frame in gives a frame out");
+            assert_eq!((encoded.unit[4] >> 1) & 0x3F, expected_type, "frame {frame}");
+            assert_eq!(encoded.keyframe, frame == 0);
+        }
     }
 
     /// A bitrate cap forces a detailed picture out coarse at first. Encoding it again at the pace of refinement

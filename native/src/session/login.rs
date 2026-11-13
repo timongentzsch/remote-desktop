@@ -60,6 +60,7 @@ impl Login {
             height,
             auto_size: height.is_none() && !matches!(size, Some(SIZE_HOST | SIZE_CLIENT)),
             screen: login["screen"].as_str().filter(|name| !name.is_empty()).map(str::to_owned),
+            hevc: login["hevc"] == true,
         };
         Self {
             password: login["password"].as_str().unwrap_or("").to_owned(),

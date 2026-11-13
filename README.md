@@ -6,10 +6,11 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
   there. There is no client program.
 - **One file on the host, for the session you are already using.** The same binary serves GNOME, KDE,
   Hyprland, Sway and X11 desktops, and sets itself up with one command. It is built for x86_64 and aarch64.
-- **Complete without configuration.** The screen as H.264, the sound as Opus, the clipboard, keyboard and
-  pointer, all encrypted. The GPU's hardware encoder is used where there is one: NVIDIA's (driver 470 or
-  newer, one viewer at a time), or Intel's and AMD's through VA-API (with their VA-API driver, such as
-  intel-media-driver); the built-in x264 everywhere else.
+- **Complete without configuration.** The screen as H.264, or as HEVC where both ends can, the sound as Opus,
+  the clipboard, keyboard and pointer, all encrypted. The GPU's hardware encoder is used where there is one:
+  NVIDIA's (driver 470 or newer, one viewer at a time), or Intel's and AMD's through VA-API (with their
+  VA-API driver, such as intel-media-driver), which also encodes HEVC for a browser that decodes it; the
+  built-in x264 everywhere else.
 - **Nobody in between.** The browser talks to your machine directly: no account, no relay, no vendor's
   server.
 - **Made to feel local.** A still screen costs nothing and is sharpened while it stands still, a busy one is

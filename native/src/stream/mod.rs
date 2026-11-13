@@ -1,6 +1,7 @@
 //! Turns pictures of the screen into the video stream: each one is encoded, a still one is refined, and the
 //! result is wrapped in FLV video tags for the sink. Where the pictures come from is the capture's business.
 
+use std::ffi::c_int;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -8,12 +9,13 @@ use std::time::{Duration, Instant};
 mod convert;
 mod encode;
 mod flv;
+mod record;
 
 pub use encode::{PROBE, probe};
 
 use crate::capture::{HEIGHTS, Output, Settings, Shape, Shared, Sink};
 use convert::Shrinker;
-use encode::{EFFORTS, Encoder, MOVING_QUALITY, STILL_QUALITY, Setup};
+use encode::{Codec, EFFORTS, Encoder, MOVING_QUALITY, STILL_QUALITY, Setup};
 use flv::Packet;
 
 /// How many times a second a still picture is encoded again to bring it up to the quality target. Far fewer
@@ -193,6 +195,8 @@ pub struct Stream {
     size_rest: Rest,
     /// Set once the GPU's encoder, which takes no 4:4:4, was chosen over full colour detail.
     full_chroma_unavailable: bool,
+    /// What the encoder that is open encodes.
+    codec: Codec,
     /// The bitrate cap in kbit/s, the frames a second and the quality target the encoder was last told.
     rate: (u32, u32, u32),
     /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
@@ -226,6 +230,7 @@ impl Stream {
             chroma_rest: Rest::new(now),
             size_rest: Rest::new(now),
             full_chroma_unavailable: false,
+            codec: Codec::H264,
             rate: (0, 0, 0),
             refinements_left: 0,
             still: Still::default(),
@@ -364,15 +369,19 @@ impl Stream {
         let shrinking = self.settings.height.is_some_and(|most| self.screen.1 > most);
         self.shrinker = if shrinking { Some(Shrinker::new(self.screen, (width, height))?) } else { None };
         let (fps, kbps, full_chroma) = (self.settings.fps, self.settings.kbps, self.settings.full_chroma);
-        let setup = Setup::new(width, height, fps, kbps, full_chroma, self.effort);
+        let setup = Setup {
+            hevc: self.settings.hevc as c_int,
+            ..Setup::new(width, height, fps, kbps, full_chroma, self.effort)
+        };
         let mut encoder = Encoder::open(setup, self.settings.auto_chroma).ok_or("could not open the encoder")?;
+        self.codec = encoder.codec;
         if full_chroma && !encoder.full_chroma {
             // The GPU's encoder took the picture at 4:2:0: full colour detail is not tried again with it.
             (self.settings.full_chroma, self.full_chroma_unavailable) = (false, true);
         }
         self.rate = (kbps, fps, MOVING_QUALITY);
         let how = match (encoder.gpu, self.effort) {
-            (true, _) => format!("on the GPU with {}", encoder.name),
+            (true, _) => format!("as {} on the GPU with {}", encoder.codec.name(), encoder.name),
             (false, effort) => format!("with x264, effort {effort} of {}", EFFORTS - 1),
         };
         let colour = if encoder.full_chroma { "4:4:4" } else { "4:2:0" };
@@ -428,7 +437,7 @@ impl Stream {
 
     /// Sends one video tag, timed from the stream's start.
     fn send_tag(&mut self, packet: Packet, payload: &[u8]) {
-        let tag = flv::tag(packet, self.started.elapsed().as_millis() as u32, payload);
+        let tag = flv::tag(packet, self.codec, self.started.elapsed().as_millis() as u32, payload);
         self.send(&tag);
     }
 

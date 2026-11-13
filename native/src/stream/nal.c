@@ -27,7 +27,20 @@ int nal_unit(const uint8_t *bytes, int size, int code, int *begin, int *next)
     return end - *begin;
 }
 
-int nal_length_prefixed(struct nal_units *units, const uint8_t *bytes, int size)
+int nal_type(const uint8_t *unit, int codec)
+{
+    return codec == CODEC_HEVC ? (unit[0] >> 1) & 0x3F : unit[0] & 0x1F;
+}
+
+/* Whether a NAL unit of `type` is one the stream carries elsewhere or not at all. */
+static int left_out(int type, int codec)
+{
+    if (codec == CODEC_HEVC)
+        return type == NAL_HEVC_VPS || type == NAL_HEVC_SPS || type == NAL_HEVC_PPS || type == NAL_HEVC_AUD;
+    return type == NAL_SPS || type == NAL_PPS || type == NAL_AUD;
+}
+
+int nal_length_prefixed(struct nal_units *units, const uint8_t *bytes, int size, int codec)
 {
     /* A three-byte start code becomes a four-byte length, so each unit can grow by one byte. */
     int needed = size + size / 3 + LENGTH_PREFIX;
@@ -41,8 +54,7 @@ int nal_length_prefixed(struct nal_units *units, const uint8_t *bytes, int size)
     int written = 0;
     for (int code = nal_start_code(bytes, size, 0), begin, next; code < size; code = next) {
         int length = nal_unit(bytes, size, code, &begin, &next);
-        int type = length ? bytes[begin] & 0x1F : 0;
-        if (!length || type == NAL_SPS || type == NAL_PPS || type == NAL_AUD)
+        if (!length || left_out(nal_type(bytes + begin, codec), codec))
             continue;
         uint8_t *out = units->bytes + written;
         out[0] = length >> 24;
@@ -94,16 +106,22 @@ void bits_trailing(struct bits *bits)
         bits_put(bits, 0, 1);
 }
 
-int nal_write(uint8_t *out, int capacity, int type, const struct bits *rbsp)
+int nal_write(uint8_t *out, int capacity, int codec, int type, const struct bits *rbsp)
 {
     int size = rbsp->length / 8, written = 0;
     /* Each RBSP byte may need an emulation prevention byte in front. */
-    if (capacity < START_CODE_LENGTH + 1 + 2 * size)
+    if (capacity < START_CODE_LENGTH + 2 + 2 * size)
         return -1;
     static const uint8_t start_code[START_CODE_LENGTH] = { 0, 0, 0, 1 };
     memcpy(out, start_code, START_CODE_LENGTH);
     written = START_CODE_LENGTH;
-    out[written++] = REFERENCED | type;
+    if (codec == CODEC_HEVC) {
+        /* Its type, layer 0, and temporal layer 0 plus one. */
+        out[written++] = type << 1;
+        out[written++] = 1;
+    } else {
+        out[written++] = REFERENCED | type;
+    }
     /* Two zero bytes may not be followed by 00 to 03 inside a NAL unit: a 03 goes between. */
     for (int at = 0, zeros = 0; at < size; at++) {
         if (zeros >= 2 && rbsp->bytes[at] <= 3) {

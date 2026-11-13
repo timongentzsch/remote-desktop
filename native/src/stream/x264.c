@@ -78,7 +78,7 @@ static uint8_t *software_plane(struct encoder *base, int index, int *stride)
     return encoder->picture.img.plane[index];
 }
 
-static int software_headers(struct encoder *base, uint8_t **sps, int *sps_size, uint8_t **pps, int *pps_size)
+static int software_headers(struct encoder *base, uint8_t **sets, int *sizes)
 {
     struct software *encoder = (struct software *)base;
     x264_nal_t *nal;
@@ -86,15 +86,14 @@ static int software_headers(struct encoder *base, uint8_t **sps, int *sps_size, 
     if (x264_encoder_headers(encoder->x264, &nal, &count) < 0)
         return -1;
     for (int i = 0; i < count; i++) {
-        if (nal[i].i_type == NAL_SPS) {
-            *sps = nal[i].p_payload + 4;
-            *sps_size = nal[i].i_payload - 4;
-        } else if (nal[i].i_type == NAL_PPS) {
-            *pps = nal[i].p_payload + 4;
-            *pps_size = nal[i].i_payload - 4;
+        /* After the four-byte start code; SPS first, then PPS. */
+        int at = nal[i].i_type == NAL_SPS ? 0 : nal[i].i_type == NAL_PPS ? 1 : -1;
+        if (at >= 0) {
+            sets[at] = nal[i].p_payload + 4;
+            sizes[at] = nal[i].i_payload - 4;
         }
     }
-    return 0;
+    return 2;
 }
 
 static int software_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *coarse)

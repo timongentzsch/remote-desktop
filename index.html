@@ -257,6 +257,8 @@ const SAVED = ['bitrate', 'patience', 'fps', 'size', 'chroma', 'cursor', 'sound'
 // data, size again:4]. Video's tag type is its kind.
 const PADDING = 0, POINTER = 7, SOUND = 8, VIDEO = 9;
 const FLV_SIGNATURE = 0x46, FLV_HEADER = 13, TAG_HEAD = 11, TAG_TAIL = 4;
+// A video tag's codec, in its first byte's low four bits: H.264, or HEVC (stream/flv.rs).
+const AVC = 7, HEVC = 12;
 // Sound as audio.rs encodes it, and the range pointer positions are told in (input.rs's ABS_RANGE).
 const SOUND_RATE = 48000, SOUND_CHANNELS = 2;
 const POINTER_RANGE = 65535;
@@ -273,9 +275,34 @@ const send = (...message) => socket?.readyState === WebSocket.OPEN && socket.sen
 
 const context = canvas.getContext('2d', { alpha: false, desynchronized: true });  // skip compositor queueing where supported
 
-// Decodes the stream and draws it. `failed` is called if the decoder gives up.
+// Whether this browser decodes HEVC, which the host then sends where its GPU encodes it (stream/vaapi_hevc.c),
+// asked of it as the stream's own codec string. A decoder that fails on HEVC after all rules it out for the
+// connections that follow.
+const HEVC_PROBE = 'hvc1.1.6.L150.B0';
+let decodesHevc = (async () => {
+  try {
+    return (await VideoDecoder.isConfigSupported({ codec: HEVC_PROBE, optimizeForLatency: true })).supported === true;
+  } catch {
+    return false;
+  }
+})();
+
+// The codec string of an HEVC stream, from its hvcC record (stream/record.rs): the profile, the compatibility
+// flags in reverse bit order, the tier and level, and the constraint flags without the zero bytes at their end.
+function hevcCodec(record) {
+  const space = ['', 'A', 'B', 'C'][record[1] >> 6], tier = record[1] & 0x20 ? 'H' : 'L', profile = record[1] & 0x1F;
+  const compatibility = (record[2] << 24 | record[3] << 16 | record[4] << 8 | record[5]) >>> 0;
+  let reversed = 0;
+  for (let bit = 0; bit < 32; bit++) reversed = (reversed << 1 | (compatibility >>> bit & 1)) >>> 0;
+  const constraints = [...record.subarray(6, 12)];
+  while (constraints.length && !constraints.at(-1)) constraints.pop();
+  const hex = value => value.toString(16).toUpperCase();
+  return [`hvc1.${space}${profile}`, hex(reversed), `${tier}${record[12]}`, ...constraints.map(hex)].join('.');
+}
+
+// Decodes the stream and draws it. `failed` is called if the decoder gives up, saying whether on HEVC.
 function videoPlayer(failed) {
-  let pending = new Uint8Array(0), frames = 0, decodeTime = 0;
+  let pending = new Uint8Array(0), frames = 0, decodeTime = 0, codec = AVC;
   const submitted = [];  // when each frame still inside the decoder was handed to it
   const decoder = new VideoDecoder({
     output(frame) {
@@ -289,7 +316,7 @@ function videoPlayer(failed) {
       context.drawImage(frame, 0, 0);
       frame.close();
     },
-    error: failed,
+    error: () => failed(codec === HEVC),
   });
   return {
     // Takes the next piece of the stream, however the network cut it up. The stream is FLV: a 13-byte header
@@ -304,10 +331,13 @@ function videoPlayer(failed) {
         const size = stream[at + 1] << 16 | stream[at + 2] << 8 | stream[at + 3];
         if (stream.length < at + TAG_HEAD + size + TAG_TAIL) break;  // also while the tag head is incomplete
         const data = stream.subarray(at + TAG_HEAD, at + TAG_HEAD + size);
-        if (stream[at] === VIDEO && data[1] === 0) {         // H.264 decoder configuration (avcC)
-          const profile = [...data.subarray(6, 9)].map(byte => byte.toString(16).padStart(2, '0')).join('');
-          colourDetail = data[6] === 244 ? 'full' : 'reduced';  // High 4:4:4 Predictive keeps it full
-          decoder.configure({ codec: 'avc1.' + profile, description: data.slice(5), optimizeForLatency: true });
+        if (stream[at] === VIDEO && data[1] === 0) {         // the decoder configuration: avcC or hvcC
+          const record = data.slice(5);
+          codec = data[0] & 0x0F;
+          // H.264's High 4:4:4 Predictive profile keeps full colour detail; HEVC is sent as 4:2:0 only.
+          colourDetail = codec === AVC && record[1] === 244 ? 'full' : 'reduced';
+          const avc = () => 'avc1.' + [...record.subarray(1, 4)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+          decoder.configure({ codec: codec === HEVC ? hevcCodec(record) : avc(), description: record, optimizeForLatency: true });
         } else if (stream[at] === VIDEO) {
           submitted.push(performance.now());
           decoder.decode(new EncodedVideoChunk({
@@ -675,7 +705,10 @@ function connect() {
   leaving = false;
   document.body.classList.toggle('remote-cursor', settings.cursor.value === 'yes');
   const ws = socket = new WebSocket('/ws');
-  const video = videoPlayer(() => ws.close()), sound = soundPlayer();
+  const video = videoPlayer(onHevc => {
+    if (onHevc) decodesHevc = Promise.resolve(false);
+    ws.close();
+  }), sound = soundPlayer();
   let live = false;  // whether the stream has begun, which is what shows that the login was accepted
   let bytes = 0, received = 0, roundTrip = 0, ticks = 0;  // `received` counts all that arrived
   let host = { encode: 0, send: 0, kbps: 0, heldBack: false };  // what the host reports once a second
@@ -763,9 +796,13 @@ function connect() {
     },
   };
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => ws.send(JSON.stringify({
-    password: login.password.value, window: windowSize(), ...Object.fromEntries(new FormData(settings)),
-  }));
+  ws.onopen = async () => {
+    const hello = {
+      password: login.password.value, window: windowSize(), hevc: await decodesHevc,
+      ...Object.fromEntries(new FormData(settings)),
+    };
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(hello));
+  };
   ws.onmessage = event => {
     received += event.data.byteLength ?? event.data.length;
     if (typeof event.data === 'string') {

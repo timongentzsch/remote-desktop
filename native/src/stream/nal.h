@@ -1,15 +1,23 @@
-/* H.264's NAL units: finding them where an encoder writes them after start codes, rewriting them with their
-   length in front as the stream carries them (see flv.rs), and writing the parameter sets an encoder that
-   does not make its own needs from its caller. */
+/* NAL units of H.264 and HEVC: finding them where an encoder writes them after start codes, rewriting them
+   with their length in front as the stream carries them (see flv.rs), and writing the parameter sets an
+   encoder that does not make its own needs from its caller. */
 #ifndef NAL_H
 #define NAL_H
 
 #include <stdint.h>
 
-/* NAL unit types (H.264, table 7-1). */
+/* The codecs, as encoders say which they encode (encoder.h) and stream/encode.rs takes it. */
+#define CODEC_H264 0
+#define CODEC_HEVC 1
+
+/* NAL unit types: H.264's (table 7-1) and HEVC's (table 7-1). */
 #define NAL_SPS 7
 #define NAL_PPS 8
 #define NAL_AUD 9
+#define NAL_HEVC_VPS 32
+#define NAL_HEVC_SPS 33
+#define NAL_HEVC_PPS 34
+#define NAL_HEVC_AUD 35
 
 /* Where the next start code (00 00 01) at or after `from` begins, or `size` if there is none. */
 int nal_start_code(const uint8_t *bytes, int size, int from);
@@ -22,10 +30,12 @@ struct nal_units {
     uint8_t *bytes;
     int capacity;
 };
-/* Rewrites `bytes`, NAL units after start codes, into `units` with each one's length in front, leaving out
-   parameter sets and access unit delimiters: the stream carries the former in its decoder configuration and
-   needs none of the latter. Returns the size, or -1 without memory. */
-int nal_length_prefixed(struct nal_units *units, const uint8_t *bytes, int size);
+/* The type of the NAL unit whose header begins at `unit`, in `codec`. */
+int nal_type(const uint8_t *unit, int codec);
+/* Rewrites `bytes`, NAL units of `codec` after start codes, into `units` with each one's length in front,
+   leaving out parameter sets and access unit delimiters: the stream carries the former in its decoder
+   configuration and needs none of the latter. Returns the size, or -1 without memory. */
+int nal_length_prefixed(struct nal_units *units, const uint8_t *bytes, int size, int codec);
 void nal_units_free(struct nal_units *units);
 
 /* An RBSP being written, most significant bit first; large enough for parameter sets. */
@@ -41,8 +51,8 @@ void bits_put_se(struct bits *bits, int32_t value);
 /* Ends the RBSP: a one, then zeros to the end of the byte. */
 void bits_trailing(struct bits *bits);
 
-/* Writes `rbsp` into `out` as a NAL unit of `type` that is referred to: a four-byte start code, the header
-   byte and the RBSP with emulation prevention. Returns the length, or -1 if `capacity` is too small. */
-int nal_write(uint8_t *out, int capacity, int type, const struct bits *rbsp);
+/* Writes `rbsp` into `out` as a NAL unit of `codec` and `type` that is referred to: a four-byte start code,
+   the header and the RBSP with emulation prevention. Returns the length, or -1 if `capacity` is too small. */
+int nal_write(uint8_t *out, int capacity, int codec, int type, const struct bits *rbsp);
 
 #endif

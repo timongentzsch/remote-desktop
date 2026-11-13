@@ -1,21 +1,23 @@
-/* Hardware H.264 encoding through VA-API, on Intel's and AMD's GPUs. libva is loaded at run time, so the
-   binary needs it neither to build nor to start; where it is missing, or no GPU here encodes H.264 as this
-   file needs, vaapi_open fails and the caller uses another encoder.
+/* Hardware encoding through VA-API, on Intel's and AMD's GPUs: H.264 (vaapi_h264.c), and HEVC (vaapi_hevc.c)
+   for a client that decodes it. libva is loaded at run time, so the binary needs it neither to build nor to
+   start; where it is missing, or no GPU here encodes as these files need, vaapi_open fails and the caller uses
+   another encoder.
 
-   VA-API encodes what it is told to: this file writes the stream's parameter sets itself, which the stream
-   needs for its decoder configuration anyway, and gives the driver every frame's picture and slice. Each frame
-   refers to the one before; the first, and one a client needs to begin with, is an IDR. Only 4:2:0.
+   VA-API encodes what it is told to: the codecs' files write the stream's parameter sets themselves, which the
+   stream needs for its decoder configuration anyway, and give the driver every frame's picture and slice. Each
+   frame refers to the one before; the first, and one a client needs to begin with, is an IDR. Only 4:2:0.
 
-   The bitrate is this file's to keep, around a constant quantiser: the drivers' own rate controls that aim
-   for a quality under a cap fell well short of the quality (Intel's QVBR began at quantiser 48 where 20 was
-   asked for), and left an unchanged picture as it was where it was to be refined. Each frame is given the
-   quality target's quantiser unless the frames before it have used up what the cap allows; see `choose_qp`. */
+   The bitrate is this file's to keep, around a constant quantiser: the drivers' own rate controls that aim for
+   a quality under a cap fell well short of the quality (Intel's QVBR began at quantiser 48 where 20 was asked
+   for), and left an unchanged picture as it was where it was to be refined. Each frame is given the quality
+   target's quantiser unless the frames before it have used up what the cap allows; see `choose_qp`. */
 #include "encoder.h"
 
 #ifndef __linux__
-struct encoder *vaapi_open(const struct encoder_setup *setup)
+struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
 {
     (void)setup;
+    (void)codec;
     return NULL;
 }
 #else
@@ -27,41 +29,22 @@ struct encoder *vaapi_open(const struct encoder_setup *setup)
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <va/va.h>
-#include "nal.h"
+#include "vaapi.h"
 
 /* The render nodes looked at for a GPU that encodes: /dev/dri/renderD128 and the ones after it. */
 #define RENDER_FIRST 128
 #define RENDER_NODES 8
-#define PROFILE VAProfileH264High
 #define ENTRYPOINT VAEntrypointEncSlice
-/* H.264 level 5.2: pictures of up to 36864 macroblocks, 4096x2304. */
-#define LEVEL 52
-#define MOST_MACROBLOCKS 36864
-#define MACROBLOCK 16
-/* The frame number counts up to 2^16 before it wraps; frames have nothing to say with it but their order. */
-#define LOG2_MAX_FRAME_NUM 16
-/* No IDR comes unasked: the driver is given one as long a period as it takes. */
-#define NO_PERIOD 0x7FFFFFFF
-/* H.264's coarsest quantiser; and how much smaller a frame comes out a quantiser step coarser, about: six
-   steps halve it, so 2^(1/6). */
+/* The coarsest quantiser; and how much smaller a frame comes out a quantiser step coarser, about: six steps
+   halve it, so 2^(1/6). */
 #define MOST_QP 51
 #define QP_STEP 1.12246
 /* How many steps finer than the last frame's the next frame's quantiser may be. Refining a still picture, a
    frame's size at a finer quantiser depends on how much finer it is than what the picture has, which the last
    frame's size does not foresee; a large step would come out too large for the cap and be thrown away whole. */
 #define MOST_QP_FALL 2
-/* The driver's speed against quality, 1 the best and 7 the fastest. */
-#define SPEED 4
-/* The picture's quantiser before the rate control adjusts it, as PPS and pictures state it. */
-#define INITIAL_QP 26
-/* Slice types (H.264, table 7-6). */
-#define SLICE_P 0
-#define SLICE_I 2
-/* Surfaces: the picture to encode, and two the driver reconstructs frames into, the one being made and the
-   one it refers to. */
-#define INPUT 0
-#define SURFACES 3
+#define START_CODE_LENGTH 4
+#define MOST_BUFFERS 16
 
 #define FUNCTIONS(F) \
     F(vaInitialize) F(vaTerminate) F(vaSetErrorCallback) F(vaSetInfoCallback) F(vaGetConfigAttributes) \
@@ -83,30 +66,6 @@ static pthread_once_t once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t calls = PTHREAD_MUTEX_INITIALIZER;
 static int loaded;
 
-struct vaapi {
-    struct encoder base;
-    VAConfigID config;
-    VAContextID context;
-    VASurfaceID surfaces[SURFACES];
-    VABufferID coded;
-    int width, height, width_mbs, height_mbs;
-    int kbps, buffer_kbits, quality;
-    /* What the cap allows to be sent now, in bits: it fills by the cap's share of each frame up to the size of
-       the buffer, and each frame empties it by its size. And the quantiser and size of the last frame. */
-    double allowance;
-    int last_qp, last_bits;
-    /* Counted from the last IDR, which is numbered by idr_id; reference is the surface the last frame was
-       reconstructed into, 0 before the first. */
-    uint32_t frame_num, frames, idr_id;
-    int reference;
-    /* The picture as the caller fills it, 4:2:0 in three planes; it is copied into the input surface. */
-    uint8_t *planes[3];
-    struct nal_units unit;
-    /* The parameter sets as NAL units after start codes, as the driver writes them into the stream. */
-    uint8_t sps[BITS_ROOM * 2], pps[BITS_ROOM * 2];
-    int sps_size, pps_size;
-};
-
 static const struct encoder_ops vaapi_ops;
 
 /* libva's messages, which say for instance which driver it tries, are not this program's to show. */
@@ -116,22 +75,24 @@ static void quiet(void *context, const char *message)
     (void)message;
 }
 
-/* Whether the GPU behind `display` encodes as this file needs. */
-static int suits(VADisplay candidate)
+/* Whether the GPU behind `candidate` encodes `codec` as these files need: 4:2:0 at a constant quantiser, with
+   the headers the codec's file writes. */
+static int encodes(VADisplay candidate, const struct vaapi_codec *codec)
 {
     VAConfigAttrib wanted[] = {
         { .type = VAConfigAttribRTFormat },
         { .type = VAConfigAttribRateControl },
         { .type = VAConfigAttribEncPackedHeaders },
     };
-    if (va.vaGetConfigAttributes(candidate, PROFILE, ENTRYPOINT, wanted, 3) != VA_STATUS_SUCCESS)
+    if (va.vaGetConfigAttributes(candidate, codec->profile, ENTRYPOINT, wanted, 3) != VA_STATUS_SUCCESS)
         return 0;
-    const unsigned packed = VA_ENC_PACKED_HEADER_SEQUENCE | VA_ENC_PACKED_HEADER_PICTURE;
+    const unsigned packed = codec->packed_headers;
     return wanted[0].value != VA_ATTRIB_NOT_SUPPORTED && (wanted[0].value & VA_RT_FORMAT_YUV420)
         && wanted[1].value != VA_ATTRIB_NOT_SUPPORTED && (wanted[1].value & VA_RC_CQP)
         && wanted[2].value != VA_ATTRIB_NOT_SUPPORTED && (wanted[2].value & packed) == packed;
 }
 
+/* Finds the first GPU that encodes H.264, which every one that encodes at all does. */
 static void load(void)
 {
     void *library = dlopen("libva.so.2", RTLD_NOW), *drm = dlopen("libva-drm.so.2", RTLD_NOW);
@@ -155,7 +116,7 @@ static void load(void)
             va.vaSetInfoCallback(candidate, quiet, NULL);
         }
         if (candidate && va.vaInitialize(candidate, &major, &minor) == VA_STATUS_SUCCESS) {
-            if (suits(candidate)) {
+            if (encodes(candidate, &vaapi_h264)) {
                 display = candidate; /* kept open with its file for the process's lifetime */
                 loaded = 1;
                 return;
@@ -166,183 +127,53 @@ static void load(void)
     }
 }
 
-/* The sequence parameter set: High profile, 4:2:0, frames referring to one before them, the picture's size
-   and the part of its macroblocks that is shown, and how its colours are meant (as encoder.h says). Its VUI
-   says that frames come in the order they are shown, so that a decoder shows each one at once. */
-static void write_sps(struct vaapi *encoder, int fps)
-{
-    struct bits sps = { 0 };
-    bits_put(&sps, 100, 8); /* profile_idc: High */
-    bits_put(&sps, 0, 8);   /* constraint flags */
-    bits_put(&sps, LEVEL, 8);
-    bits_put_ue(&sps, 0); /* seq_parameter_set_id */
-    bits_put_ue(&sps, 1); /* chroma_format_idc: 4:2:0 */
-    bits_put_ue(&sps, 0); /* bit_depth_luma_minus8 */
-    bits_put_ue(&sps, 0); /* bit_depth_chroma_minus8 */
-    bits_put(&sps, 0, 1); /* qpprime_y_zero_transform_bypass_flag */
-    bits_put(&sps, 0, 1); /* seq_scaling_matrix_present_flag */
-    bits_put_ue(&sps, LOG2_MAX_FRAME_NUM - 4);
-    bits_put_ue(&sps, 2); /* pic_order_cnt_type: in the order of frame_num */
-    bits_put_ue(&sps, 1); /* max_num_ref_frames */
-    bits_put(&sps, 0, 1); /* gaps_in_frame_num_value_allowed_flag */
-    bits_put_ue(&sps, encoder->width_mbs - 1);
-    bits_put_ue(&sps, encoder->height_mbs - 1);
-    bits_put(&sps, 1, 1); /* frame_mbs_only_flag */
-    bits_put(&sps, 1, 1); /* direct_8x8_inference_flag */
-    /* Cropping is counted in pairs of pixels for 4:2:0. */
-    int right = (encoder->width_mbs * MACROBLOCK - encoder->width) / 2;
-    int bottom = (encoder->height_mbs * MACROBLOCK - encoder->height) / 2;
-    bits_put(&sps, right || bottom, 1);
-    if (right || bottom) {
-        bits_put_ue(&sps, 0);
-        bits_put_ue(&sps, right);
-        bits_put_ue(&sps, 0);
-        bits_put_ue(&sps, bottom);
-    }
-    bits_put(&sps, 1, 1); /* vui_parameters_present_flag */
-    bits_put(&sps, 0, 1); /* aspect_ratio_info_present_flag */
-    bits_put(&sps, 0, 1); /* overscan_info_present_flag */
-    bits_put(&sps, 1, 1); /* video_signal_type_present_flag */
-    bits_put(&sps, 5, 3); /* video_format: unspecified */
-    bits_put(&sps, 1, 1); /* video_full_range_flag */
-    bits_put(&sps, 1, 1); /* colour_description_present_flag */
-    bits_put(&sps, BT709, 8);
-    bits_put(&sps, BT709, 8);
-    bits_put(&sps, BT709, 8);
-    bits_put(&sps, 1, 1); /* chroma_loc_info_present_flag */
-    bits_put_ue(&sps, CHROMA_AT_CENTRE);
-    bits_put_ue(&sps, CHROMA_AT_CENTRE);
-    bits_put(&sps, 1, 1);       /* timing_info_present_flag */
-    bits_put(&sps, 1, 32);      /* num_units_in_tick */
-    bits_put(&sps, 2 * fps, 32); /* time_scale: two ticks a frame */
-    bits_put(&sps, 0, 1);       /* fixed_frame_rate_flag */
-    bits_put(&sps, 0, 1);       /* nal_hrd_parameters_present_flag */
-    bits_put(&sps, 0, 1);       /* vcl_hrd_parameters_present_flag */
-    bits_put(&sps, 0, 1);       /* pic_struct_present_flag */
-    bits_put(&sps, 1, 1);       /* bitstream_restriction_flag */
-    bits_put(&sps, 1, 1);       /* motion_vectors_over_pic_boundaries_flag */
-    bits_put_ue(&sps, 0);       /* max_bytes_per_pic_denom */
-    bits_put_ue(&sps, 0);       /* max_bits_per_mb_denom */
-    bits_put_ue(&sps, 15);      /* log2_max_mv_length_horizontal */
-    bits_put_ue(&sps, 15);      /* log2_max_mv_length_vertical */
-    bits_put_ue(&sps, 0);       /* max_num_reorder_frames */
-    bits_put_ue(&sps, 1);       /* max_dec_frame_buffering */
-    bits_trailing(&sps);
-    encoder->sps_size = nal_write(encoder->sps, sizeof encoder->sps, NAL_SPS, &sps);
-}
-
-/* The picture parameter set: CABAC, one reference, 8x8 transforms, and deblocking the slices may adjust. */
-static void write_pps(struct vaapi *encoder)
-{
-    struct bits pps = { 0 };
-    bits_put_ue(&pps, 0); /* pic_parameter_set_id */
-    bits_put_ue(&pps, 0); /* seq_parameter_set_id */
-    bits_put(&pps, 1, 1); /* entropy_coding_mode_flag: CABAC */
-    bits_put(&pps, 0, 1); /* bottom_field_pic_order_in_frame_present_flag */
-    bits_put_ue(&pps, 0); /* num_slice_groups_minus1 */
-    bits_put_ue(&pps, 0); /* num_ref_idx_l0_default_active_minus1 */
-    bits_put_ue(&pps, 0); /* num_ref_idx_l1_default_active_minus1 */
-    bits_put(&pps, 0, 1); /* weighted_pred_flag */
-    bits_put(&pps, 0, 2); /* weighted_bipred_idc */
-    bits_put_se(&pps, INITIAL_QP - 26);
-    bits_put_se(&pps, 0); /* pic_init_qs_minus26 */
-    bits_put_se(&pps, 0); /* chroma_qp_index_offset */
-    bits_put(&pps, 1, 1); /* deblocking_filter_control_present_flag */
-    bits_put(&pps, 0, 1); /* constrained_intra_pred_flag */
-    bits_put(&pps, 0, 1); /* redundant_pic_cnt_present_flag */
-    bits_put(&pps, 1, 1); /* transform_8x8_mode_flag */
-    bits_put(&pps, 0, 1); /* pic_scaling_matrix_present_flag */
-    bits_put_se(&pps, 0); /* second_chroma_qp_index_offset */
-    bits_trailing(&pps);
-    encoder->pps_size = nal_write(encoder->pps, sizeof encoder->pps, NAL_PPS, &pps);
-}
-
-/* Makes a parameter buffer of `type` with a copy of `data` and adds it to `buffers`. */
-static int add(struct vaapi *encoder, VABufferType type, const void *data, unsigned size, VABufferID *buffers, int *count)
+int vaapi_add(struct vaapi *encoder, VABufferType type, const void *data, unsigned size, VABufferID *buffers, int *count)
 {
     VABufferID buffer;
-    if (va.vaCreateBuffer(display, encoder->context, type, size, 1, (void *)data, &buffer) != VA_STATUS_SUCCESS)
+    if (*count >= MOST_BUFFERS || va.vaCreateBuffer(display, encoder->context, type, size, 1, (void *)data, &buffer) != VA_STATUS_SUCCESS)
         return -1;
     buffers[(*count)++] = buffer;
     return 0;
 }
 
-/* A parameter set the driver writes into the stream as it is. */
-static int add_packed(struct vaapi *encoder, unsigned kind, const uint8_t *nal, int size, VABufferID *buffers, int *count)
-{
-    VAEncPackedHeaderParameterBuffer header = { .type = kind, .bit_length = size * 8, .has_emulation_bytes = 1 };
-    if (add(encoder, VAEncPackedHeaderParameterBufferType, &header, sizeof header, buffers, count) < 0)
-        return -1;
-    return add(encoder, VAEncPackedHeaderDataBufferType, nal, size, buffers, count);
-}
-
-/* One of the encoder's settings, as libva takes them: a type and its value in one buffer. */
-static int add_misc(struct vaapi *encoder, VAEncMiscParameterType type, const void *value, unsigned size, VABufferID *buffers, int *count)
+int vaapi_add_misc(struct vaapi *encoder, VAEncMiscParameterType type, const void *value, unsigned size, VABufferID *buffers, int *count)
 {
     uint8_t misc[sizeof(VAEncMiscParameterBuffer) + 64] = { 0 };
     ((VAEncMiscParameterBuffer *)misc)->type = type;
     memcpy(((VAEncMiscParameterBuffer *)misc)->data, value, size);
-    return add(encoder, VAEncMiscParameterBufferType, misc, sizeof(VAEncMiscParameterBuffer) + size, buffers, count);
+    return vaapi_add(encoder, VAEncMiscParameterBufferType, misc, sizeof(VAEncMiscParameterBuffer) + size, buffers, count);
 }
 
-/* The sequence, and the driver's speed against quality. They go with each IDR. */
-static int add_sequence(struct vaapi *encoder, VABufferID *buffers, int *count)
+void vaapi_header(struct vaapi *encoder, int type, const struct bits *rbsp)
 {
-    VAEncSequenceParameterBufferH264 sequence = {
-        .level_idc = LEVEL,
-        .intra_period = NO_PERIOD,
-        .intra_idr_period = NO_PERIOD,
-        .ip_period = 1,
-        .max_num_ref_frames = 1,
-        .picture_width_in_mbs = encoder->width_mbs,
-        .picture_height_in_mbs = encoder->height_mbs,
-        .seq_fields.bits = {
-            .chroma_format_idc = 1,
-            .frame_mbs_only_flag = 1,
-            .direct_8x8_inference_flag = 1,
-            .log2_max_frame_num_minus4 = LOG2_MAX_FRAME_NUM - 4,
-            .pic_order_cnt_type = 2,
-        },
-        .frame_cropping_flag = encoder->width % MACROBLOCK || encoder->height % MACROBLOCK,
-        .frame_crop_right_offset = (encoder->width_mbs * MACROBLOCK - encoder->width) / 2,
-        .frame_crop_bottom_offset = (encoder->height_mbs * MACROBLOCK - encoder->height) / 2,
-        .vui_parameters_present_flag = 1,
-        .vui_fields.bits = {
-            .timing_info_present_flag = 1,
-            .bitstream_restriction_flag = 1,
-            .log2_max_mv_length_horizontal = 15,
-            .log2_max_mv_length_vertical = 15,
-            .motion_vectors_over_pic_boundaries_flag = 1,
-        },
-        .num_units_in_tick = 1,
-        .time_scale = 2 * encoder->base.fps,
-    };
+    int at = encoder->header_count++;
+    encoder->header_sizes[at] = nal_write(encoder->headers[at], sizeof encoder->headers[at], encoder->codec->codec, type, rbsp);
+}
+
+int vaapi_add_packed(struct vaapi *encoder, unsigned kind, const uint8_t *nal, int size, VABufferID *buffers, int *count)
+{
+    VAEncPackedHeaderParameterBuffer header = { .type = kind, .bit_length = size * 8, .has_emulation_bytes = 1 };
+    if (vaapi_add(encoder, VAEncPackedHeaderParameterBufferType, &header, sizeof header, buffers, count) < 0)
+        return -1;
+    return vaapi_add(encoder, VAEncPackedHeaderDataBufferType, nal, size, buffers, count);
+}
+
+/* What goes with an IDR: the sequence, the driver's speed, and the parameter sets, all of which head the
+   sequence, as ffmpeg's encoders give them too. */
+static int add_idr(struct vaapi *encoder, VABufferID *buffers, int *count)
+{
     VAEncMiscParameterBufferQualityLevel speed = { .quality_level = SPEED };
-    if (add(encoder, VAEncSequenceParameterBufferType, &sequence, sizeof sequence, buffers, count) < 0
-        || add_misc(encoder, VAEncMiscParameterTypeQualityLevel, &speed, sizeof speed, buffers, count) < 0)
+    uint8_t joined[MOST_PARAMETER_SETS * BITS_ROOM * 2];
+    int size = 0;
+    for (int at = 0; at < encoder->header_count; at++) {
+        memcpy(joined + size, encoder->headers[at], encoder->header_sizes[at]);
+        size += encoder->header_sizes[at];
+    }
+    if (encoder->codec->add_sequence(encoder, buffers, count) < 0
+        || vaapi_add_misc(encoder, VAEncMiscParameterTypeQualityLevel, &speed, sizeof speed, buffers, count) < 0
+        || vaapi_add_packed(encoder, VAEncPackedHeaderSequence, joined, size, buffers, count) < 0)
         return -1;
     return 0;
-}
-
-/* The quantiser for the next frame: the quality target's, unless the last frame's size says that at it the
-   frame would take more than the cap allows now; then the finest that fits. A first frame has nothing to go
-   by, and is held to the cap after the fact (see vaapi_encode). */
-static int choose_qp(const struct vaapi *encoder)
-{
-    if (!encoder->last_bits)
-        return encoder->quality;
-    int qp = encoder->quality;
-    double predicted = encoder->last_bits;
-    /* The last frame's size at this quantiser. */
-    for (int step = qp; step < encoder->last_qp; step++)
-        predicted *= QP_STEP;
-    for (int step = encoder->last_qp; step < qp; step++)
-        predicted /= QP_STEP;
-    while (qp < MOST_QP && predicted > encoder->allowance) {
-        qp++;
-        predicted /= QP_STEP;
-    }
-    return qp < encoder->last_qp - MOST_QP_FALL ? encoder->last_qp - MOST_QP_FALL : qp;
 }
 
 /* Copies the caller's planes into the input surface, the colour planes interleaved as NV12 has them. */
@@ -371,10 +202,24 @@ static int upload(struct vaapi *encoder)
     return mapped_ok ? 0 : -1;
 }
 
-/* A picture entry that refers to nothing. */
-static VAPictureH264 nothing(void)
+/* The quantiser for the next frame: the quality target's, unless the last frame's size says that at it the
+   frame would take more than the cap allows now; then the finest that fits. A first frame has nothing to go
+   by, and is held to the cap after the fact (see vaapi_encode). */
+static int choose_qp(const struct vaapi *encoder)
 {
-    return (VAPictureH264){ .picture_id = VA_INVALID_SURFACE, .flags = VA_PICTURE_H264_INVALID };
+    if (!encoder->last_bits)
+        return encoder->quality;
+    int qp = encoder->quality;
+    double predicted = encoder->last_bits; /* the last frame's size at this quantiser */
+    for (int step = qp; step < encoder->last_qp; step++)
+        predicted *= QP_STEP;
+    for (int step = encoder->last_qp; step < qp; step++)
+        predicted /= QP_STEP;
+    while (qp < MOST_QP && predicted > encoder->allowance) {
+        qp++;
+        predicted /= QP_STEP;
+    }
+    return qp < encoder->last_qp - MOST_QP_FALL ? encoder->last_qp - MOST_QP_FALL : qp;
 }
 
 /* Encodes the picture in the input surface at quantiser `qp` into the surface `current`, as an IDR or as a
@@ -383,51 +228,8 @@ static VAPictureH264 nothing(void)
 static int encode_at(struct vaapi *encoder, int idr, int current, int qp)
 {
     int size = -1, count = 0;
-    VABufferID buffers[8];
-    VAEncPictureParameterBufferH264 picture = {
-        .CurrPic = {
-            .picture_id = encoder->surfaces[current],
-            .frame_idx = encoder->frame_num,
-            .TopFieldOrderCnt = 2 * encoder->frames,
-            .BottomFieldOrderCnt = 2 * encoder->frames,
-        },
-        .coded_buf = encoder->coded,
-        .frame_num = encoder->frame_num,
-        .pic_init_qp = INITIAL_QP,
-        .pic_fields.bits = {
-            .idr_pic_flag = idr,
-            .reference_pic_flag = 1,
-            .entropy_coding_mode_flag = 1,
-            .transform_8x8_mode_flag = 1,
-            .deblocking_filter_control_present_flag = 1,
-        },
-    };
-    VAEncSliceParameterBufferH264 slice = {
-        .num_macroblocks = encoder->width_mbs * encoder->height_mbs,
-        .slice_type = idr ? SLICE_I : SLICE_P,
-        .idr_pic_id = encoder->idr_id,
-        .direct_spatial_mv_pred_flag = 1,
-        .slice_qp_delta = qp - INITIAL_QP,
-    };
-    for (int at = 0; at < 16; at++)
-        picture.ReferenceFrames[at] = nothing();
-    for (int at = 0; at < 32; at++)
-        slice.RefPicList0[at] = slice.RefPicList1[at] = nothing();
-    if (!idr) {
-        VAPictureH264 before = {
-            .picture_id = encoder->surfaces[encoder->reference],
-            .frame_idx = encoder->frame_num - 1,
-            .flags = VA_PICTURE_H264_SHORT_TERM_REFERENCE,
-            .TopFieldOrderCnt = 2 * (encoder->frames - 1),
-            .BottomFieldOrderCnt = 2 * (encoder->frames - 1),
-        };
-        picture.ReferenceFrames[0] = slice.RefPicList0[0] = before;
-    }
-    if ((idr && (add_sequence(encoder, buffers, &count) < 0
-                 || add_packed(encoder, VAEncPackedHeaderSequence, encoder->sps, encoder->sps_size, buffers, &count) < 0
-                 || add_packed(encoder, VAEncPackedHeaderPicture, encoder->pps, encoder->pps_size, buffers, &count) < 0))
-        || add(encoder, VAEncPictureParameterBufferType, &picture, sizeof picture, buffers, &count) < 0
-        || add(encoder, VAEncSliceParameterBufferType, &slice, sizeof slice, buffers, &count) < 0)
+    VABufferID buffers[MOST_BUFFERS];
+    if ((idr && add_idr(encoder, buffers, &count) < 0) || encoder->codec->add_frame(encoder, idr, current, qp, buffers, &count) < 0)
         goto done;
     if (va.vaBeginPicture(display, encoder->context, encoder->surfaces[INPUT]) != VA_STATUS_SUCCESS)
         goto done;
@@ -453,7 +255,7 @@ static int encode_at(struct vaapi *encoder, int idr, int current, int qp)
     }
     va.vaUnmapBuffer(display, encoder->coded);
     if (length >= 0)
-        size = nal_length_prefixed(&encoder->unit, joined, length);
+        size = nal_length_prefixed(&encoder->unit, joined, length, encoder->codec->codec);
     free(joined);
 done:
     for (int at = 0; at < count; at++)
@@ -466,7 +268,7 @@ static int vaapi_encode(struct encoder *base, int fresh, uint8_t **data, int *ke
     struct vaapi *encoder = (struct vaapi *)base;
     int idr = fresh || encoder->reference == 0, size = -1;
     if (idr) {
-        encoder->frame_num = encoder->frames = 0;
+        encoder->frames = 0;
         encoder->idr_id++;
     }
     /* What the cap allows fills by its share of a frame, up to the buffer's size. */
@@ -495,7 +297,6 @@ static int vaapi_encode(struct encoder *base, int fresh, uint8_t **data, int *ke
     encoder->last_bits = size * 8;
     encoder->allowance -= size * 8.0;
     encoder->reference = current;
-    encoder->frame_num = (encoder->frame_num + 1) % (1u << LOG2_MAX_FRAME_NUM);
     encoder->frames++;
     return size;
 }
@@ -507,16 +308,15 @@ static uint8_t *vaapi_plane(struct encoder *base, int index, int *stride)
     return encoder->planes[index];
 }
 
-static int vaapi_headers(struct encoder *base, uint8_t **sps, int *sps_size, uint8_t **pps, int *pps_size)
+/* Without the start code in front, as the decoder configuration carries them. */
+static int vaapi_headers(struct encoder *base, uint8_t **sets, int *sizes)
 {
     struct vaapi *encoder = (struct vaapi *)base;
-    /* Without the start code in front, as the decoder configuration carries them. */
-    const int start = 4;
-    *sps = encoder->sps + start;
-    *sps_size = encoder->sps_size - start;
-    *pps = encoder->pps + start;
-    *pps_size = encoder->pps_size - start;
-    return 0;
+    for (int at = 0; at < encoder->header_count; at++) {
+        sets[at] = encoder->headers[at] + START_CODE_LENGTH;
+        sizes[at] = encoder->header_sizes[at] - START_CODE_LENGTH;
+    }
+    return encoder->header_count;
 }
 
 /* The new rate counts from the next frame on. */
@@ -548,24 +348,26 @@ static void vaapi_close(struct encoder *base)
     free(encoder);
 }
 
-struct encoder *vaapi_open(const struct encoder_setup *setup)
+struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
 {
     pthread_once(&once, load);
-    int width_mbs = (setup->width + MACROBLOCK - 1) / MACROBLOCK, height_mbs = (setup->height + MACROBLOCK - 1) / MACROBLOCK;
-    if (!loaded || setup->full_chroma || width_mbs * height_mbs > MOST_MACROBLOCKS)
+    const struct vaapi_codec *kind = codec == CODEC_HEVC ? &vaapi_hevc : &vaapi_h264;
+    if (!loaded || setup->full_chroma || setup->width * setup->height > kind->most_samples || !encodes(display, kind))
         return NULL;
     struct vaapi *encoder = calloc(1, sizeof *encoder);
     if (!encoder)
         return NULL;
     encoder->base.ops = &vaapi_ops;
-    encoder->base.fps = setup->fps; /* set again by encoder_open; the sequence needs it before */
+    encoder->base.codec = kind->codec;
+    encoder->base.fps = setup->fps; /* set again by encoder_open; the parameter sets need it before */
+    encoder->codec = kind;
     encoder->config = encoder->context = encoder->coded = VA_INVALID_ID;
     for (int at = 0; at < SURFACES; at++)
         encoder->surfaces[at] = VA_INVALID_SURFACE;
     encoder->width = setup->width;
     encoder->height = setup->height;
-    encoder->width_mbs = width_mbs;
-    encoder->height_mbs = height_mbs;
+    encoder->width_blocks = (setup->width + kind->block - 1) / kind->block;
+    encoder->height_blocks = (setup->height + kind->block - 1) / kind->block;
     encoder->kbps = setup->kbps;
     encoder->buffer_kbits = BUFFER_KBITS(setup->kbps);
     encoder->quality = setup->quality;
@@ -574,19 +376,19 @@ struct encoder *vaapi_open(const struct encoder_setup *setup)
     for (int plane = 0; plane < 3; plane++)
         if (!(encoder->planes[plane] = malloc(plane ? luma / 4 : luma)))
             goto failed;
-    write_sps(encoder, setup->fps);
-    write_pps(encoder);
-    if (encoder->sps_size < 0 || encoder->pps_size < 0)
-        goto failed;
+    kind->write_headers(encoder);
+    for (int at = 0; at < encoder->header_count; at++)
+        if (encoder->header_sizes[at] < 0)
+            goto failed;
 
     VAConfigAttrib attributes[] = {
         { .type = VAConfigAttribRTFormat, .value = VA_RT_FORMAT_YUV420 },
         { .type = VAConfigAttribRateControl, .value = VA_RC_CQP },
-        { .type = VAConfigAttribEncPackedHeaders, .value = VA_ENC_PACKED_HEADER_SEQUENCE | VA_ENC_PACKED_HEADER_PICTURE },
+        { .type = VAConfigAttribEncPackedHeaders, .value = kind->packed_headers },
     };
-    int surface_width = width_mbs * MACROBLOCK, surface_height = height_mbs * MACROBLOCK;
+    int surface_width = encoder->width_blocks * kind->block, surface_height = encoder->height_blocks * kind->block;
     pthread_mutex_lock(&calls);
-    int made = va.vaCreateConfig(display, PROFILE, ENTRYPOINT, attributes, 3, &encoder->config) == VA_STATUS_SUCCESS
+    int made = va.vaCreateConfig(display, kind->profile, ENTRYPOINT, attributes, 3, &encoder->config) == VA_STATUS_SUCCESS
         && va.vaCreateSurfaces(display, VA_RT_FORMAT_YUV420, surface_width, surface_height, encoder->surfaces, SURFACES, NULL, 0) == VA_STATUS_SUCCESS
         && va.vaCreateContext(display, encoder->config, surface_width, surface_height, VA_PROGRESSIVE, encoder->surfaces, SURFACES, &encoder->context) == VA_STATUS_SUCCESS
         /* A coded frame is never larger than the picture's raw size. */

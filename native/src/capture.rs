@@ -20,6 +20,8 @@ pub struct Settings {
     pub auto_size: bool,
     /// The screen to capture, by name (see screen.rs). None, or a name no screen has, means the first.
     pub screen: Option<String>,
+    /// The client decodes HEVC, which the GPU's encoder then uses where it has it.
+    pub hevc: bool,
 }
 
 /// The heights a picture may be shrunk to, largest first: those the client offers (index.html), and the steps

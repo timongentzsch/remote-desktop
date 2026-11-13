@@ -20,8 +20,15 @@ fn words(command: &Command) -> OsString {
 
 /// The C sources: the encoders behind stream/encode.rs, and on Linux PipeWire's stream behind
 /// platform/linux/capture/pipewire.rs.
-const ENCODERS: [&str; 5] =
-    ["src/stream/encoder.c", "src/stream/x264.c", "src/stream/nvenc.c", "src/stream/vaapi.c", "src/stream/nal.c"];
+const ENCODERS: [&str; 7] = [
+    "src/stream/encoder.c",
+    "src/stream/x264.c",
+    "src/stream/nvenc.c",
+    "src/stream/vaapi.c",
+    "src/stream/vaapi_h264.c",
+    "src/stream/vaapi_hevc.c",
+    "src/stream/nal.c",
+];
 /// libva's headers, of which va/va_version.h is made from its template, with the version libva's build gives it.
 const LIBVA: &str = "libva";
 const PIPEWIRE: &str = "src/platform/linux/capture/pipewire_stream.c";
@@ -54,7 +61,7 @@ fn run(command: &mut Command) {
 }
 
 fn main() {
-    for file in ENCODERS.iter().chain(&[PIPEWIRE, "src/stream/encoder.h", "src/stream/nal.h"]) {
+    for file in ENCODERS.iter().chain(&[PIPEWIRE, "src/stream/encoder.h", "src/stream/nal.h", "src/stream/vaapi.h"]) {
         println!("cargo:rerun-if-changed={file}");
     }
     println!("cargo:rerun-if-changed=x264/x264.h");

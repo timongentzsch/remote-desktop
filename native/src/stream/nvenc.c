@@ -250,7 +250,7 @@ static uint8_t *nvenc_plane(struct encoder *base, int index, int *stride)
     return encoder->planes[index];
 }
 
-static int nvenc_headers(struct encoder *base, uint8_t **sps, int *sps_size, uint8_t **pps, int *pps_size)
+static int nvenc_headers(struct encoder *base, uint8_t **sets, int *sizes)
 {
     struct nvenc *encoder = (struct nvenc *)base;
     uint32_t size = 0;
@@ -267,16 +267,15 @@ static int nvenc_headers(struct encoder *base, uint8_t **sps, int *sps_size, uin
         return -1;
     for (int code = nal_start_code(encoder->headers, size, 0), begin, next; code < (int)size; code = next) {
         int length = nal_unit(encoder->headers, size, code, &begin, &next);
-        int type = length ? encoder->headers[begin] & 0x1F : 0;
-        if (type == NAL_SPS) {
-            *sps = encoder->headers + begin;
-            *sps_size = length;
-        } else if (type == NAL_PPS) {
-            *pps = encoder->headers + begin;
-            *pps_size = length;
+        int type = length ? nal_type(encoder->headers + begin, CODEC_H264) : 0;
+        /* SPS first, then PPS. */
+        int at = type == NAL_SPS ? 0 : type == NAL_PPS ? 1 : -1;
+        if (at >= 0) {
+            sets[at] = encoder->headers + begin;
+            sizes[at] = length;
         }
     }
-    return 0;
+    return 2;
 }
 
 static int nvenc_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *coarse)
@@ -316,7 +315,7 @@ static int nvenc_encode(struct encoder *base, int fresh, uint8_t **data, int *ke
     /* Locking the output waits until the frame is encoded. */
     if (api.nvEncEncodePicture(encoder->session, &picture) != NV_ENC_SUCCESS || api.nvEncLockBitstream(encoder->session, &stream) != NV_ENC_SUCCESS)
         goto done;
-    size = nal_length_prefixed(&encoder->unit, stream.bitstreamBufferPtr, stream.bitstreamSizeInBytes);
+    size = nal_length_prefixed(&encoder->unit, stream.bitstreamBufferPtr, stream.bitstreamSizeInBytes, CODEC_H264);
     *data = encoder->unit.bytes;
     *keyframe = stream.pictureType == NV_ENC_PIC_TYPE_IDR;
     api.nvEncUnlockBitstream(encoder->session, encoder->output);
