@@ -49,9 +49,15 @@ impl Still {
         kbps as usize * 125 / REFINE_FPS as usize
     }
 
-    /// Takes the size of the picture's latest frame and the share it could have taken; says whether the
-    /// picture is finished.
-    pub fn finished(&mut self, size: usize, share: usize) -> bool {
+    /// Takes the size of the picture's latest frame, the share it could have taken and whether it came out
+    /// coarse; says whether the picture is finished. A frame the bitrate cap held back says nothing of that: an
+    /// encoder that leaves the quantiser to the cap adds nothing at a coarser one than the picture already has,
+    /// and so sends small frames long before the picture is as good as it should be.
+    pub fn finished(&mut self, size: usize, share: usize, coarse: bool) -> bool {
+        if coarse {
+            self.level_frames = 0;
+            return false;
+        }
         let level = self.smallest.is_some_and(|smallest| size * 10 >= smallest * Self::LEVEL_TENTHS);
         self.smallest = Some(self.smallest.map_or(size, |smallest| smallest.min(size)));
         self.level_frames = if level && size * Self::FAR_BELOW < share { self.level_frames + 1 } else { 0 };
@@ -185,6 +191,8 @@ pub struct Stream {
     /// next time it has to be given up.
     chroma_rest: Rest,
     size_rest: Rest,
+    /// Set once the GPU's encoder, which takes no 4:4:4, was chosen over full colour detail.
+    full_chroma_unavailable: bool,
     /// The bitrate cap in kbit/s, the frames a second and the quality target the encoder was last told.
     rate: (u32, u32, u32),
     /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
@@ -217,6 +225,7 @@ impl Stream {
             weighed: Weighed::default(),
             chroma_rest: Rest::new(now),
             size_rest: Rest::new(now),
+            full_chroma_unavailable: false,
             rate: (0, 0, 0),
             refinements_left: 0,
             still: Still::default(),
@@ -288,7 +297,7 @@ impl Stream {
         let (average, budget) = (weighed.time / weighed.frames, self.frame_interval() / 2);
         let mostly_coarse = weighed.coarse * 2 > weighed.frames;
         let now = Instant::now();
-        if self.settings.auto_chroma {
+        if self.settings.auto_chroma && !self.full_chroma_unavailable {
             // A frame is late if either end is slow with it, and full colour detail costs the decoder as well.
             let decode = Duration::from_micros(self.shared.decode_micros.load(Ordering::Relaxed).into());
             let full = self.settings.full_chroma;
@@ -355,15 +364,18 @@ impl Stream {
         let shrinking = self.settings.height.is_some_and(|most| self.screen.1 > most);
         self.shrinker = if shrinking { Some(Shrinker::new(self.screen, (width, height))?) } else { None };
         let (fps, kbps, full_chroma) = (self.settings.fps, self.settings.kbps, self.settings.full_chroma);
-        let mut encoder = Encoder::open(Setup::new(width, height, fps, kbps, full_chroma, self.effort))
-            .ok_or("could not open the encoder")?;
+        let setup = Setup::new(width, height, fps, kbps, full_chroma, self.effort);
+        let mut encoder = Encoder::open(setup, self.settings.auto_chroma).ok_or("could not open the encoder")?;
+        if full_chroma && !encoder.full_chroma {
+            // The GPU's encoder took the picture at 4:2:0: full colour detail is not tried again with it.
+            (self.settings.full_chroma, self.full_chroma_unavailable) = (false, true);
+        }
         self.rate = (kbps, fps, MOVING_QUALITY);
         let how = match (encoder.gpu, self.effort) {
-            (true, _) => "on the GPU".to_owned(),
-            (false, 0) => "with x264".to_owned(),
+            (true, _) => format!("on the GPU with {}", encoder.name),
             (false, effort) => format!("with x264, effort {effort} of {}", EFFORTS - 1),
         };
-        let colour = if full_chroma { "4:4:4" } else { "4:2:0" };
+        let colour = if encoder.full_chroma { "4:4:4" } else { "4:2:0" };
         warn!("encoding {width}x{height} {colour} {how}");
         if !self.wrote_header {
             self.send(flv::HEADER);
@@ -406,7 +418,7 @@ impl Stream {
         if frame == Frame::New {
             self.shared.coarse.fetch_add(coarse as u32, Ordering::Relaxed);
         }
-        if self.still.finished(unit.len(), Still::share(self.rate.0)) {
+        if self.still.finished(unit.len(), Still::share(self.rate.0), coarse) {
             self.refinements_left = 0;
         }
         self.encoded = Instant::now();
@@ -448,13 +460,16 @@ mod tests {
         let share = Still::share(3000);
         let finished_after = |sizes: &[usize]| {
             let mut still = Still::default();
-            sizes.iter().position(|&size| still.finished(size, share)).map(|index| index + 1)
+            sizes.iter().position(|&size| still.finished(size, share, false)).map(|index| index + 1)
         };
         assert_eq!(finished_after(&[60000, 30000, 9000, 900, 200, 150, 150, 150, 150]), Some(9), "at its floor");
         // x264 at its highest effort goes on spending some kilobytes a frame, in a cycle.
         assert_eq!(finished_after(&[60000, 20000, 4000, 2962, 2925, 3091, 2962]), Some(7));
         assert_eq!(finished_after(&[30000; 50]), None, "frames at the limit are still filling in detail");
         assert_eq!(finished_after(&[9000, 5000, 3000, 1800, 1000, 600]), None, "frames getting smaller are too");
+        let mut still = Still::default();
+        let held_back = (0..5).any(|_| still.finished(20, share, true));
+        assert!(!held_back, "tiny frames the cap held back do not finish the picture");
     }
 
     #[test]

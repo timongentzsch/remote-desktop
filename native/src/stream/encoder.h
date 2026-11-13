@@ -4,6 +4,7 @@
 struct encoder;
 
 struct encoder_ops {
+    const char *name;
     uint8_t *(*plane)(struct encoder *encoder, int index, int *stride);
     int (*headers)(struct encoder *encoder, uint8_t **sps, int *sps_size, uint8_t **pps, int *pps_size);
     int (*encode)(struct encoder *encoder, int fresh, uint8_t **data, int *keyframe, int *coarse);
@@ -18,6 +19,9 @@ struct encoder {
     const struct encoder_ops *ops;
     int fps; /* as it was opened; it goes on being told a rate for this many frames a second */
 };
+
+/* A frame counts as coarse when the cap made it this much worse than the quality target, in quantiser steps. */
+#define COARSE_MARGIN 1
 
 /* How much one frame may take at most: what the bitrate cap allows in a fifth of a second. */
 #define BUFFER_KBITS(kbps) ((kbps) / 5)
@@ -40,5 +44,6 @@ struct encoder_setup {
 #define EFFORTS 4
 
 struct encoder *software_open(const struct encoder_setup *setup);
-/* NULL when the machine has no usable hardware encoder. */
+/* NULL when the machine has no usable hardware encoder of the kind. */
 struct encoder *nvenc_open(const struct encoder_setup *setup);
+struct encoder *vaapi_open(const struct encoder_setup *setup);

@@ -17,8 +17,6 @@ static const struct encoder_ops software_ops;
    as much time again per frame. On code scrolling by at 1920x1200, superfast took 17% fewer bits than ultrafast
    for the same quality, for 0.75 ms more a frame. */
 static const char *const PRESETS[EFFORTS] = { "ultrafast", "superfast", "veryfast", "faster" };
-/* A frame counts as coarse when the cap made it this much worse than the target, in quantiser steps. */
-#define COARSE_MARGIN 1
 
 static void set_rate(x264_param_t *param, int kbps, int buffer_kbits, int quality)
 {
@@ -136,4 +134,4 @@ static void software_close(struct encoder *base)
     free(encoder);
 }
 
-static const struct encoder_ops software_ops = { software_plane, software_headers, software_encode, software_set_rate, software_close };
+static const struct encoder_ops software_ops = { "x264", software_plane, software_headers, software_encode, software_set_rate, software_close };

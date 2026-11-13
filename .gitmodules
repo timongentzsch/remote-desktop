@@ -8,3 +8,6 @@
 	path = native/pipewire
 	url = https://github.com/PipeWire/pipewire
 	shallow = true
+[submodule "native/libva"]
+	path = native/libva
+	url = https://github.com/intel/libva.git

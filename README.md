@@ -7,8 +7,9 @@ Your running Linux desktop in a browser tab. One file on the host, nothing on th
 - **One file on the host, for the session you are already using.** The same binary serves GNOME, KDE,
   Hyprland, Sway and X11 desktops, and sets itself up with one command. It is built for x86_64 and aarch64.
 - **Complete without configuration.** The screen as H.264, the sound as Opus, the clipboard, keyboard and
-  pointer, all encrypted. An NVIDIA card's hardware encoder is used where there is one (driver 470 or
-  newer, one viewer at a time), the built-in x264 everywhere else.
+  pointer, all encrypted. The GPU's hardware encoder is used where there is one: NVIDIA's (driver 470 or
+  newer, one viewer at a time), or Intel's and AMD's through VA-API (with their VA-API driver, such as
+  intel-media-driver); the built-in x264 everywhere else.
 - **Nobody in between.** The browser talks to your machine directly: no account, no relay, no vendor's
   server.
 - **Made to feel local.** A still screen costs nothing and is sharpened while it stands still, a busy one is
@@ -144,8 +145,8 @@ Whoever logs in controls the desktop session, so treat the address and password 
 ## Build
 
 Needs Rust, a C compiler, `make` and, for x86, `nasm`. Clone with `--recurse-submodules`: x264 is built from
-`native/x264`, and `native/nv-codec-headers` and `native/pipewire` provide headers for libraries that are
-loaded at run time where present.
+`native/x264`, and `native/nv-codec-headers`, `native/libva` and `native/pipewire` provide headers for
+libraries that are loaded at run time where present.
 
     cd native
     cargo fmt --check && cargo clippy --release --all-targets -- --deny warnings

@@ -1,11 +1,14 @@
 /* The encoders behind one interface, so that the Rust side depends neither on which one is in use nor on the
-   layout of their structs: x264 in x264.c and the GPU's encoder in nvenc.c. */
+   layout of their structs: x264 in x264.c, and the GPU's encoder in nvenc.c on NVIDIA's and vaapi.c on
+   Intel's and AMD's. */
 #include "encoder.h"
 
 /* Opens the GPU's encoder if `gpu` is set, x264 otherwise. NULL if that one cannot be used. */
 struct encoder *encoder_open(const struct encoder_setup *setup, int gpu)
 {
-    struct encoder *encoder = gpu ? nvenc_open(setup) : software_open(setup);
+    struct encoder *encoder = !gpu ? software_open(setup) : nvenc_open(setup);
+    if (gpu && !encoder)
+        encoder = vaapi_open(setup);
     if (encoder)
         encoder->fps = setup->fps;
     return encoder;
@@ -40,6 +43,12 @@ int encoder_encode(struct encoder *encoder, int fresh, uint8_t **data, int *keyf
 int encoder_set_rate(struct encoder *encoder, int kbps, int fps, int quality)
 {
     return encoder->ops->set_rate(encoder, (int)((int64_t)kbps * encoder->fps / fps), BUFFER_KBITS(kbps), quality);
+}
+
+/* Which encoder it is: "x264", "nvenc" or "vaapi". */
+const char *encoder_name(struct encoder *encoder)
+{
+    return encoder->ops->name;
 }
 
 void encoder_close(struct encoder *encoder)

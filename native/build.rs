@@ -20,8 +20,33 @@ fn words(command: &Command) -> OsString {
 
 /// The C sources: the encoders behind stream/encode.rs, and on Linux PipeWire's stream behind
 /// platform/linux/capture/pipewire.rs.
-const ENCODERS: [&str; 3] = ["src/stream/encoder.c", "src/stream/x264.c", "src/stream/nvenc.c"];
+const ENCODERS: [&str; 5] =
+    ["src/stream/encoder.c", "src/stream/x264.c", "src/stream/nvenc.c", "src/stream/vaapi.c", "src/stream/nal.c"];
+/// libva's headers, of which va/va_version.h is made from its template, with the version libva's build gives it.
+const LIBVA: &str = "libva";
 const PIPEWIRE: &str = "src/platform/linux/capture/pipewire_stream.c";
+
+/// Makes va/va_version.h from libva's template and the VA-API version in its meson.build; returns the directory
+/// to add to the include path for it.
+fn libva_version() -> PathBuf {
+    let meson = std::fs::read_to_string(format!("{LIBVA}/meson.build")).expect("libva/ is checked out");
+    let number = |name: &str| {
+        let line = meson.lines().find(|line| line.trim_start().starts_with(name)).expect("a VA-API version");
+        line.split('=').nth(1).unwrap().trim().to_owned()
+    };
+    let (major, minor, micro) =
+        (number("va_api_major_version"), number("va_api_minor_version"), number("va_api_micro_version"));
+    let header = std::fs::read_to_string(format!("{LIBVA}/va/va_version.h.in"))
+        .unwrap()
+        .replace("@VA_API_MAJOR_VERSION@", &major)
+        .replace("@VA_API_MINOR_VERSION@", &minor)
+        .replace("@VA_API_MICRO_VERSION@", &micro)
+        .replace("@VA_API_VERSION@", &format!("{major}.{minor}.{micro}"));
+    let directory = PathBuf::from(env::var("OUT_DIR").unwrap()).join("libva");
+    std::fs::create_dir_all(directory.join("va")).unwrap();
+    std::fs::write(directory.join("va/va_version.h"), header).unwrap();
+    directory
+}
 
 fn run(command: &mut Command) {
     let status = command.status().unwrap_or_else(|error| panic!("cannot run {command:?}: {error}"));
@@ -29,7 +54,7 @@ fn run(command: &mut Command) {
 }
 
 fn main() {
-    for file in ENCODERS.iter().chain(&[PIPEWIRE, "src/stream/encoder.h"]) {
+    for file in ENCODERS.iter().chain(&[PIPEWIRE, "src/stream/encoder.h", "src/stream/nal.h"]) {
         println!("cargo:rerun-if-changed={file}");
     }
     println!("cargo:rerun-if-changed=x264/x264.h");
@@ -58,6 +83,8 @@ fn main() {
         .include(&source)
         .include(&build)
         .include("nv-codec-headers/include")
+        .include(LIBVA)
+        .include(libva_version())
         .compile("encoder");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         cc::Build::new()

@@ -1,6 +1,6 @@
 //! H.264 encoding through the C interface in encoder.c: on the GPU where it has an encoder, with x264 otherwise.
 
-use std::ffi::c_int;
+use std::ffi::{CStr, c_char, c_int};
 use std::process::Command;
 use std::ptr;
 use std::slice;
@@ -29,6 +29,7 @@ unsafe extern "C" {
         coarse: *mut c_int,
     ) -> c_int;
     fn encoder_set_rate(encoder: *mut Raw, kbps: c_int, fps: c_int, quality: c_int) -> c_int;
+    fn encoder_name(encoder: *mut Raw) -> *const c_char;
     fn encoder_close(encoder: *mut Raw);
 }
 
@@ -112,14 +113,22 @@ pub struct Encoder {
     pub width: usize,
     pub height: usize,
     pub full_chroma: bool,
-    /// Whether the GPU does the encoding.
+    /// Whether the GPU does the encoding, and which encoder it is: "x264", "nvenc" or "vaapi".
     pub gpu: bool,
+    pub name: &'static str,
 }
 
 impl Encoder {
-    /// Opens the GPU's encoder where there is one that takes this picture, and x264 otherwise.
-    pub fn open(setup: Setup) -> Option<Self> {
-        let on_gpu = if gpu_can_encode() { Self::open_on(true, setup) } else { None };
+    /// Opens the GPU's encoder where there is one that takes this picture, and x264 otherwise. Where the colour
+    /// detail `may_give_way`, the GPU's encoder at 4:2:0 is preferred to x264 at 4:4:4: it saves more time than
+    /// full colour detail costs.
+    pub fn open(setup: Setup, colour_may_give_way: bool) -> Option<Self> {
+        let reduced = Setup { full_chroma: 0, ..setup };
+        let on_gpu = gpu_can_encode()
+            .then(|| {
+                Self::open_on(true, setup).or_else(|| colour_may_give_way.then(|| Self::open_on(true, reduced))?)
+            })
+            .flatten();
         on_gpu.or_else(|| Self::open_on(false, setup))
     }
 
@@ -127,7 +136,12 @@ impl Encoder {
         let raw = unsafe { encoder_open(&setup, gpu as c_int) };
         // Built only on success: dropping an `Encoder` closes the pointer it holds.
         let (width, height, full_chroma) = (setup.width as usize, setup.height as usize, setup.full_chroma != 0);
-        (!raw.is_null()).then(|| Self { raw, width, height, full_chroma, gpu })
+        if raw.is_null() {
+            return None;
+        }
+        // The name is a string constant of the C side's.
+        let name = unsafe { CStr::from_ptr(encoder_name(raw)) }.to_str().unwrap_or("?");
+        Some(Self { raw, width, height, full_chroma, gpu, name })
     }
 
     /// The Y, U and V planes to fill before calling `encode`.
@@ -264,13 +278,15 @@ mod tests {
         }
     }
 
-    /// The GPU encodes for one session at a time (nvenc.c says why): a second encoder is refused while the first
-    /// is open and granted once it is closed.
+    /// NVIDIA's encoder encodes for one session at a time (nvenc.c says why): a second one is refused while the
+    /// first is open and granted once it is closed.
     #[test]
-    fn the_gpu_encodes_for_one_session_at_a_time() {
+    fn nvenc_encodes_for_one_session_at_a_time() {
         let _alone = GPU.lock();
-        let open = || Encoder::open_on(true, Setup::new(640, 480, 60, 2000, false, 0));
-        let Some(first) = open() else { return }; // this machine's GPU cannot encode
+        let open = || {
+            Encoder::open_on(true, Setup::new(640, 480, 60, 2000, false, 0)).filter(|encoder| encoder.name == "nvenc")
+        };
+        let Some(first) = open() else { return }; // this machine's GPU has no such encoder
         assert!(open().is_none(), "a second encoder while the first is open");
         drop(first);
         assert!(open().is_some(), "an encoder once the first is closed");
@@ -305,10 +321,12 @@ mod tests {
             let first = encoder.encode(false).expect("a frame in gives a frame out").unit.len();
             assert!(encoder.set_rate(kbps, REFINE_FPS, STILL_QUALITY));
             let (mut sizes, mut still) = (Vec::new(), Still::default());
-            still.finished(first, Still::share(kbps));
+            still.finished(first, Still::share(kbps), false);
             loop {
-                sizes.push(encoder.encode(false).expect("a frame in gives a frame out").unit.len());
-                if still.finished(*sizes.last().unwrap(), Still::share(kbps)) {
+                let encoded = encoder.encode(false).expect("a frame in gives a frame out");
+                let (size, coarse) = (encoded.unit.len(), encoded.coarse);
+                sizes.push(size);
+                if still.finished(size, Still::share(kbps), coarse) {
                     break;
                 }
                 assert!(
