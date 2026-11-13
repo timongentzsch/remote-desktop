@@ -723,6 +723,7 @@ function connect() {
     const received = recent.reduce((sum, count) => sum + count) * 8 / (TICK * recent.length);  // kbit/s
     if (++ticks % TICKS_PER_REPORT === 0 && live && host.kbps) {  // once the host has reported
       const { frames, decode } = video.measure();
+      if (frames) send('decode', Math.round(decode * 1000));  // µs: the host weighs colour detail by it too
       showStatistics(frames, { encode: host.encode, send: host.send, network: roundTrip / 2, decode }, received, host.kbps, host.heldBack, byUdp ? 'UDP' : 'TCP');
     }
   }, TICK);

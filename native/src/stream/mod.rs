@@ -69,7 +69,7 @@ const EFFORT_FRAMES: u32 = 60;
 const STEP_COST: u32 = 2;
 
 /// Full colour detail (4:4:4) keeps coloured text and thin lines crisp, for twice the samples of 4:2:0 to
-/// convert, encode and send. Where the client leaves the choice to the host, the stream begins with it and
+/// convert, encode, send and decode; browsers decode it in software only, so the client's time counts as well. Where the client leaves the choice to the host, the stream begins with it and
 /// weighs it with the effort: it gives full colour up first, when new frames take longer than the budget or the
 /// bitrate cap decided most of them, since a coarse picture loses more than colour detail does. It tries again
 /// when frames are done in a `FULL_CHROMA_COST`th of the budget and fine as they are, after a rest that
@@ -238,9 +238,10 @@ impl Stream {
         let (average, budget) = (weighed.time / weighed.frames, self.frame_interval() / 2);
         let mostly_coarse = weighed.coarse * 2 > weighed.frames;
         if self.settings.auto_chroma {
-            let now = Instant::now();
-            let full = self.settings.full_chroma;
-            let wanted = next_chroma(full, average, budget, mostly_coarse, now >= self.chroma_rested_at);
+            // A frame is late if either end is slow with it, and full colour detail costs the decoder as well.
+            let decode = Duration::from_micros(self.shared.decode_micros.load(Ordering::Relaxed).into());
+            let (now, full) = (Instant::now(), self.settings.full_chroma);
+            let wanted = next_chroma(full, average.max(decode), budget, mostly_coarse, now >= self.chroma_rested_at);
             if wanted != full {
                 if full {
                     self.chroma_rested_at = now + self.chroma_rest;

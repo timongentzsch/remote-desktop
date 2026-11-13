@@ -33,6 +33,9 @@ pub struct Shared {
     pub climbing: AtomicBool,
     /// How long converting and encoding the latest frame took, in microseconds.
     pub encode_micros: AtomicU32,
+    /// How long the client took to decode a frame lately, in microseconds, as it says once a second; 0 until
+    /// it has.
+    pub decode_micros: AtomicU32,
     /// How many frames the bitrate left coarser than they should be, since the session last asked.
     pub coarse: AtomicU32,
 }

@@ -221,6 +221,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
             }
             // Echoed, with the time the client put into it, so that it can tell the round trip. It also carries
             // the round trip measured last and how many bytes have arrived, which the bitrate is set by.
+            Some("decode") => shared.decode_micros.store(number(1).clamp(0, u32::MAX.into()) as u32, Ordering::Relaxed),
             Some("ping") => {
                 told.round_trip.store(number(2).clamp(0, LONGEST_ROUND_TRIP) as u32, Ordering::Relaxed);
                 if number(3) > 0 {
