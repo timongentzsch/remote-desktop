@@ -76,8 +76,9 @@ static void load(void)
     loaded = 1;
 }
 
-static void set_rate(NV_ENC_RC_PARAMS *rate, int kbps, int buffer_kbits)
+static void set_rate(NV_ENC_RC_PARAMS *rate, int kbps, int buffer_kbits, int quality)
 {
+    rate->targetQuality = (uint8_t)quality;
     rate->averageBitRate = rate->maxBitRate = (uint32_t)kbps * 1000;
     rate->vbvBufferSize = rate->vbvInitialDelay = (uint32_t)buffer_kbits * 1000;
 }
@@ -154,8 +155,10 @@ static void nvenc_close(struct encoder *base)
     give_turn();
 }
 
-struct encoder *nvenc_open(int width, int height, int fps, int kbps, int full_chroma)
+struct encoder *nvenc_open(const struct encoder_setup *setup)
 {
+    int width = setup->width, height = setup->height, fps = setup->fps, kbps = setup->kbps;
+    int full_chroma = setup->full_chroma;
     pthread_once(&once, load);
     if (!loaded || !take_turn())
         return NULL;
@@ -190,9 +193,8 @@ struct encoder *nvenc_open(int width, int height, int fps, int kbps, int full_ch
         config->gopLength = NVENC_INFINITE_GOPLENGTH;
         config->frameIntervalP = 1;
         config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-        config->rcParams.targetQuality = QUALITY;
         config->rcParams.zeroReorderDelay = 1;
-        set_rate(&config->rcParams, kbps, BUFFER_KBITS(kbps));
+        set_rate(&config->rcParams, kbps, BUFFER_KBITS(kbps), setup->quality);
         NV_ENC_CONFIG_H264 *h264 = &config->encodeCodecConfig.h264Config;
         h264->idrPeriod = NVENC_INFINITE_GOPLENGTH;
         h264->disableSPSPPS = 1; /* the parameter sets travel in the stream's configuration record instead */
@@ -373,11 +375,11 @@ done:
     return size;
 }
 
-static int nvenc_set_rate(struct encoder *base, int kbps, int buffer_kbits)
+static int nvenc_set_rate(struct encoder *base, int kbps, int buffer_kbits, int quality)
 {
     struct nvenc *encoder = (struct nvenc *)base;
     NV_ENC_RC_PARAMS before = encoder->config.rcParams;
-    set_rate(&encoder->config.rcParams, kbps, buffer_kbits);
+    set_rate(&encoder->config.rcParams, kbps, buffer_kbits, quality);
     NV_ENC_RECONFIGURE_PARAMS change = { .version = NV_ENC_RECONFIGURE_PARAMS_VER, .reInitEncodeParams = encoder->setup };
     enter();
     NVENCSTATUS status = api.nvEncReconfigureEncoder(encoder->session, &change);

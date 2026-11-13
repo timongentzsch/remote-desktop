@@ -2,13 +2,12 @@
    layout of their structs: x264 in x264.c and the GPU's encoder in nvenc.c. */
 #include "encoder.h"
 
-/* Opens the GPU's encoder if `gpu` is set, x264 at this effort otherwise. NULL if that one cannot be used. */
-struct encoder *encoder_open(int width, int height, int fps, int kbps, int full_chroma, int gpu, int effort)
+/* Opens the GPU's encoder if `gpu` is set, x264 otherwise. NULL if that one cannot be used. */
+struct encoder *encoder_open(const struct encoder_setup *setup, int gpu)
 {
-    struct encoder *encoder = gpu ? nvenc_open(width, height, fps, kbps, full_chroma)
-                                  : software_open(width, height, fps, kbps, full_chroma, effort);
+    struct encoder *encoder = gpu ? nvenc_open(setup) : software_open(setup);
     if (encoder)
-        encoder->fps = fps;
+        encoder->fps = setup->fps;
     return encoder;
 }
 
@@ -35,11 +34,12 @@ int encoder_encode(struct encoder *encoder, int fresh, uint8_t **data, int *keyf
 }
 
 /* Tells a running encoder the bitrate cap and how many frames a second it will be given from now on, which
-   together say how much each frame may take. The encoders are told a frame rate only when opened, so fewer
-   frames a second are expressed as a higher bitrate at that rate. Returns 0 on success. */
-int encoder_set_rate(struct encoder *encoder, int kbps, int fps)
+   together say how much each frame may take, and the quality to aim for. The encoders are told a frame rate
+   only when opened, so fewer frames a second are expressed as a higher bitrate at that rate. Returns 0 on
+   success. */
+int encoder_set_rate(struct encoder *encoder, int kbps, int fps, int quality)
 {
-    return encoder->ops->set_rate(encoder, (int)((int64_t)kbps * encoder->fps / fps), BUFFER_KBITS(kbps));
+    return encoder->ops->set_rate(encoder, (int)((int64_t)kbps * encoder->fps / fps), BUFFER_KBITS(kbps), quality);
 }
 
 void encoder_close(struct encoder *encoder)

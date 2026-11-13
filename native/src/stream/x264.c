@@ -8,6 +8,7 @@ struct software {
     struct encoder base;
     x264_t *x264;
     x264_picture_t picture;
+    int quality; /* the target now, which tells a coarse frame */
 };
 
 static const struct encoder_ops software_ops;
@@ -18,23 +19,24 @@ static const char *const PRESETS[EFFORTS] = { "ultrafast", "veryfast", "faster" 
 /* A frame counts as coarse when the cap made it this much worse than the target, in quantiser steps. */
 #define COARSE_MARGIN 1
 
-static void set_rate(x264_param_t *param, int kbps, int buffer_kbits)
+static void set_rate(x264_param_t *param, int kbps, int buffer_kbits, int quality)
 {
     param->rc.i_vbv_max_bitrate = kbps;
     param->rc.i_vbv_buffer_size = buffer_kbits;
+    param->rc.f_rf_constant = quality; /* x264's "rate factor" */
 }
 
-struct encoder *software_open(int width, int height, int fps, int kbps, int full_chroma, int effort)
+struct encoder *software_open(const struct encoder_setup *setup)
 {
     x264_param_t param;
-    if (x264_param_default_preset(&param, PRESETS[effort], "zerolatency") < 0)
+    if (x264_param_default_preset(&param, PRESETS[setup->effort], "zerolatency") < 0)
         return NULL;
-    param.i_csp = full_chroma ? X264_CSP_I444 : X264_CSP_I420;
-    param.i_width = width;
-    param.i_height = height;
+    param.i_csp = setup->full_chroma ? X264_CSP_I444 : X264_CSP_I420;
+    param.i_width = setup->width;
+    param.i_height = setup->height;
     /* Frames arrive only when the screen changes, but x264 is told a constant rate: its variable-rate mode
        holds each frame back until the next one arrives. The bitrate cap is then an upper bound. */
-    param.i_fps_num = fps;
+    param.i_fps_num = setup->fps;
     param.i_fps_den = 1;
     param.b_vfr_input = 0;
     param.i_keyint_max = X264_KEYINT_MAX_INFINITE;
@@ -42,8 +44,7 @@ struct encoder *software_open(int width, int height, int fps, int kbps, int full
     param.b_annexb = 0; /* length-prefixed NAL units, as FLV carries them */
     /* Constant quality, capped: a still screen costs almost nothing and motion cannot outrun the link. */
     param.rc.i_rc_method = X264_RC_CRF;
-    param.rc.f_rf_constant = QUALITY; /* x264's "rate factor" */
-    set_rate(&param, kbps, BUFFER_KBITS(kbps));
+    set_rate(&param, setup->kbps, BUFFER_KBITS(setup->kbps), setup->quality);
     param.vui.b_fullrange = 1;
     param.vui.i_colorprim = param.vui.i_transfer = param.vui.i_colmatrix = BT709;
     param.vui.i_chroma_loc = CHROMA_AT_CENTRE; /* 4:2:0 chroma is the average of each 2x2 block */
@@ -53,7 +54,8 @@ struct encoder *software_open(int width, int height, int fps, int kbps, int full
     if (!encoder)
         return NULL;
     encoder->base.ops = &software_ops;
-    if (x264_picture_alloc(&encoder->picture, param.i_csp, width, height) < 0) {
+    encoder->quality = setup->quality;
+    if (x264_picture_alloc(&encoder->picture, param.i_csp, setup->width, setup->height) < 0) {
         free(encoder);
         return NULL;
     }
@@ -104,18 +106,21 @@ static int software_encode(struct encoder *base, int fresh, uint8_t **data, int 
     if (size > 0) {
         *data = nal[0].p_payload;
         *keyframe = out.b_keyframe;
-        *coarse = out.prop.f_crf_avg > QUALITY + COARSE_MARGIN; /* the rate factor the cap left it with */
+        *coarse = out.prop.f_crf_avg > encoder->quality + COARSE_MARGIN; /* the rate factor the cap left it with */
     }
     return size;
 }
 
-static int software_set_rate(struct encoder *base, int kbps, int buffer_kbits)
+static int software_set_rate(struct encoder *base, int kbps, int buffer_kbits, int quality)
 {
     struct software *encoder = (struct software *)base;
     x264_param_t param;
     x264_encoder_parameters(encoder->x264, &param);
-    set_rate(&param, kbps, buffer_kbits);
-    return x264_encoder_reconfig(encoder->x264, &param);
+    set_rate(&param, kbps, buffer_kbits, quality);
+    int failed = x264_encoder_reconfig(encoder->x264, &param);
+    if (!failed)
+        encoder->quality = quality;
+    return failed;
 }
 
 static void software_close(struct encoder *base)

@@ -13,7 +13,7 @@ pub use encode::{PROBE, probe};
 
 use crate::capture::{Output, Settings, Shape, Shared, Sink};
 use convert::Shrinker;
-use encode::{EFFORTS, Encoder};
+use encode::{EFFORTS, Encoder, MOVING_QUALITY, STILL_QUALITY, Setup};
 use flv::Packet;
 
 /// How many times a second a still picture is encoded again to bring it up to the quality target. Far fewer
@@ -107,6 +107,15 @@ fn next_effort(effort: u32, most: u32, average: Duration, budget: Duration, most
     }
 }
 
+/// What a frame is: a new picture of the screen, or the latest one encoded again to refine it. A client that
+/// needs a frame to begin with is given the latest picture as a new one: at a moving picture's quality it is
+/// smaller, and so there sooner, and refining makes it sharp from there.
+#[derive(Clone, Copy, PartialEq)]
+enum Frame {
+    New,
+    Refined,
+}
+
 pub struct Stream {
     pub settings: Settings,
     shared: Arc<Shared>,
@@ -126,8 +135,8 @@ pub struct Stream {
     /// next time it has to be given up.
     chroma_rested_at: Instant,
     chroma_rest: Duration,
-    /// The bitrate cap in kbit/s and the frames a second the encoder was last told.
-    rate: (u32, u32),
+    /// The bitrate cap in kbit/s, the frames a second and the quality target the encoder was last told.
+    rate: (u32, u32, u32),
     /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
     /// frame would ever improve it, so the same picture is encoded again until that stops paying.
     refinements_left: u32,
@@ -158,7 +167,7 @@ impl Stream {
             weighed: Weighed::default(),
             chroma_rested_at: now,
             chroma_rest: CHROMA_REST,
-            rate: (0, 0),
+            rate: (0, 0, 0),
             refinements_left: 0,
             still: Still::default(),
             encoded: now,
@@ -209,7 +218,7 @@ impl Stream {
         let full_chroma = encoder.full_chroma;
         convert::bgrx_to_yuv(source, stride, encoder.width, encoder.height, encoder.planes(), full_chroma);
         self.refine_anew();
-        if let Some((took, coarse)) = self.encode(started, self.settings.fps)
+        if let Some((took, coarse)) = self.encode(started, Frame::New)
             && !self.shared.climbing.load(Ordering::Relaxed)
         {
             self.weigh_effort(took, coarse);
@@ -263,10 +272,10 @@ impl Stream {
         if self.shared.fresh.load(Ordering::Relaxed) && self.encoder.is_some() {
             // A client waits for a frame to begin with: the latest picture again, refined from there.
             self.refine_anew();
-            self.encode(Instant::now(), REFINE_FPS);
+            self.encode(Instant::now(), Frame::New);
         } else if self.refinements_left > 0 && self.encoded.elapsed() >= REFINE_INTERVAL {
             self.refinements_left -= 1;
-            self.encode(Instant::now(), REFINE_FPS);
+            self.encode(Instant::now(), Frame::Refined);
         }
     }
 
@@ -282,9 +291,9 @@ impl Stream {
         let shrinking = self.settings.height.is_some_and(|most| self.screen.1 > most);
         self.shrinker = if shrinking { Some(Shrinker::new(self.screen, (width, height))?) } else { None };
         let (fps, kbps, full_chroma) = (self.settings.fps, self.settings.kbps, self.settings.full_chroma);
-        let mut encoder =
-            Encoder::open(width, height, fps, kbps, full_chroma, self.effort).ok_or("could not open the encoder")?;
-        self.rate = (kbps, fps);
+        let mut encoder = Encoder::open(Setup::new(width, height, fps, kbps, full_chroma, self.effort))
+            .ok_or("could not open the encoder")?;
+        self.rate = (kbps, fps, MOVING_QUALITY);
         let how = match (encoder.gpu, self.effort) {
             (true, _) => "on the GPU".to_owned(),
             (false, 0) => "with x264".to_owned(),
@@ -304,7 +313,7 @@ impl Stream {
 
     /// Encodes the picture currently in the encoder's planes, as one of `fps` frames a second, and sends it.
     /// Says how long that took since `started`, sending apart, and whether the frame came out coarse.
-    fn encode(&mut self, started: Instant, fps: u32) -> Option<(Duration, bool)> {
+    fn encode(&mut self, started: Instant, frame: Frame) -> Option<(Duration, bool)> {
         // A client that lost its place in the stream is told again how to decode, and begins anew with this frame.
         let fresh = self.shared.fresh.swap(false, Ordering::Relaxed);
         if fresh {
@@ -312,20 +321,27 @@ impl Stream {
             self.send_tag(Packet::Configuration, &configuration);
         }
         let encoder = self.encoder.as_mut()?;
-        // The session may allow another bitrate by now, and refining goes at another pace than the screen.
+        // The session may allow another bitrate by now, and refining goes at another pace and quality.
         let wanted = match self.shared.kbps.load(Ordering::Relaxed) {
             0 => self.settings.kbps,
             kbps => kbps,
         };
-        if self.rate != (wanted, fps) && encoder.set_rate(wanted, fps) {
-            self.rate = (wanted, fps);
+        let (fps, quality) = match frame {
+            Frame::New => (self.settings.fps, MOVING_QUALITY),
+            Frame::Refined => (REFINE_FPS, STILL_QUALITY),
+        };
+        if self.rate != (wanted, fps, quality) && encoder.set_rate(wanted, fps, quality) {
+            self.rate = (wanted, fps, quality);
             self.settings.kbps = wanted;
         }
         let encoded = encoder.encode(fresh)?;
         let (unit, keyframe, coarse) = (encoded.unit.to_vec(), encoded.keyframe, encoded.coarse);
         let took = started.elapsed();
         self.shared.encode_micros.store(took.as_micros() as u32, Ordering::Relaxed);
-        self.shared.coarse.fetch_add(coarse as u32, Ordering::Relaxed);
+        // Only a new picture says whether the bitrate holds the video back: a refined one aims higher than that.
+        if frame == Frame::New {
+            self.shared.coarse.fetch_add(coarse as u32, Ordering::Relaxed);
+        }
         if self.still.finished(unit.len(), Still::share(self.rate.0)) {
             self.refinements_left = 0;
         }
