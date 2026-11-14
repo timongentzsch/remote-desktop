@@ -5,7 +5,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsFd, FromRawFd};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_keyboard::{KeyState, KeymapFormat};
@@ -23,26 +23,36 @@ use x11rb::wrapper::ConnectionExt as _;
 use super::compositor;
 use crate::typing::characters;
 
-/// What types text into the desktop.
-pub enum Typist {
-    Wayland(Keyboard),
-    X(Box<SpareKey>),
+/// What types text into the desktop: a keyboard of the compositor's, or an X server's spare keys. A compositor
+/// runs an X server for the programs that need one, and neither way reaches those: they read the keys by the
+/// desktop's own layout whatever layout a keyboard of the host's brings, and what is typed through their X
+/// server does not arrive (tried on Hyprland with an Electron program). So that server is asked whether a
+/// window of its own is typed into, and such a window is left to the keys of a US keyboard.
+pub struct Typist {
+    keyboard: Option<Keyboard>,
+    key: Option<SpareKey>,
 }
 
 impl Typist {
     pub fn open() -> Result<Self, String> {
-        if compositor::available() {
-            Keyboard::open().map(Self::Wayland)
+        let (keyboard, key) = if compositor::available() {
+            (Some(Keyboard::open()?), SpareKey::open().ok())
         } else {
-            SpareKey::open().map(|key| Self::X(Box::new(key)))
-        }
+            (None, Some(SpareKey::open()?))
+        };
+        Ok(Self { keyboard, key })
     }
 
-    pub fn write(&mut self, text: &str) -> Result<(), String> {
-        match self {
-            Self::Wayland(keyboard) => keyboard.write(text),
-            Self::X(key) => key.write(text).map_err(|error| format!("the X server takes no text: {error}")),
+    /// Types `text`; false where that is left to a US keyboard's keys.
+    pub fn write(&mut self, text: &str) -> Result<bool, String> {
+        let refused = |error: Failed| format!("the X server takes no text: {error}");
+        match (&mut self.keyboard, &mut self.key) {
+            (Some(_), Some(key)) if key.has_focus().map_err(refused)? => return Ok(false),
+            (Some(keyboard), _) => keyboard.write(text)?,
+            (None, Some(key)) => key.write(text).map_err(refused)?,
+            (None, None) => return Ok(false),
         }
+        Ok(true)
     }
 }
 
@@ -82,9 +92,9 @@ fn layout(characters: &[char]) -> String {
     )
 }
 
-/// Adds the characters of `piece`, which are no more than a layout has keys for, to those `known`, forgetting
-/// the old ones where there is not room for all. Says whether there are new ones among them.
-fn learn(known: &mut Vec<char>, piece: &[char]) -> bool {
+/// Adds the characters of `piece`, which are no more than there are keys for, to those `known`, forgetting the
+/// old ones where there is not room for all `most`. Says whether there are new ones among them.
+fn learn(known: &mut Vec<char>, piece: &[char], most: usize) -> bool {
     let before = known.len();
     let add = |known: &mut Vec<char>| {
         piece.iter().for_each(|character| {
@@ -94,7 +104,7 @@ fn learn(known: &mut Vec<char>, piece: &[char]) -> bool {
         })
     };
     add(known);
-    if known.len() > MOST_KEYS {
+    if known.len() > most {
         known.clear();
         add(known);
         return true;
@@ -121,7 +131,8 @@ delegate_noop!(Deaf: ZwpVirtualKeyboardManagerV1);
 delegate_noop!(Deaf: ZwpVirtualKeyboardV1);
 
 /// A keyboard of the host's own beside the desktop's, with a layout of the characters it has typed so far.
-/// Tried on Hyprland 0.57 with a terminal that is a Wayland client.
+/// Tried on Hyprland 0.57 and on Sway, with a terminal and an Electron program that are Wayland clients; the
+/// Electron program took everything but characters beyond the first 65536, an emoji.
 pub struct Keyboard {
     events: EventQueue<Deaf>,
     seat: WlSeat,
@@ -148,10 +159,11 @@ impl Keyboard {
     fn write(&mut self, text: &str) -> Result<(), String> {
         let text: Vec<char> = characters(text).collect();
         for piece in text.chunks(MOST_KEYS) {
-            if learn(&mut self.known, piece) {
+            if learn(&mut self.known, piece, MOST_KEYS) {
                 self.tell_layout()?;
                 // The compositor has taken the layout before the first key of it is pressed.
                 self.events.roundtrip(&mut Deaf).map_err(compositor::lost)?;
+                std::thread::sleep(SETTLE); // Sway drops what a new keyboard types at once
             }
             for character in piece {
                 let Some(key) = self.known.iter().position(|known| known == character) else { continue };
@@ -182,14 +194,22 @@ impl Keyboard {
     }
 }
 
-/// A key of the X server's keyboard that makes nothing, which is given each character in turn.
+/// The keys of the X server's keyboard that make nothing, which are given the characters to type. A program
+/// hears that the keys' meaning has changed and then asks the server what it is: it is given a moment for
+/// that before the keys are pressed, and again before they change once more, or it would read a later meaning
+/// into an earlier key. Tried with an Electron program under Hyprland's X server.
 pub struct SpareKey {
     x: RustConnection,
     root: Window,
-    key: u8,
+    keys: Vec<u8>,
+    /// What the keys make now, in their order.
+    known: Vec<char>,
 }
 
 type Failed = Box<dyn std::error::Error>;
+
+const MOST_SPARE: usize = 32;
+const SETTLE: Duration = Duration::from_millis(30);
 
 impl SpareKey {
     fn open() -> Result<Self, String> {
@@ -197,32 +217,50 @@ impl SpareKey {
             let (x, screen) = x11rb::connect(None)?;
             x.xtest_get_version(2, 2)?.reply()?;
             let (first, last, root) = (x.setup().min_keycode, x.setup().max_keycode, x.setup().roots[screen].root);
-            let keys = x.get_keyboard_mapping(first, last - first + 1)?.reply()?;
-            let spare = keys
-                .keysyms
-                .chunks(keys.keysyms_per_keycode.into())
-                .rposition(|made| made.iter().all(|&symbol| symbol == 0));
-            let key = first + spare.ok_or("its keyboard has no key to spare")? as u8;
-            Ok(Self { x, root, key })
+            let made = x.get_keyboard_mapping(first, last - first + 1)?.reply()?;
+            let spare = made.keysyms.chunks(made.keysyms_per_keycode.into()).enumerate().rev();
+            let spare =
+                spare.filter(|(_, made)| made.iter().all(|&symbol| symbol == 0)).map(|(at, _)| first + at as u8);
+            let keys: Vec<u8> = spare.take(MOST_SPARE).collect();
+            if keys.is_empty() {
+                return Err("its keyboard has no key to spare".into());
+            }
+            Ok(Self { x, root, keys, known: Vec::new() })
         };
         open().map_err(|error| format!("the X server takes no text: {error}"))
     }
 
+    /// Whether a window of this X server's is the one typed into. Under a compositor it has none while the
+    /// window is the compositor's own.
+    fn has_focus(&self) -> Result<bool, Failed> {
+        const NONE_OR_ROOT: Window = 1;
+        Ok(self.x.get_input_focus()?.reply()?.focus > NONE_OR_ROOT)
+    }
+
     fn write(&mut self, text: &str) -> Result<(), Failed> {
-        // A character's symbol is its number, from Latin-1 on with a mark that says so.
-        let symbols = characters(text).map(|character| match character as u32 {
-            latin @ ..0x100 => latin,
-            other => 0x0100_0000 | other,
-        });
-        for symbol in symbols.chain([0]) {
-            self.x.change_keyboard_mapping(1, self.key, 1, &[symbol])?;
-            if symbol != 0 {
-                self.x.sync()?; // the new meaning is known before the key is pressed
+        let text: Vec<char> = characters(text).collect();
+        for piece in text.chunks(self.keys.len()) {
+            if learn(&mut self.known, piece, self.keys.len()) {
+                for (&key, &character) in self.keys.iter().zip(&self.known) {
+                    // A character's symbol is its number, from Latin-1 on with a mark that says so.
+                    let symbol = match character as u32 {
+                        latin @ ..0x100 => latin,
+                        other => 0x0100_0000 | other,
+                    };
+                    // Twice: a key with one symbol makes a letter's small form, and its capital only with Shift.
+                    self.x.change_keyboard_mapping(1, key, 2, &[symbol, symbol])?;
+                }
+                self.x.sync()?;
+                std::thread::sleep(SETTLE);
+            }
+            for character in piece {
+                let Some(at) = self.known.iter().position(|known| known == character) else { continue };
                 for event in [KEY_PRESS_EVENT, KEY_RELEASE_EVENT] {
-                    self.x.xtest_fake_input(event, self.key, 0, self.root, 0, 0, 0)?;
+                    self.x.xtest_fake_input(event, self.keys[at], 0, self.root, 0, 0, 0)?;
                 }
             }
             self.x.sync()?;
+            std::thread::sleep(SETTLE);
         }
         Ok(())
     }
@@ -239,11 +277,11 @@ mod tests {
         assert_eq!((KEYS[0], KEYS[12], KEYS[47]), (2, 16, 57), "digits, letters, and the space bar last");
         assert!(layout.contains("key <K0> {[U0061]};key <K1> {[U00E4]};key <K2> {[U1F642]};"));
         let mut known = vec!['a'];
-        assert!(!learn(&mut known, &['a', 'a']), "nothing new");
-        assert!(learn(&mut known, &['b', 'a', 'b']));
+        assert!(!learn(&mut known, &['a', 'a'], MOST_KEYS), "nothing new");
+        assert!(learn(&mut known, &['b', 'a', 'b'], MOST_KEYS));
         assert_eq!(known, ['a', 'b']);
         let many: Vec<char> = ('c'..).take(MOST_KEYS).collect();
-        assert!(learn(&mut known, &many));
+        assert!(learn(&mut known, &many, MOST_KEYS));
         assert_eq!(known, many, "the old ones made room");
     }
 

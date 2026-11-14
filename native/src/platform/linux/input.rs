@@ -106,7 +106,8 @@ impl Input {
             && let Some(typist) = typist
         {
             match typist.lock().unwrap().write(text) {
-                Ok(()) => return,
+                Ok(true) => return,
+                Ok(false) => {}
                 Err(error) => warn!("typed text goes by a US keyboard's keys: {error}"),
             }
         }
