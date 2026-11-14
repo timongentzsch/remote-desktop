@@ -308,19 +308,19 @@ impl Controller {
             return;
         }
         // Frames held up means the connection took no more than it did, so what was written is what the link
-        // carries. A round trip grown long means a queue further along, and heavy loss that the surplus is
-        // dropped there: then only what arrived says what the link carries. The connection's own count is gone
-        // by wherever there is one: frames that were held up while a queue drained say too little. One window
-        // is a short measurement, and a single large frame can hold up those behind it on a link that is not
-        // too slow at all: so it halves the rate at most, and the next takes it further if need be.
+        // carries: the window began when they began to wait, so that is told of the link at work. A round trip
+        // grown long means a queue further along, and heavy loss that the surplus is dropped there: then only
+        // what arrived says what the link carries. The client counts whole messages and may have sent little,
+        // so going by its count the rate is at most halved. The connection's own count is gone by wherever
+        // there is one: frames that were held up while a queue drained say too little.
         let arrived = carried(window.arrived, reading.received);
-        let link_rate = match arrived {
-            Some(arrived) if reading.lost.is_some() => arrived,
-            _ if backed_up => written,
-            _ => arrived.unwrap_or(0.0),
+        let (link_rate, least) = match arrived {
+            Some(arrived) if reading.lost.is_some() => (arrived, LOWEST),
+            _ if backed_up => (written, LOWEST),
+            _ => (arrived.unwrap_or(0.0), self.halved()),
         };
         let was = self.kbps;
-        self.kbps = ((SHARE * link_rate) as u32).clamp(self.halved(), self.kbps);
+        self.kbps = ((SHARE * link_rate) as u32).clamp(least, self.kbps);
         self.limited = true;
         if dropping {
             // The loss is that of a second past, and goes on being told until one has passed at the new rate.
@@ -718,9 +718,10 @@ mod tests {
     fn a_large_frame_after_a_still_screen_is_not_lag() {
         let (settled, after) = after_a_large_frame(50);
         assert_eq!(after, settled, "a frame of half the patience holds nothing up for long");
-        // A fifth of a second holds up what is behind it for longer than the client's patience.
+        // A fifth of a second holds up what is behind it for longer than the client's patience, which counts
+        // as lag: but the link is measured from then on, and is found to carry what it did.
         let (settled, after) = after_a_large_frame(200);
-        assert!(after * 2 >= settled, "at most halved: {settled} to {after}");
+        assert!(after * 10 >= settled * 8, "little lost: {settled} to {after}");
     }
 
     #[test]
