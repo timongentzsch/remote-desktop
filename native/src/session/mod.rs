@@ -266,6 +266,7 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
     let (mut by_udp, mut kbps) = (false, rate::start(told.ceiling.load(Ordering::Relaxed)));
     // How many bytes of sound went out since the last report, and the rate that made, in kbit/s.
     let (mut spoken, mut sound) = (0, 0);
+    let mut surplus = 0.0; // what a probe offers beyond the rate (see `rate::Verdict`)
     loop {
         // On either way the video begins anew: what the other carried last may never have arrived.
         let up = datagrams.as_ref().is_some_and(|datagrams| datagrams.link.is_up());
@@ -296,7 +297,7 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
             (Next::Closed, _) => break,
             (Next::Nothing, _) => {}
             (Next::Send(piece, Some(ready)), Some(udp)) => {
-                udp.piece(&piece, kbps);
+                udp.piece(&piece, kbps, surplus);
                 (left, sending) = (1, sending + ready.elapsed());
             }
             (Next::Sound(packet), Some(udp)) => {
@@ -360,7 +361,7 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
             controller = Controller::new(now, ceiling, sent);
         }
         let verdict = controller.step(&reading);
-        kbps = verdict.kbps;
+        (kbps, surplus) = (verdict.kbps, verdict.surplus);
         // The rate is what the link is given in all. Sound takes its part of that, which on a slow link is
         // no small one, though never most; and over UDP the spare datagrams take their share of the rest.
         let share = udp.as_ref().map_or(1.0, |udp| udp.share());

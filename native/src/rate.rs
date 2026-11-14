@@ -113,8 +113,11 @@ pub struct Verdict {
     pub kbps: u32,
     /// Bytes of padding to send now.
     pub padding: usize,
-    /// Whether a probe is running, in which case the writer asks again within milliseconds.
+    /// Whether a probe is running, in which case the writer asks again within milliseconds, and how much
+    /// more than the rate it offers, as a share of the rate and no more than all of it. That much the writer
+    /// may send beside the video in place of padding.
     pub probing: bool,
+    pub surplus: f64,
     /// Whether the link, not the ceiling, keeps the rate where it is.
     pub held_back: bool,
     /// Whether the rate is neither there nor at the ceiling yet, but still on its way up.
@@ -269,6 +272,11 @@ impl Controller {
             kbps: self.kbps,
             padding,
             probing: self.probe.is_some(),
+            surplus: self
+                .probe
+                .as_ref()
+                .map_or(0.0, |probe| probe.kbps as f64 / self.kbps as f64 - 1.0)
+                .clamp(0.0, 1.0),
             held_back: self.limited && below,
             climbing: !self.limited && below,
         }

@@ -89,13 +89,19 @@ impl<'a> Datagrams<'a> {
         self.link.send(datagrams, kbps);
     }
 
-    pub(super) fn piece(&mut self, piece: &[u8], kbps: u32) {
+    /// Sends a piece of video. While a probe offers the link a `surplus` beyond the rate, as a share of it,
+    /// the piece gets that many more spares, which take the place of the probe's padding: where the link
+    /// drops what it does not carry, the probe then costs fewer of the frames sent during it. They are the
+    /// probe's, and do not count towards the spares' share of the rate.
+    pub(super) fn piece(&mut self, piece: &[u8], kbps: u32, surplus: f64) {
         if !self.behind() {
             self.since = Instant::now(); // from here on the client has something to catch up with
         }
-        let datagrams = fec::cut(self.pieces, piece, self.link.room(), self.loss.max(LEAST_LOSS));
+        let datagrams = fec::cut(self.pieces, piece, self.link.room(), self.loss.max(LEAST_LOSS), surplus);
         let took: usize = datagrams.iter().map(Vec::len).sum();
-        (self.plain, self.cut) = (KEPT * self.plain + piece.len() as f64, KEPT * self.cut + took as f64);
+        if surplus == 0.0 {
+            (self.plain, self.cut) = (KEPT * self.plain + piece.len() as f64, KEPT * self.cut + took as f64);
+        }
         self.send(datagrams, kbps);
         self.pieces += 1;
     }
