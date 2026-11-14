@@ -192,7 +192,7 @@ struct encoder *nvenc_open(const struct encoder_setup *setup)
         config->frameIntervalP = 1;
         config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
         config->rcParams.zeroReorderDelay = 1;
-        set_rate(&config->rcParams, kbps, BUFFER_KBITS(kbps), setup->quality);
+        set_rate(&config->rcParams, kbps, BUFFER_KBITS(kbps, setup->buffer), setup->quality);
         NV_ENC_CONFIG_H264 *h264 = &config->encodeCodecConfig.h264Config;
         h264->idrPeriod = NVENC_INFINITE_GOPLENGTH;
         h264->disableSPSPPS = 1; /* the parameter sets travel in the stream's configuration record instead */
@@ -280,7 +280,6 @@ static int nvenc_headers(struct encoder *base, uint8_t **sets, int *sizes)
 
 static int nvenc_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *flags)
 {
-    (void)flags; /* stay unset: this encoder does not say */
     struct nvenc *encoder = (struct nvenc *)base;
     int size = -1;
     enter();
@@ -318,6 +317,9 @@ static int nvenc_encode(struct encoder *base, int fresh, uint8_t **data, int *ke
     size = nal_length_prefixed(&encoder->unit, stream.bitstreamBufferPtr, stream.bitstreamSizeInBytes, CODEC_H264);
     *data = encoder->unit.bytes;
     *keyframe = stream.pictureType == NV_ENC_PIC_TYPE_IDR;
+    /* Whether the cap decided how good the frame is, this encoder does not say: its quality target is not a
+       quantiser to compare with. A quantiser this coarse is far from any target. */
+    *flags = stream.frameAvgQP > POOR_QP ? FRAME_POOR : 0;
     api.nvEncUnlockBitstream(encoder->session, encoder->output);
 done:
     leave();

@@ -295,6 +295,7 @@ static int vaapi_encode(struct encoder *base, int fresh, uint8_t **data, int *ke
     *keyframe = idr;
     /* The cap, not the quality target, set the quantiser, as the budget this file keeps said. */
     *flags = qp > encoder->quality + COARSE_MARGIN ? FRAME_COARSE | FRAME_HELD_BACK : 0;
+    *flags |= qp > POOR_QP ? FRAME_POOR : 0;
     encoder->last_qp = qp;
     encoder->last_bits = size * 8;
     encoder->allowance -= size * 8.0;
@@ -371,9 +372,9 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
     encoder->width_blocks = (setup->width + kind->block - 1) / kind->block;
     encoder->height_blocks = (setup->height + kind->block - 1) / kind->block;
     encoder->kbps = setup->kbps;
-    encoder->buffer_kbits = BUFFER_KBITS(setup->kbps);
+    encoder->buffer_kbits = BUFFER_KBITS(setup->kbps, setup->buffer);
     encoder->quality = setup->quality;
-    encoder->allowance = BUFFER_KBITS(setup->kbps) * 1000.0; /* the buffer begins full */
+    encoder->allowance = encoder->buffer_kbits * 1000.0; /* the buffer begins full */
     size_t luma = (size_t)setup->width * setup->height;
     for (int plane = 0; plane < 3; plane++)
         if (!(encoder->planes[plane] = malloc(plane ? luma / 4 : luma)))

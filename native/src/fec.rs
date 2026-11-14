@@ -97,8 +97,8 @@ fn spares_needed(k: usize, loss: f64) -> usize {
 }
 
 /// The datagrams that carry piece `number` where a datagram has `room` bytes, with the spares it takes on a
-/// link that loses the share `loss` of them.
-pub fn cut(number: u32, piece: &[u8], room: usize, loss: f64) -> Vec<Vec<u8>> {
+/// link that loses the share `loss` of them, and at least the share `least` of its shards in spares.
+pub fn cut(number: u32, piece: &[u8], room: usize, loss: f64, least: f64) -> Vec<Vec<u8>> {
     // As few shards as fit, all of the same length, the last filled up with zeros.
     let count = piece.len().div_ceil(room - HEAD).max(1);
     let length = piece.len().div_ceil(count).max(1);
@@ -110,7 +110,7 @@ pub fn cut(number: u32, piece: &[u8], room: usize, loss: f64) -> Vec<Vec<u8>> {
     let mut before = 0;
     for block in 0..blocks {
         let k = count / blocks + usize::from(block < count % blocks);
-        let m = spares_needed(k, loss);
+        let m = spares_needed(k, loss).max((k as f64 * least) as usize);
         let block = &shards[before..before + k];
         let spares = spares(block, m);
         for (index, shard) in block.iter().copied().chain(spares.iter().map(Vec::as_slice)).enumerate() {
@@ -220,7 +220,7 @@ mod tests {
     fn a_piece_survives_the_loss_of_as_many_datagrams_as_it_has_spares() {
         for length in [0, 1, 700, 1187, 1188, 30_000, 200_000] {
             let piece = noise(length);
-            let datagrams = cut(7, &piece, 1200, 0.05);
+            let datagrams = cut(7, &piece, 1200, 0.05, 0.0);
             assert!(datagrams.iter().all(|datagram| datagram.len() <= 1200 && datagram.len() == datagrams[0].len()));
             assert_eq!(
                 join(&datagrams.iter().collect::<Vec<_>>()).as_ref(),
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn a_piece_that_lost_more_than_its_spares_is_not_made_up() {
         let piece = noise(5000);
-        let datagrams = cut(7, &piece, 1200, 0.05);
+        let datagrams = cut(7, &piece, 1200, 0.05, 0.0);
         assert_eq!(datagrams.len(), 5 + 4);
         assert_eq!(join(&datagrams.iter().skip(4).collect::<Vec<_>>()).as_ref(), Some(&piece));
         assert_eq!(join(&datagrams.iter().skip(5).collect::<Vec<_>>()), None);
@@ -262,8 +262,18 @@ mod tests {
         assert_eq!(needed(0.05), [3, 4, 7, 12]);
         assert_eq!(needed(0.9), needed(0.5), "a link that loses more than half is beyond spares");
         // A large piece is several blocks, each with its own.
-        let datagrams = cut(7, &noise(200_000), 1200, 0.05);
+        let datagrams = cut(7, &noise(200_000), 1200, 0.05, 0.0);
         let shards = 200_000usize.div_ceil(1200 - HEAD);
         assert_eq!(datagrams.len(), shards + shards.div_ceil(BLOCK) * 12);
+    }
+
+    #[test]
+    fn a_probe_gives_a_piece_as_many_spares_as_shards() {
+        let piece = noise(200_000);
+        let datagrams = cut(7, &piece, 1200, 0.01, 1.0);
+        assert!(datagrams.iter().all(|datagram| datagram[10] == datagram[11]), "k spares for k shards");
+        // Every second datagram is lost, as on a link that drops half of twice what it carries.
+        let arrived: Vec<&Vec<u8>> = datagrams.iter().step_by(2).collect();
+        assert_eq!(join(&arrived).as_ref(), Some(&piece));
     }
 }

@@ -53,12 +53,12 @@ int encoder_encode(struct encoder *encoder, int fresh, uint8_t **data, int *keyf
 }
 
 /* Tells a running encoder the bitrate cap and how many frames a second it will be given from now on, which
-   together say how much each frame may take, and the quality to aim for. The encoders are told a frame rate
-   only when opened, so fewer frames a second are expressed as a higher bitrate at that rate. Returns 0 on
-   success. */
-int encoder_set_rate(struct encoder *encoder, int kbps, int fps, int quality)
+   together say how much each frame gets, the quality to aim for, and for how many milliseconds of the cap one
+   frame may take what it allows. The encoders are told a frame rate only when opened, so fewer frames a second
+   are expressed as a higher bitrate at that rate. Returns 0 on success. */
+int encoder_set_rate(struct encoder *encoder, int kbps, int fps, int quality, int buffer)
 {
-    return encoder->ops->set_rate(encoder, (int)((int64_t)kbps * encoder->fps / fps), BUFFER_KBITS(kbps), quality);
+    return encoder->ops->set_rate(encoder, (int)((int64_t)kbps * encoder->fps / fps), BUFFER_KBITS(kbps, buffer), quality);
 }
 
 /* Which encoder it is: "x264", "nvenc" or "vaapi". */

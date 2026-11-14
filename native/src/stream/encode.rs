@@ -25,7 +25,7 @@ unsafe extern "C" {
         keyframe: *mut c_int,
         flags: *mut c_int,
     ) -> c_int;
-    fn encoder_set_rate(encoder: *mut Raw, kbps: c_int, fps: c_int, quality: c_int) -> c_int;
+    fn encoder_set_rate(encoder: *mut Raw, kbps: c_int, fps: c_int, quality: c_int, buffer: c_int) -> c_int;
     fn encoder_name(encoder: *mut Raw) -> *const c_char;
     fn encoder_close(encoder: *mut Raw);
 }
@@ -35,6 +35,11 @@ unsafe extern "C" {
 /// once it is sharp, so it is made sharper than moving ones, which would cost that much on every frame.
 pub const MOVING_QUALITY: u32 = 20;
 pub const STILL_QUALITY: u32 = 15;
+
+/// For how many milliseconds of the bitrate cap one frame may take what it allows, at most. A frame that takes
+/// more of the link's time than the client has patience for holds up those behind it, so the stream allows a
+/// moving picture's frames less than this (see stream/mod.rs).
+pub const LONGEST_BUFFER: u32 = 200;
 
 /// What an encoder is opened with, as `struct encoder_setup` in encoder.h.
 #[repr(C)]
@@ -50,6 +55,8 @@ pub struct Setup {
     pub effort: c_int,
     /// The client decodes HEVC, which the GPU's encoder then uses where it has it.
     pub hevc: c_int,
+    /// For how many milliseconds of the bitrate cap one frame may take what it allows.
+    pub buffer: c_int,
 }
 
 impl Setup {
@@ -64,6 +71,7 @@ impl Setup {
             full_chroma: full_chroma as c_int,
             effort: effort as c_int,
             hevc: 0,
+            buffer: LONGEST_BUFFER as c_int,
         }
     }
 }
@@ -71,6 +79,7 @@ impl Setup {
 /// What an encoder says of a frame, as encoder.h has it.
 const FRAME_COARSE: c_int = 1;
 const FRAME_HELD_BACK: c_int = 2;
+const FRAME_POOR: c_int = 4;
 
 /// What the stream is encoded as, as nal.h numbers it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -106,6 +115,8 @@ pub struct Encoded<'a> {
     /// keeps the budget itself, says so).
     pub coarse: bool,
     pub held_back: bool,
+    /// The frame's quantiser is so coarse that a smaller picture would show more (all three say so).
+    pub poor: bool,
 }
 
 /// How many levels of effort the software encoder has, as in encoder.h: 0 is the least work for a frame.
@@ -208,10 +219,12 @@ impl Encoder {
     }
 
     /// Tells the running encoder the bitrate cap and how many frames a second it will get from now on (a frame
-    /// may take that much more of the cap the fewer there are), and the quality to aim for. False if the encoder
-    /// refused and nothing changed.
-    pub fn set_rate(&mut self, kbps: u32, fps: u32, quality: u32) -> bool {
-        unsafe { encoder_set_rate(self.raw, kbps as c_int, fps as c_int, quality as c_int) == 0 }
+    /// gets that much more of the cap the fewer there are), the quality to aim for, and for how many
+    /// milliseconds of the cap one frame may take what it allows. False if the encoder refused and nothing
+    /// changed.
+    pub fn set_rate(&mut self, kbps: u32, fps: u32, quality: u32, buffer: u32) -> bool {
+        let (kbps, fps, quality, buffer) = (kbps as c_int, fps as c_int, quality as c_int, buffer as c_int);
+        unsafe { encoder_set_rate(self.raw, kbps, fps, quality, buffer) == 0 }
     }
 
     /// Encodes the picture in `planes`; as a frame that needs none before it, if `fresh`.
@@ -224,6 +237,7 @@ impl Encoder {
             keyframe: keyframe != 0,
             coarse: flags & FRAME_COARSE != 0,
             held_back: flags & FRAME_HELD_BACK != 0,
+            poor: flags & FRAME_POOR != 0,
         })
     }
 }
@@ -238,7 +252,7 @@ impl Drop for Encoder {
 mod tests {
     use std::sync::Mutex;
 
-    use super::super::{REFINE_FPS, Still};
+    use super::super::{REFINE_FPS, STILL_BUFFER, Still};
     use super::*;
 
     /// Held by a test while it uses the GPU's encoder, which only one can have at a time.
@@ -293,7 +307,7 @@ mod tests {
                     assert!(length > 0 && 4 + length <= encoded.unit.len(), "NAL units carry their length in front");
                     assert_eq!(encoded.keyframe, expect_keyframe);
                 }
-                assert!(encoder.set_rate(500, 60, MOVING_QUALITY), "the bitrate cap can change mid-stream");
+                assert!(encoder.set_rate(500, 60, MOVING_QUALITY, 50), "the bitrate cap can change mid-stream");
                 assert!(
                     encoder.encode(false).is_some_and(|encoded| !encoded.keyframe),
                     "and the stream simply continues"
@@ -341,16 +355,18 @@ mod tests {
     #[test]
     fn x264_says_when_the_cap_costs_quality() {
         for effort in 0..EFFORTS {
-            // Whether the last of this many encodings of one detailed picture came out coarse.
-            let coarse_after = |frames, kbps| {
+            // Whether the last of this many encodings of one detailed picture came out coarse, and poor.
+            let after = |frames, kbps| {
                 let mut encoder =
                     Encoder::open_on(false, Setup::new(640, 480, 60, kbps, false, effort)).expect("x264 opens");
                 draw_detail(&mut encoder);
-                (0..frames).map(|_| encoder.encode(false).expect("a frame in gives a frame out").coarse).last().unwrap()
+                let frame = |_| encoder.encode(false).map(|encoded| (encoded.coarse, encoded.poor));
+                (0..frames).map(frame).last().unwrap().expect("a frame in gives a frame out")
             };
-            assert!(coarse_after(3, 200), "under a low cap the picture stays coarse (effort {effort})");
+            assert_eq!(after(1, 200), (true, true), "under a low cap the picture begins poor (effort {effort})");
+            assert!(after(3, 200).0, "and stays coarse (effort {effort})");
             // A first frame is held to a part of what the cap allows at once, so it may be coarse even here.
-            assert!(!coarse_after(3, 50000), "under a high one it soon is not (effort {effort})");
+            assert_eq!(after(3, 50000), (false, false), "under a high one it soon is neither (effort {effort})");
         }
     }
 
@@ -363,7 +379,7 @@ mod tests {
             let (full_chroma, gpu) = (encoder.full_chroma, encoder.gpu);
             draw_detail(&mut encoder);
             let first = encoder.encode(false).expect("a frame in gives a frame out").unit.len();
-            assert!(encoder.set_rate(kbps, REFINE_FPS, STILL_QUALITY));
+            assert!(encoder.set_rate(kbps, REFINE_FPS, STILL_QUALITY, STILL_BUFFER));
             let (mut sizes, mut still) = (Vec::new(), Still::default());
             still.finished(first, Still::share(kbps), false);
             loop {
@@ -380,8 +396,8 @@ mod tests {
             }
             println!("full_chroma={full_chroma} gpu={gpu}: first frame {first} bytes, then {sizes:?}");
             assert!(sizes.iter().sum::<usize>() > first, "refining adds more detail than the first frame could carry");
-            // No frame may take more than the fifth of a second of the cap that the encoders' buffer allows.
-            let most = kbps as usize * 1000 / 8 / 5;
+            // No frame may take more than its tenth of a second of the cap, which the encoders' buffer allows.
+            let most = kbps as usize * STILL_BUFFER as usize / 8;
             assert!(sizes.iter().all(|&size| size <= most + most / 10), "refinement frames keep to the bitrate cap");
         }
     }

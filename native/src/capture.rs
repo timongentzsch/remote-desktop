@@ -25,7 +25,7 @@ pub struct Settings {
 }
 
 /// The heights, largest first, that the stream shrinks a picture to a step at a time while the link is weak.
-pub const HEIGHTS: [usize; 3] = [1080, 720, 360];
+pub const HEIGHTS: [usize; 4] = [1080, 720, 540, 360];
 
 /// What a session and its capture exchange while the capture runs.
 #[derive(Default)]
@@ -40,6 +40,9 @@ pub struct Shared {
     pub climbing: AtomicBool,
     /// and while the link, not the client's choice, keeps it lower.
     pub held_back: AtomicBool,
+    /// For how long the client would rather have video fall behind than see the picture made coarser, in
+    /// milliseconds.
+    pub patience: AtomicU32,
     /// How long converting and encoding the latest frame took, in microseconds.
     pub encode_micros: AtomicU32,
     /// How long the client took to decode a frame lately, in microseconds, as it says once a second; 0 until

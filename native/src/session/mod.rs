@@ -38,6 +38,8 @@ const PADDING_PIECE: usize = 16 * 1024;
 const REPORT: Duration = Duration::from_secs(1);
 /// The longest round trip a client's report is taken at, in milliseconds.
 const LONGEST_ROUND_TRIP: i64 = 60_000;
+/// Whatever sound takes of the rate, video is left at least one part in this many.
+const MOSTLY_VIDEO: u32 = 2;
 /// Where padding's noise begins (see `padding`); any number but zero does.
 const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 /// What the client's messages tell the session's writer.
@@ -98,7 +100,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     if let Some(message) = way_by_udp() {
         outbox.push_control(message);
     }
-    let shared = Arc::new(Shared::default());
+    let shared = Arc::new(Shared { patience: login.patience.into(), ..Shared::default() });
     let told = Arc::new(FromClient {
         ceiling: login.ceiling.into(),
         patience: login.patience.into(),
@@ -199,7 +201,9 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
                 told.ceiling.store(login::ceiling(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed)
             }
             Some("patience") => {
-                told.patience.store(login::patience(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed)
+                let patience = login::patience(parts.get(1).unwrap_or(&Value::Null));
+                told.patience.store(patience, Ordering::Relaxed);
+                shared.patience.store(patience, Ordering::Relaxed);
             }
             // The client's window changed size: so does the screen made for it. The pointer needs nothing new, as
             // that screen is then the only one.
@@ -260,6 +264,9 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
     let (mut reported, mut frames, mut sending, mut send) = (Instant::now(), 0, Duration::ZERO, 0.0);
     let mut datagrams = link.map(Datagrams::new);
     let (mut by_udp, mut kbps) = (false, rate::start(told.ceiling.load(Ordering::Relaxed)));
+    // How many bytes of sound went out since the last report, and the rate that made, in kbit/s.
+    let (mut spoken, mut sound) = (0, 0);
+    let mut surplus = 0.0; // what a probe offers beyond the rate (see `rate::Verdict`)
     loop {
         // On either way the video begins anew: what the other carried last may never have arrived.
         let up = datagrams.as_ref().is_some_and(|datagrams| datagrams.link.is_up());
@@ -290,16 +297,21 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
             (Next::Closed, _) => break,
             (Next::Nothing, _) => {}
             (Next::Send(piece, Some(ready)), Some(udp)) => {
-                udp.piece(&piece, kbps);
+                udp.piece(&piece, kbps, surplus);
                 (left, sending) = (1, sending + ready.elapsed());
             }
-            (Next::Sound(packet), Some(udp)) => udp.sound(&packet, kbps),
+            (Next::Sound(packet), Some(udp)) => {
+                let before = udp.written;
+                udp.sound(&packet, kbps);
+                spoken += udp.written - before;
+            }
             (Next::Sound(packet), None) => {
                 let message = ws::frame(ws::BINARY, &packet);
                 if connection.write(&message).is_err() {
                     break;
                 }
                 written += message.len() as u64;
+                spoken += message.len() as u64;
             }
             (Next::Send(bytes, ready), _) => {
                 // A piece of video is yet to be made a message; everything else comes as one.
@@ -349,10 +361,12 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
             controller = Controller::new(now, ceiling, sent);
         }
         let verdict = controller.step(&reading);
-        kbps = verdict.kbps;
-        // Over UDP the spare datagrams take their share of the rate.
+        (kbps, surplus) = (verdict.kbps, verdict.surplus);
+        // The rate is what the link is given in all. Sound takes its part of that, which on a slow link is
+        // no small one, though never most; and over UDP the spare datagrams take their share of the rest.
         let share = udp.as_ref().map_or(1.0, |udp| udp.share());
-        shared.kbps.store((kbps as f64 * share) as u32, Ordering::Relaxed);
+        let video = kbps.saturating_sub(sound).max(kbps / MOSTLY_VIDEO);
+        shared.kbps.store((video as f64 * share) as u32, Ordering::Relaxed);
         shared.climbing.store(verdict.climbing, Ordering::Relaxed);
         shared.held_back.store(verdict.held_back, Ordering::Relaxed);
         if let Some(udp) = &mut udp
@@ -362,6 +376,8 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
         }
         patience = if verdict.probing { PROBE_LOOK } else { LOOK };
         if reported.elapsed() >= REPORT {
+            sound = (spoken as f64 * 8.0 / 1000.0 / reported.elapsed().as_secs_f64()) as u32;
+            spoken = 0;
             let encode = shared.encode_micros.load(Ordering::Relaxed) as f64 / 1000.0;
             if frames > 0 {
                 send = sending.as_secs_f64() * 1000.0 / frames as f64;

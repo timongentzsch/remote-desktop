@@ -43,7 +43,7 @@ const SHARE: f64 = 0.85;
 /// most of its frames coarser than they should be: at a very low rate an encoder may not even use what it has.
 /// Only then is the link probed.
 const USED: f64 = 0.7;
-/// A probe offers this many times the current rate,
+/// A probe offers this many times the current rate, or the rate before lag where that is more,
 const STEP: f64 = 2.0;
 /// for this long plus eight round trips, in which a connection that had gone quiet picks up speed again.
 const PROBE_TIME: Duration = Duration::from_millis(600);
@@ -64,8 +64,10 @@ const STALE: Duration = Duration::from_millis(500);
 /// next report and a little under way. More than that, and the link is not taking what it is offered.
 const UNDER_WAY: u64 = 32 * 1024;
 
-/// How long the rate rests after lag before a probe. After a probe that gained nothing the rest doubles each
-/// time, up to the limit: a full link is not asked again and again.
+/// How long the rate rests after lag before a probe offers what it was before (see `Controller::before`), and
+/// after a probe that filled the link. After a probe that gained nothing the rest doubles each time, up to
+/// the limit: a full link is not asked again and again.
+const RETRY: Duration = Duration::from_secs(3);
 const REST: Duration = Duration::from_secs(10);
 const REST_LIMIT: Duration = Duration::from_secs(60);
 /// Lag this soon after a raise is blamed on the raise.
@@ -111,8 +113,11 @@ pub struct Verdict {
     pub kbps: u32,
     /// Bytes of padding to send now.
     pub padding: usize,
-    /// Whether a probe is running, in which case the writer asks again within milliseconds.
+    /// Whether a probe is running, in which case the writer asks again within milliseconds, and how much
+    /// more than the rate it offers, as a share of the rate and no more than all of it. That much the writer
+    /// may send beside the video in place of padding.
     pub probing: bool,
+    pub surplus: f64,
     /// Whether the link, not the ceiling, keeps the rate where it is.
     pub held_back: bool,
     /// Whether the rate is neither there nor at the ceiling yet, but still on its way up.
@@ -135,6 +140,8 @@ pub struct Controller {
     patience: Duration,
     /// When a probe last raised the rate.
     raised: Option<Instant>,
+    /// The rate that lag took it down from, until a probe has offered it again.
+    before: Option<u32>,
     fastest: Fastest,
 }
 
@@ -229,6 +236,7 @@ impl Controller {
             settled_at: now,
             patience: REST,
             raised: None,
+            before: None,
             fastest: Fastest { recent: None, earlier: None, turned: now },
         }
     }
@@ -237,6 +245,10 @@ impl Controller {
     /// a few times a second.
     pub fn step(&mut self, reading: &Reading) -> Verdict {
         self.fastest.note(reading.now, reading.round_trip);
+        if !reading.held_up.is_zero() && self.window.held_up.is_zero() {
+            // Frames begin to wait: what the link takes is told from here on, not from a still screen before.
+            self.window = Window::new(reading);
+        }
         self.window.frames += reading.frames;
         self.window.coarse += reading.coarse;
         self.window.held_up += reading.held_up;
@@ -260,6 +272,11 @@ impl Controller {
             kbps: self.kbps,
             padding,
             probing: self.probe.is_some(),
+            surplus: self
+                .probe
+                .as_ref()
+                .map_or(0.0, |probe| probe.kbps as f64 / self.kbps as f64 - 1.0)
+                .clamp(0.0, 1.0),
             held_back: self.limited && below,
             climbing: !self.limited && below,
         }
@@ -292,23 +309,28 @@ impl Controller {
         }
         // Frames held up means the connection took no more than it did, so what was written is what the link
         // carries. A round trip grown long means a queue further along, and heavy loss that the surplus is
-        // dropped there: then only what arrived says what the link carries. The client counts whole messages
-        // and may have sent little, so going by its count the rate is at most halved. The connection's own
-        // count is gone by wherever there is one: frames that were held up while a queue drained say too little.
+        // dropped there: then only what arrived says what the link carries. The connection's own count is gone
+        // by wherever there is one: frames that were held up while a queue drained say too little. One window
+        // is a short measurement, and a single large frame can hold up those behind it on a link that is not
+        // too slow at all: so it halves the rate at most, and the next takes it further if need be.
         let arrived = carried(window.arrived, reading.received);
-        let (link_rate, least) = match arrived {
-            Some(arrived) if reading.lost.is_some() => (arrived, LOWEST),
-            _ if backed_up => (written, LOWEST),
-            _ => (arrived.unwrap_or(0.0), self.halved()),
+        let link_rate = match arrived {
+            Some(arrived) if reading.lost.is_some() => arrived,
+            _ if backed_up => written,
+            _ => arrived.unwrap_or(0.0),
         };
-        self.kbps = ((SHARE * link_rate) as u32).clamp(least, self.kbps);
+        let was = self.kbps;
+        self.kbps = ((SHARE * link_rate) as u32).clamp(self.halved(), self.kbps);
         self.limited = true;
         if dropping {
             // The loss is that of a second past, and goes on being told until one has passed at the new rate.
             self.settled_at = reading.now + SETTLING;
         }
         let blamed_on_raise = self.raised.is_some_and(|at| reading.now.duration_since(at) < TRIAL);
-        self.rest(reading.now, blamed_on_raise);
+        // A link often lags for a moment only: the rate it carried before is offered again soon, once. Not
+        // where that rate was itself a raise the link did not take.
+        self.before = (!blamed_on_raise).then_some(self.before.unwrap_or(0).max(was));
+        self.rest(reading.now, RETRY, blamed_on_raise);
     }
 
     /// A probe, if the video could do with more than a rate below the ceiling, the rate has rested, and the
@@ -322,7 +344,7 @@ impl Controller {
         self.wanting = false; // what the probe leads to has to prove too little in its turn before the next
         self.window = Window::new(reading); // from here it shows what the probe does
         Some(Probe {
-            kbps: ((self.kbps as f64 * STEP) as u32).min(reading.ceiling),
+            kbps: ((self.kbps as f64 * STEP) as u32).max(self.before.take().unwrap_or(0)).min(reading.ceiling),
             since: reading.now,
             length: (PROBE_TIME + 8 * reading.round_trip.unwrap_or_default()).min(PROBE_LIMIT),
             written: reading.written,
@@ -376,7 +398,7 @@ impl Controller {
             self.resting_until = reading.now; // the link may carry more still: the next probe follows at once
         } else {
             self.settled_at = reading.now + SETTLING;
-            self.rest(reading.now, !gained);
+            self.rest(reading.now, REST, !gained);
         }
         if gained {
             (self.patience, self.raised) = (REST, Some(reading.now));
@@ -384,10 +406,10 @@ impl Controller {
         0
     }
 
-    /// Puts the next probe off: for the usual time, or for the patience that doubles with each such rest. A
+    /// Puts the next probe off: for the `usual` time, or for the patience that doubles with each such rest. A
     /// rest already under way is not cut short.
-    fn rest(&mut self, now: Instant, longer: bool) {
-        self.resting_until = self.resting_until.max(now + if longer { self.patience } else { REST });
+    fn rest(&mut self, now: Instant, usual: Duration, longer: bool) {
+        self.resting_until = self.resting_until.max(now + if longer { self.patience } else { usual });
         if longer {
             self.patience = (self.patience * 2).min(REST_LIMIT);
         }
@@ -677,5 +699,40 @@ mod tests {
         assert_eq!(fastest.get(), Some(Duration::from_millis(20)));
         fastest.note(start + 2 * MEMORY, Some(Duration::from_millis(300)));
         assert_eq!(fastest.get(), Some(Duration::from_millis(300)));
+    }
+
+    /// Runs a settled session on a still screen, then gives it one frame of `milliseconds` of its rate with
+    /// motion behind it. Says the rate before and two seconds after.
+    fn after_a_large_frame(milliseconds: u64) -> (u32, u32) {
+        let mut session = Session::new(10_000);
+        session.run(seconds(40));
+        let settled = session.kbps;
+        session.moving = false;
+        session.run(Duration::from_millis(600));
+        (session.made, session.moving) = (Some(session.kbps as u64 * 125 * milliseconds / 1000), true);
+        session.run(seconds(2));
+        (settled, session.kbps)
+    }
+
+    #[test]
+    fn a_large_frame_after_a_still_screen_is_not_lag() {
+        let (settled, after) = after_a_large_frame(50);
+        assert_eq!(after, settled, "a frame of half the patience holds nothing up for long");
+        // A fifth of a second holds up what is behind it for longer than the client's patience.
+        let (settled, after) = after_a_large_frame(200);
+        assert!(after * 2 >= settled, "at most halved: {settled} to {after}");
+    }
+
+    #[test]
+    fn a_link_that_lagged_for_a_moment_is_soon_given_its_rate_back() {
+        let mut session = Session::new(25_000);
+        session.run(seconds(40));
+        let settled = session.kbps;
+        session.capacity = 3000;
+        session.run(seconds(2));
+        assert!(session.kbps < 3000, "followed the link down to {}", session.kbps);
+        session.capacity = 25_000;
+        session.run(seconds(6));
+        assert!(session.kbps * 10 >= settled * 9, "{} of {settled} after six seconds", session.kbps);
     }
 }
