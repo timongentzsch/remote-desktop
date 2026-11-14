@@ -252,7 +252,7 @@ impl Drop for Encoder {
 mod tests {
     use std::sync::Mutex;
 
-    use super::super::{REFINE_FPS, STILL_BUFFER, Still};
+    use super::super::{REFINE_FPS, Still};
     use super::*;
 
     /// Held by a test while it uses the GPU's encoder, which only one can have at a time.
@@ -379,7 +379,7 @@ mod tests {
             let (full_chroma, gpu) = (encoder.full_chroma, encoder.gpu);
             draw_detail(&mut encoder);
             let first = encoder.encode(false).expect("a frame in gives a frame out").unit.len();
-            assert!(encoder.set_rate(kbps, REFINE_FPS, STILL_QUALITY, STILL_BUFFER));
+            assert!(encoder.set_rate(kbps, REFINE_FPS, STILL_QUALITY, LONGEST_BUFFER));
             let (mut sizes, mut still) = (Vec::new(), Still::default());
             still.finished(first, Still::share(kbps), false);
             loop {
@@ -396,8 +396,8 @@ mod tests {
             }
             println!("full_chroma={full_chroma} gpu={gpu}: first frame {first} bytes, then {sizes:?}");
             assert!(sizes.iter().sum::<usize>() > first, "refining adds more detail than the first frame could carry");
-            // No frame may take more than its tenth of a second of the cap, which the encoders' buffer allows.
-            let most = kbps as usize * STILL_BUFFER as usize / 8;
+            // No frame may take more than the fifth of a second of the cap that the encoders' buffer allows.
+            let most = kbps as usize * LONGEST_BUFFER as usize / 8;
             assert!(sizes.iter().all(|&size| size <= most + most / 10), "refinement frames keep to the bitrate cap");
         }
     }

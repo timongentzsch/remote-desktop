@@ -28,11 +28,10 @@ const REFINE_SECONDS: u32 = 20;
 const LONGEST_WAIT: Duration = Duration::from_millis(250);
 const REFINE_INTERVAL: Duration = Duration::from_millis(1000 / REFINE_FPS as u64);
 /// For how many milliseconds of the bitrate cap one frame may take what it allows (see `encode::LONGEST_BUFFER`).
-/// A refinement may take what falls to it until the next. A new picture's frame has others close behind it,
-/// which wait while it leaves: it may take half the client's patience, so that on a link that carries little
-/// more than the rate they do not wait for longer than that, and never less than two frames' worth.
-pub const STILL_BUFFER: u32 = 1000 / REFINE_FPS;
-
+/// A refinement has nothing close behind it and may take the longest. A new picture's frame has others close
+/// behind it, which wait while it leaves: it may take half the client's patience, so that on a link that
+/// carries little more than the rate they do not wait for longer than that, and never less than two frames'
+/// worth.
 fn moving_buffer(patience: u32, fps: u32) -> u32 {
     (patience / 2).clamp(2000 / fps, LONGEST_BUFFER)
 }
@@ -431,7 +430,7 @@ impl Stream {
                 let fps = self.settings.fps;
                 (fps, MOVING_QUALITY, moving_buffer(self.shared.patience.load(Ordering::Relaxed), fps))
             }
-            Frame::Refined => (REFINE_FPS, STILL_QUALITY, STILL_BUFFER),
+            Frame::Refined => (REFINE_FPS, STILL_QUALITY, LONGEST_BUFFER),
         };
         if self.rate != (wanted, fps, quality, buffer) && encoder.set_rate(wanted, fps, quality, buffer) {
             self.rate = (wanted, fps, quality, buffer);
