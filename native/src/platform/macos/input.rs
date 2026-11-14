@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::screen::POINTER_RANGE;
+use crate::typing;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -32,6 +33,7 @@ unsafe extern "C" {
     fn CGEventSetIntegerValueField(event: Event, field: u32, value: i64);
     fn CGEventSetFlags(event: Event, flags: u64);
     fn CGEventSetType(event: Event, kind: u32);
+    fn CGEventKeyboardSetUnicodeString(event: Event, length: usize, units: *const u16);
     fn CGEventPost(tap: u32, event: Event);
     fn CFRelease(object: *mut c_void);
 }
@@ -56,6 +58,8 @@ const BUTTON_EVENTS: [(u32, u32, u32); 3] = [(1, 2, 6), (3, 4, 7), (25, 26, 27)]
 const BTN_LEFT: u16 = 0x110;
 const BUTTONS: u16 = 5;
 
+/// Shift's flag: with it alone held, what is typed is still text.
+const SHIFT_FLAG: u64 = 0x20000;
 /// Modifier keys, as macOS key codes, and the flag each holds down.
 const MODIFIERS: [(u16, u64); 8] = [
     (56, 0x20000),  // shift
@@ -153,6 +157,25 @@ impl Input {
             unsafe { CGEventSetType(event, FLAGS_CHANGED) };
         }
         post(event, held.flags);
+    }
+
+    /// Types text (see typing.rs): each character as a key that makes just that, whatever the keyboard's
+    /// layout, or as a US keyboard's key while Control, Option or Command makes a shortcut of it.
+    pub fn text(&self, text: &str) {
+        if self.held.lock().unwrap().flags & !SHIFT_FLAG != 0 {
+            return typing::by_keys(text, |code, down| self.key(code, down));
+        }
+        for character in typing::characters(text) {
+            let mut units = [0; 2];
+            let units = character.encode_utf16(&mut units);
+            for down in [true, false] {
+                let event = unsafe { CGEventCreateKeyboardEvent(self.source, 0, down) };
+                if !event.is_null() {
+                    unsafe { CGEventKeyboardSetUnicodeString(event, units.len(), units.as_ptr()) };
+                }
+                post(event, 0);
+            }
+        }
     }
 
     pub fn move_to(&self, x: i32, y: i32) {

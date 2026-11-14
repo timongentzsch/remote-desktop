@@ -13,7 +13,7 @@
   :root {
     --ground: #000; --text: #fff; --muted: #a6a6a6; --dim: #8c8c8c; --line: #333;
     --mono: "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
-    --control: 32px; --field: 48px; --inset: 12px; --edge: 16px;
+    --control: 32px; --field: 48px; --key: 40px; --inset: 12px; --edge: 16px;
     color-scheme: dark;
   }
   html, body { height: 100%; margin: 0; overflow: hidden; background: var(--ground); color: var(--text); font: 13px/1.4 var(--mono); }
@@ -118,12 +118,50 @@
     .setting option:hover, .setting option:focus-visible { background: var(--line); outline: none; }
     .setting option:checked { background: var(--text); color: var(--ground); }
   }
+  /* On a phone: the picture is moved and zoomed under a pointer that stays in the middle of what is seen of it,
+     above a trackpad a quarter opaque that takes the fingers. A bar has the keys a phone's keyboard lacks. */
+  .pad, .keybar, .point, .typing { display: none; }
+  .touch canvas { position: fixed; left: 0; top: 0; width: auto; height: auto; transform-origin: 0 0; pointer-events: none; }
+  .touch.connected .pad { display: flex; }
+  .pad { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); height: calc((100% - var(--below, 0px)) * .42); box-sizing: border-box; padding: var(--inset); align-items: flex-start; gap: 8px; border-top: 1px solid var(--text); background: rgb(255 255 255 / .25); touch-action: none; user-select: none; -webkit-user-select: none; }
+  .keys .pad { bottom: calc(var(--below, 0px) + var(--key) + 1px); }
+  .pad button { height: var(--control); min-width: var(--control); padding: 0 var(--inset); display: flex; align-items: center; justify-content: center; border: 1px solid var(--text); background: var(--ground); }
+  .pad button[aria-pressed="true"] { background: var(--text); color: var(--ground); }
+  .touch .overlay { bottom: calc(var(--below, 0px) + var(--pad, 0px) - var(--control) - var(--inset)); padding: 0 var(--inset); align-items: flex-end; }
+  .touch .panel { max-height: calc(100vh - var(--below, 0px) - var(--pad, 0px) - var(--edge)); overflow-y: auto; }
+  .touch.connected .point { display: block; }
+  .point { position: fixed; left: var(--point-x, 50%); top: var(--point-y, 50%); width: calc(var(--point-size, 12px) * 2 / 3); height: var(--point-size, 12px); background: 0 0 / 100% 100% no-repeat url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 21"><path d="M.5.9v17l4.500-4 3.500 6.600 3-1.600-3.500-6.400h5.500z" fill="white" stroke="black"/></svg>'); pointer-events: none; }
+  .touch.connected.keys .keybar { display: flex; }
+  .keybar { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); border-top: 1px solid var(--text); background: var(--ground); overflow-x: auto; scrollbar-width: none; }
+  .keybar button { flex: 1 0 auto; min-width: 42px; height: var(--key); padding: 0 8px; border: 0; border-right: 1px solid var(--line); background: var(--ground); }
+  .keybar button[aria-pressed="true"] { background: var(--text); color: var(--ground); font-weight: 500; }
+  /* The field the phone's keyboard types into: out of sight, and large enough in type that Safari does not zoom to it. */
+  .touch .typing { display: block; position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; font-size: 16px; }
   .actions { display: flex; border-bottom: 0; }
   .actions button { flex: 1 1 0; height: var(--control); border: 0; background: var(--ground); }
   .actions button + button { border-left: 1px solid var(--text); }
 </style>
 
 <canvas></canvas>
+<div class="point" id="point"></div>
+<div class="pad" id="pad">
+  <button type="button" id="keys" aria-pressed="false" aria-label="Keyboard">
+    <svg aria-hidden="true" width="18" height="12" viewBox="0 0 18 12" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="17" height="11"/><path d="M3 3.500h2M6.500 3.500h2M10 3.500h2M13.500 3.500H15M3 6h1.500M6 6h2M9.500 6h2M13 6h2M5 8.500h8"/></svg>
+  </button>
+  <button type="button" id="fit" hidden>Fit</button>
+</div>
+<div class="keybar" id="keybar">
+  <button type="button" value="1">Esc</button>
+  <button type="button" value="15">Tab</button>
+  <button type="button" value="29" aria-pressed="false">Ctrl</button>
+  <button type="button" value="56" aria-pressed="false">Alt</button>
+  <button type="button" value="125" aria-pressed="false">Super</button>
+  <button type="button" value="105" aria-label="Left">←</button>
+  <button type="button" value="108" aria-label="Down">↓</button>
+  <button type="button" value="103" aria-label="Up">↑</button>
+  <button type="button" value="106" aria-label="Right">→</button>
+</div>
+<input class="typing" id="typing" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Typing goes to the remote computer">
 <div class="readout" aria-hidden="true"><span id="pin-fps"></span><span id="pin-delay"></span><span id="pin-bitrate"></span></div>
 
 <main class="connect">
@@ -266,6 +304,9 @@ let socket, stop;  // the current session's connection, and what ends it
 let path = null;    // its session to the host's UDP side, where there is one
 let moves = 0;      // how many moves of the pointer were sent
 const connected = () => document.body.classList.contains('connected');
+// A device that is worked with fingers and has no pointer of its own gets the trackpad (see "Fingers").
+const TOUCH = matchMedia('(hover: none) and (pointer: coarse)').matches;
+document.body.classList.toggle('touch', TOUCH);
 const send = (...message) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(message));
 
 // ---- Video ----
@@ -308,7 +349,8 @@ function videoPlayer(failed) {
       if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
         canvas.width = frame.displayWidth;
         canvas.height = frame.displayHeight;
-        showPointer();  // its size follows the picture's
+        at = null;
+        place();  // where it is shown and its pointer's size follow the picture's
       }
       context.drawImage(frame, 0, 0);
       frame.close();
@@ -674,17 +716,54 @@ const BIGGEST = 128;
 let shape = null;
 function showPointer() {
   const scale = canvas.getBoundingClientRect().width / canvas.width, sharpness = devicePixelRatio;
-  const fits = shape && Math.max(shape.width, shape.height) * scale <= BIGGEST;
-  if (!fits) return canvas.style.removeProperty('--pointer');
+  const fits = shape && (TOUCH || Math.max(shape.width, shape.height) * scale <= BIGGEST);
+  if (!fits) return TOUCH ? $('point').removeAttribute('style') : canvas.style.removeProperty('--pointer');
   const drawn = new OffscreenCanvas(shape.width, shape.height), sized = document.createElement('canvas');
   drawn.getContext('2d').putImageData(shape.image, 0, 0);
   sized.width = Math.max(1, Math.round(shape.width * scale * sharpness));
   sized.height = Math.max(1, Math.round(shape.height * scale * sharpness));
   sized.getContext('2d').drawImage(drawn, 0, 0, sized.width, sized.height);
   const tip = [shape.x, shape.y].map(place => Math.round(place * scale));
+  // On a phone the pointer is an element of its own in the middle of the picture, with its tip there.
+  if (TOUCH) return Object.assign($('point').style, {
+    width: `${shape.width * scale}px`, height: `${shape.height * scale}px`,
+    backgroundImage: `url(${sized.toDataURL()})`, translate: `${-tip[0]}px ${-tip[1]}px`,
+  });
   canvas.style.setProperty('--pointer', `image-set(url(${sized.toDataURL()}) ${sharpness}x) ${tip.join(' ')}, default`);
 }
-addEventListener('resize', showPointer);
+
+// On a phone the picture is placed so that the remote pointer, `at` in the picture's pixels, is in the middle of
+// what is seen of it: the part of the window that the phone's keyboard, the key bar and the trackpad leave. At
+// `zoom` 1 the whole picture fits there, in the middle of what it does not fill. Zoomed in, the picture stays
+// where it is near its edges and the pointer leaves the middle instead, so that nothing beside it is seen.
+const ARROW = 24, SMALLEST_ARROW = 8;  // a desktop pointer's height in its pixels, and the least here
+let at = null, zoom = 1;
+function place() {
+  if (TOUCH) {
+    const seen = visualViewport, root = document.documentElement.style;
+    root.setProperty('--below', `${Math.max(innerHeight - seen.height - seen.offsetTop, 0)}px`);
+    const under = $('pad').offsetHeight + $('keybar').offsetHeight, height = Math.max(seen.height - under, 1);
+    const scale = Math.min(innerWidth / canvas.width, height / canvas.height) * zoom;
+    at ??= { x: canvas.width / 2, y: canvas.height / 2 };  // until it is moved: the middle
+    // Where the picture begins along one side of the window, of which `room` is seen from `start` on.
+    const begin = (start, room, at, size) =>
+      size <= room ? start + (room - size) / 2 : Math.min(start, Math.max(start + room - size, start + room / 2 - at));
+    const x = begin(0, innerWidth, at.x * scale, canvas.width * scale);
+    const y = begin(seen.offsetTop, height, at.y * scale, canvas.height * scale);
+    canvas.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    root.setProperty('--pad', `${under}px`);
+    root.setProperty('--point-x', `${x + at.x * scale}px`);
+    root.setProperty('--point-y', `${y + at.y * scale}px`);
+    // The arrow that stands in for a pointer whose shape the host does not tell is as large as a desktop's
+    // would be in the picture, within what a finger's eye can make out.
+    root.setProperty('--point-size', `${Math.min(Math.max(ARROW * scale, SMALLEST_ARROW), ARROW)}px`);
+    $('fit').hidden = zoom === 1;
+  }
+  showPointer();
+}
+addEventListener('resize', place);
+visualViewport.addEventListener('resize', place);
+visualViewport.addEventListener('scroll', place);
 
 // With the size set to the client, the host makes its screen to this window: its size in CSS pixels and how
 // many device pixels each has. It is told at login, and again once a resize has settled.
@@ -881,17 +960,21 @@ addEventListener('keydown', onKey);
 addEventListener('keyup', onKey);
 addEventListener('blur', releaseAll);
 
+// A move goes over the WebSocket and, where there is one, over UDP as well, with its count: the host takes
+// whichever arrives first, so a lost packet on either way holds the pointer up on neither.
+function moveTo(x, y) {
+  send('move', x, y, ++moves);
+  path?.move(moves, x, y);
+}
+
 // Raw updates are delivered as they happen; ordinary move events wait for the next animation frame.
 canvas.addEventListener('onpointerrawupdate' in canvas ? 'pointerrawupdate' : 'pointermove', event => {
   // The picture is letterboxed inside the canvas element; map to its visible area, normalised to 0..65535.
   const scale = Math.min(canvas.clientWidth / canvas.width, canvas.clientHeight / canvas.height);
   const normalise = (position, client, size) =>
     Math.round(Math.min(1, Math.max(0, (position - (client - size * scale) / 2) / (size * scale))) * POINTER_RANGE);
-  // A move goes over the WebSocket and, where there is one, over UDP as well, with its count: the host takes
-  // whichever arrives first, so a lost packet on either way holds the pointer up on neither.
   const [x, y] = [normalise(event.clientX, canvas.clientWidth, canvas.width), normalise(event.clientY, canvas.clientHeight, canvas.height)];
-  send('move', x, y, ++moves);
-  path?.move(moves, x, y);
+  moveTo(x, y);
 });
 canvas.onmousedown = event => {
   showPanel(false);  // working in the remote picture again puts the panel away
@@ -909,10 +992,136 @@ canvas.addEventListener('wheel', event => {
   if (pinch) send('key', CONTROL, 0);
 }, { passive: false });
 
+// ---- Fingers ----
+
+// The trackpad works as a laptop's does. One finger moves the pointer, and so the picture under it; a tap is a
+// click, and a drag begun right after a tap holds the button. Two fingers scroll, or tapped click the right
+// button; moved apart or together they zoom the picture, here only.
+const TAP = 250, SLOP = 8;       // ms a tap lasts at most, and the pixels a finger may stray in it
+const SPEED = 1.6, MOST_ZOOM = 16, PINCH = .12, SCROLL = 5;
+const pad = $('pad'), fingers = new Map();
+let touch = null, lastTap = 0;   // the gesture under way, from the first finger down to the last up
+const apart = () => {
+  const [a, b] = [...fingers.values()];
+  return { distance: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+};
+const click = button => { key(button, true); key(button, false); };
+pad.addEventListener('pointerdown', event => {
+  if (event.target.closest('button')) return;
+  event.preventDefault();  // the phone's keyboard stays up, and no mouse is made up from the touch
+  showPanel(false);
+  pad.setPointerCapture(event.pointerId);
+  fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (fingers.size === 1) {
+    touch = { since: event.timeStamp, strayed: 0, most: 1, holds: event.timeStamp - lastTap < TAP * 1.5, held: false };
+  } else if (touch) Object.assign(touch, { most: fingers.size, two: apart(), does: null });
+});
+pad.addEventListener('pointermove', event => {
+  const was = fingers.get(event.pointerId), now = { x: event.clientX, y: event.clientY };
+  if (!was || !touch) return;
+  fingers.set(event.pointerId, now);
+  if (touch.most === 1) {
+    touch.strayed += Math.hypot(now.x - was.x, now.y - was.y);
+    if (touch.strayed < SLOP) return;
+    if (touch.holds && !touch.held) key(BUTTONS[0], touch.held = true);
+    const step = SPEED / (canvas.getBoundingClientRect().width / canvas.width);
+    at = {
+      x: Math.min(Math.max(at.x + (now.x - was.x) * step, 0), canvas.width - 1),
+      y: Math.min(Math.max(at.y + (now.y - was.y) * step, 0), canvas.height - 1),
+    };
+    moveTo(Math.round(at.x / canvas.width * POINTER_RANGE), Math.round(at.y / canvas.height * POINTER_RANGE));
+    place();
+  } else if (fingers.size === 2) {
+    const two = apart(), from = touch.two, spread = two.distance / from.distance;
+    touch.does ??= Math.abs(spread - 1) > PINCH ? 'zoom' : Math.hypot(two.x - from.x, two.y - from.y) > SLOP ? 'scroll' : null;
+    if (touch.does === 'zoom') {
+      zoom = Math.min(Math.max(zoom * spread, 1), MOST_ZOOM);
+      place();
+    }
+    // What is under the fingers goes where they go.
+    if (touch.does === 'scroll') send('scroll', Math.round((from.x - two.x) * SCROLL), Math.round((two.y - from.y) * SCROLL));
+    if (touch.does) touch.two = two;
+  }
+});
+const lift = event => {
+  if (!fingers.delete(event.pointerId) || fingers.size || !touch) return;
+  const short = event.timeStamp - touch.since < TAP * touch.most && event.type === 'pointerup';
+  if (touch.held) key(BUTTONS[0], false);
+  else if (touch.most === 2 && !touch.does && short) click(BUTTONS[2]);
+  else if (touch.most === 1 && touch.strayed < SLOP && short) {
+    click(BUTTONS[0]);
+    lastTap = event.timeStamp;
+  }
+  touch = null;
+};
+pad.addEventListener('pointerup', lift);
+pad.addEventListener('pointercancel', lift);
+pad.oncontextmenu = event => event.preventDefault();
+$('fit').onclick = () => {
+  zoom = 1;
+  place();
+};
+
+// The phone's keyboard types into a field out of sight, and says what it wrote, not which keys: what the field
+// holds is compared with what it held, and what is new goes to the host as text, which makes it appear whatever
+// the keyboard's layout there (native/src/typing.rs). The field is never empty, so that a Backspace always has
+// something to delete.
+const BACKSPACE = 14, ENTER = 28, FILLER = '·';
+const typing = $('typing'), keybar = $('keybar');
+let typed = typing.value = FILLER;
+// Ctrl, Alt and Super from the bar stay down until something was typed with them.
+function letGo() {
+  for (const sticky of keybar.querySelectorAll('[aria-pressed=true]')) {
+    key(+sticky.value, false);
+    sticky.ariaPressed = 'false';
+  }
+}
+function tap(code) {
+  key(code, true);
+  key(code, false);
+  letGo();
+}
+typing.oninput = event => {
+  const now = typing.value;
+  let same = 0;
+  while (same < typed.length && typed[same] === now[same]) same++;
+  for (let gone = typed.length; gone > same; gone--) tap(BACKSPACE);
+  if (now.length > same) {
+    send('text', now.slice(same));
+    letGo();
+  }
+  typed = now;
+  // The field begins anew between words, never while the keyboard is still composing one.
+  if (!event.isComposing && (!now || now.endsWith(' '))) typed = typing.value = FILLER;
+};
+typing.onkeydown = event => {
+  if (KEYS[event.code] || event.key !== 'Enter') return;  // a key with a code went the usual way (see onKey)
+  tap(ENTER);
+  typed = typing.value = FILLER;
+};
+function showKeys(open) {
+  document.body.classList.toggle('keys', open);
+  $('keys').ariaPressed = String(open);
+  open ? typing.focus({ preventScroll: true }) : typing.blur();
+  place();
+}
+$('keys').onclick = () => showKeys(!document.body.classList.contains('keys'));
+typing.onblur = () => showKeys(false);  // the phone's keyboard was put away
+keybar.onpointerdown = event => event.preventDefault();  // the field keeps the focus
+keybar.onclick = event => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  if (!button.ariaPressed) return tap(+button.value);
+  const down = button.ariaPressed !== 'true';
+  button.ariaPressed = String(down);
+  key(+button.value, down);
+};
+
 // ---- Controls and start-up ----
 
-// Keyboard Lock, which sends system shortcuts to the remote side, only takes effect in full screen.
-const enterFullscreen = () => document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock());
+// Keyboard Lock, which sends system shortcuts to the remote side, only takes effect in full screen. An iPhone
+// has no full screen for a page.
+const enterFullscreen = () => document.documentElement.requestFullscreen?.()?.then(() => navigator.keyboard?.lock());
 
 login.onsubmit = event => {
   event.preventDefault();
@@ -950,6 +1159,12 @@ try {
   }
 } catch {}
 if (!settings.patience.value) settings.patience.value = 100;
+// A phone is shown the host's screen as it is, which it zooms into itself, with the pointer drawn here.
+for (const [name, value] of TOUCH ? [['size', 'host'], ['cursor', 'no']] : []) {
+  settings[name].value = value;
+  settings[name].closest('label').hidden = true;
+}
+if (!document.documentElement.requestFullscreen) login.fullscreen.closest('label').hidden = $('fullscreen').hidden = true;
 showChoices();
 try { login.password.value = localStorage.password ?? ''; } catch {}
 login.password.required = !document.documentElement.classList.contains('open');

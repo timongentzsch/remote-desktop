@@ -34,6 +34,7 @@ mod server;
 mod session;
 mod stream;
 mod tls;
+mod typing;
 mod ws;
 
 /// The program's name: that of its binary, its services and the directory its settings are kept in.

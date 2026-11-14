@@ -21,6 +21,11 @@ desktop.
   while both ends have the time for it. Video, sound and the pointer's
   moves travel over UDP, so that a lost packet costs no wait: with one in twenty lost, frames still arrived
   on time and sound played on.
+- **On a phone too.** The lower part of its screen is a trackpad: the pointer stays in the middle of the
+  picture and the desktop moves under it, two fingers scroll and zoom, and a bar adds the keys a phone's
+  keyboard lacks. What that keyboard writes is typed on the host as text, whatever the keyboard layout there
+  (GNOME's and KDE's Wayland sessions take it as a US keyboard's keys, as do X programs under a Wayland
+  compositor).
 - **Yours to weigh.** One control says what gives way when the connection is not enough, response or
   quality, and takes effect at once. Frame rate, delay and bitrate can be pinned to a corner of the picture.
 
