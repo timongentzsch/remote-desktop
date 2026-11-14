@@ -30,10 +30,14 @@ struct encoder {
 #define COARSE_MARGIN 1
 
 /* What an encoder says of a frame, in the flags encode sets: the bitrate cap, not the quality target, decided
-   how good it is (FRAME_COARSE); and the cap's budget held it back so far that its size says nothing of how
-   good the picture is by now (FRAME_HELD_BACK), which only an encoder that keeps the budget itself can say. */
+   how good it is (FRAME_COARSE); the cap's budget held it back so far that its size says nothing of how
+   good the picture is by now (FRAME_HELD_BACK), which only an encoder that keeps the budget itself can say;
+   and its quantiser is above POOR_QP (FRAME_POOR), where text gets hard to read and fewer pixels, each given
+   more of the bits, show more. */
 #define FRAME_COARSE 1
 #define FRAME_HELD_BACK 2
+#define FRAME_POOR 4
+#define POOR_QP 33
 
 /* How much one frame may take at most, in kbit: what the bitrate cap allows in this many milliseconds. */
 #define BUFFER_KBITS(kbps, milliseconds) ((int)((int64_t)(kbps) * (milliseconds) / 1000))

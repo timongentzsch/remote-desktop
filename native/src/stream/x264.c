@@ -111,6 +111,7 @@ static int software_encode(struct encoder *base, int fresh, uint8_t **data, int 
         /* The rate factor the cap left it with. That x264 does not hold back by the budget alone: on two cores it
            reported a still picture's empty refinements as coarse. */
         *flags = out.prop.f_crf_avg > encoder->quality + COARSE_MARGIN ? FRAME_COARSE : 0;
+        *flags |= out.i_qpplus1 - 1 > POOR_QP ? FRAME_POOR : 0;
     }
     return size;
 }

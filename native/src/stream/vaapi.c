@@ -295,6 +295,7 @@ static int vaapi_encode(struct encoder *base, int fresh, uint8_t **data, int *ke
     *keyframe = idr;
     /* The cap, not the quality target, set the quantiser, as the budget this file keeps said. */
     *flags = qp > encoder->quality + COARSE_MARGIN ? FRAME_COARSE | FRAME_HELD_BACK : 0;
+    *flags |= qp > POOR_QP ? FRAME_POOR : 0;
     encoder->last_qp = qp;
     encoder->last_bits = size * 8;
     encoder->allowance -= size * 8.0;

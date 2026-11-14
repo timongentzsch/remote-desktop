@@ -25,7 +25,7 @@ pub struct Settings {
 }
 
 /// The heights, largest first, that the stream shrinks a picture to a step at a time while the link is weak.
-pub const HEIGHTS: [usize; 3] = [1080, 720, 360];
+pub const HEIGHTS: [usize; 4] = [1080, 720, 540, 360];
 
 /// What a session and its capture exchange while the capture runs.
 #[derive(Default)]

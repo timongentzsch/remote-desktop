@@ -79,6 +79,7 @@ impl Setup {
 /// What an encoder says of a frame, as encoder.h has it.
 const FRAME_COARSE: c_int = 1;
 const FRAME_HELD_BACK: c_int = 2;
+const FRAME_POOR: c_int = 4;
 
 /// What the stream is encoded as, as nal.h numbers it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -114,6 +115,8 @@ pub struct Encoded<'a> {
     /// keeps the budget itself, says so).
     pub coarse: bool,
     pub held_back: bool,
+    /// The frame's quantiser is so coarse that a smaller picture would show more (all three say so).
+    pub poor: bool,
 }
 
 /// How many levels of effort the software encoder has, as in encoder.h: 0 is the least work for a frame.
@@ -234,6 +237,7 @@ impl Encoder {
             keyframe: keyframe != 0,
             coarse: flags & FRAME_COARSE != 0,
             held_back: flags & FRAME_HELD_BACK != 0,
+            poor: flags & FRAME_POOR != 0,
         })
     }
 }
@@ -351,16 +355,18 @@ mod tests {
     #[test]
     fn x264_says_when_the_cap_costs_quality() {
         for effort in 0..EFFORTS {
-            // Whether the last of this many encodings of one detailed picture came out coarse.
-            let coarse_after = |frames, kbps| {
+            // Whether the last of this many encodings of one detailed picture came out coarse, and poor.
+            let after = |frames, kbps| {
                 let mut encoder =
                     Encoder::open_on(false, Setup::new(640, 480, 60, kbps, false, effort)).expect("x264 opens");
                 draw_detail(&mut encoder);
-                (0..frames).map(|_| encoder.encode(false).expect("a frame in gives a frame out").coarse).last().unwrap()
+                let frame = |_| encoder.encode(false).map(|encoded| (encoded.coarse, encoded.poor));
+                (0..frames).map(frame).last().unwrap().expect("a frame in gives a frame out")
             };
-            assert!(coarse_after(3, 200), "under a low cap the picture stays coarse (effort {effort})");
+            assert_eq!(after(1, 200), (true, true), "under a low cap the picture begins poor (effort {effort})");
+            assert!(after(3, 200).0, "and stays coarse (effort {effort})");
             // A first frame is held to a part of what the cap allows at once, so it may be coarse even here.
-            assert!(!coarse_after(3, 50000), "under a high one it soon is not (effort {effort})");
+            assert_eq!(after(3, 50000), (false, false), "under a high one it soon is neither (effort {effort})");
         }
     }
 
