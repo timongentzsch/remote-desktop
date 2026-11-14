@@ -193,6 +193,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
                 };
                 host.input.key(code, down);
             }
+            Some("text") => host.input.text(parts.get(1).and_then(Value::as_str).unwrap_or("")),
             Some("move") => moved(number(3) as u32, number(1) as i32, number(2) as i32),
             Some("scroll") => host.input.scroll(number(1) as i32, number(2) as i32),
             Some("bitrate") => {

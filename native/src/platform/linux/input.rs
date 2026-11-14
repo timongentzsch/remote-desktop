@@ -3,6 +3,11 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+use super::typing::Typist;
+use crate::typing::{self, MODIFIERS};
 
 const EV_SYN: u16 = 0;
 const EV_KEY: u16 = 1;
@@ -51,6 +56,10 @@ struct AbsoluteSetup {
 pub struct Input {
     keyboard: File,
     pointer: File,
+    /// Which of `MODIFIERS` are held down, a bit each.
+    modifiers: AtomicU8,
+    /// What types text into the desktop, once some was to be typed; None where the desktop has no way to.
+    typist: OnceLock<Option<Mutex<Typist>>>,
 }
 
 impl Input {
@@ -69,12 +78,39 @@ impl Input {
                 &[REL_HWHEEL, REL_WHEEL, REL_WHEEL_HI_RES, REL_HWHEEL_HI_RES],
                 &[ABS_X, ABS_Y],
             )?,
+            modifiers: AtomicU8::new(0),
+            typist: OnceLock::new(),
         })
     }
 
     /// Presses or releases a key or, for codes from BTN_MOUSE up, a pointer button.
     pub fn key(&self, code: u16, down: bool) {
+        if let Some(modifier) = MODIFIERS.iter().position(|&modifier| modifier == code) {
+            let _ = if down {
+                self.modifiers.fetch_or(1 << modifier, Ordering::Relaxed)
+            } else {
+                self.modifiers.fetch_and(!(1 << modifier), Ordering::Relaxed)
+            };
+        }
         emit(if code >= BTN_MOUSE { &self.pointer } else { &self.keyboard }, &[(EV_KEY, code, down as i32)]);
+    }
+
+    /// Types text (see typing.rs): as it is where the desktop has a way to, and as a US keyboard's keys where
+    /// it has none, where that way fails, and while a modifier makes a shortcut of it.
+    pub fn text(&self, text: &str) {
+        let typist = self.typist.get_or_init(|| {
+            let opened = Typist::open().map_err(|error| warn!("typed text goes by a US keyboard's keys: {error}"));
+            opened.ok().map(Mutex::new)
+        });
+        if self.modifiers.load(Ordering::Relaxed) == 0
+            && let Some(typist) = typist
+        {
+            match typist.lock().unwrap().write(text) {
+                Ok(()) => return,
+                Err(error) => warn!("typed text goes by a US keyboard's keys: {error}"),
+            }
+        }
+        typing::by_keys(text, |code, down| self.key(code, down));
     }
 
     /// Moves the pointer to a position given in 0..=65535 on each axis.

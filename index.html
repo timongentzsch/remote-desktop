@@ -1053,34 +1053,33 @@ $('fit').onclick = () => {
 };
 
 // The phone's keyboard types into a field out of sight, and says what it wrote, not which keys: what the field
-// holds is compared with what it held, and the difference is made up in keys as a US keyboard has them. It is
-// never empty, so that a Backspace always has something to delete.
-const SHIFT = 42, BACKSPACE = 14, ENTER = 28, FILLER = '·';
-const TYPED = {};  // a character -> the key that makes it, and whether with Shift
-[[2, '1234567890-=', '!@#$%^&*()_+'], [16, 'qwertyuiop[]', 'QWERTYUIOP{}'], [30, "asdfghjkl;'`", 'ASDFGHJKL:"~'],
- [43, '\\zxcvbnm,./', '|ZXCVBNM<>?'], [57, ' ', ' ']].forEach(([first, plain, shifted]) => [...plain].forEach((character, index) => {
-  TYPED[shifted[index]] = [first + index, true];
-  TYPED[character] = [first + index, false];
-}));
+// holds is compared with what it held, and what is new goes to the host as text, which makes it appear whatever
+// the keyboard's layout there (native/src/typing.rs). The field is never empty, so that a Backspace always has
+// something to delete.
+const BACKSPACE = 14, ENTER = 28, FILLER = '·';
 const typing = $('typing'), keybar = $('keybar');
 let typed = typing.value = FILLER;
-// Presses and lets go of a key. Ctrl, Alt and Super from the bar stay down until then.
-function tap(code, shift) {
-  if (shift) key(SHIFT, true);
-  key(code, true);
-  key(code, false);
-  if (shift) key(SHIFT, false);
+// Ctrl, Alt and Super from the bar stay down until something was typed with them.
+function letGo() {
   for (const sticky of keybar.querySelectorAll('[aria-pressed=true]')) {
     key(+sticky.value, false);
     sticky.ariaPressed = 'false';
   }
+}
+function tap(code) {
+  key(code, true);
+  key(code, false);
+  letGo();
 }
 typing.oninput = event => {
   const now = typing.value;
   let same = 0;
   while (same < typed.length && typed[same] === now[same]) same++;
   for (let gone = typed.length; gone > same; gone--) tap(BACKSPACE);
-  for (const character of now.slice(same)) if (TYPED[character]) tap(...TYPED[character]);
+  if (now.length > same) {
+    send('text', now.slice(same));
+    letGo();
+  }
   typed = now;
   // The field begins anew between words, never while the keyboard is still composing one.
   if (!event.isComposing && (!now || now.endsWith(' '))) typed = typing.value = FILLER;

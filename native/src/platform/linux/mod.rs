@@ -14,6 +14,7 @@ pub mod input;
 pub mod install;
 pub mod pointer;
 pub mod tcp;
+mod typing;
 pub mod virtual_screen;
 mod xserver;
 

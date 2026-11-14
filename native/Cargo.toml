@@ -27,9 +27,10 @@ pulseaudio = "0.3"
 rustbus = "0.19"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-x11rb = { version = "0.14", default-features = false, features = ["damage", "randr", "shm", "xfixes"] }
+x11rb = { version = "0.14", default-features = false, features = ["damage", "randr", "shm", "xfixes", "xtest"] }
 
 [build-dependencies]
 cc = "1"
