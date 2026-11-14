@@ -2,16 +2,18 @@
 //! and Hyprland, lets a client be a keyboard with a layout of its own: one whose keys are just the characters
 //! to type. An X server lets a spare key be given any character. GNOME's and KDE's compositors offer neither.
 
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::fs::File;
 use std::io::Write;
-use std::os::fd::{AsFd, FromRawFd};
+use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::FileExt;
 use std::time::{Duration, Instant};
 
 use wayland_client::globals::GlobalListContents;
-use wayland_client::protocol::wl_keyboard::{KeyState, KeymapFormat};
+use wayland_client::protocol::wl_keyboard::{self, KeyState, KeymapFormat, WlKeyboard};
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
-use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use wayland_client::protocol::wl_seat::{self, WlSeat};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1;
 use x11rb::connection::Connection as _;
@@ -21,39 +23,151 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 use super::compositor;
-use crate::typing::characters;
+use crate::typing::{Layout, characters};
 
 /// What types text into the desktop: a keyboard of the compositor's, or an X server's spare keys. A compositor
 /// runs an X server for the programs that need one, and neither way reaches those: they read the keys by the
 /// desktop's own layout whatever layout a keyboard of the host's brings, and what is typed through their X
 /// server does not arrive (tried on Hyprland with an Electron program). So that server is asked whether a
-/// window of its own is typed into, and such a window is left to the keys of a US keyboard.
+/// window of its own is typed into, and such a window is left to the keys of the desktop's keyboard, as all
+/// are on GNOME and KDE, whose compositors let no client be a keyboard.
 pub struct Typist {
     keyboard: Option<Keyboard>,
     key: Option<SpareKey>,
+    /// The desktop's own keyboard layout as it was when this was opened, where it could be told.
+    layout: Option<Layout>,
 }
 
 impl Typist {
-    pub fn open() -> Result<Self, String> {
-        let (keyboard, key) = if compositor::available() {
-            (Some(Keyboard::open()?), SpareKey::open().ok())
+    pub fn open() -> Self {
+        let told = |error| warn!("typed text goes by the keyboard's keys: {error}");
+        if compositor::available() {
+            // Its layout is asked first: a keyboard of the host's own would answer with its own.
+            let layout = desktop_layout();
+            Self { keyboard: Keyboard::open().map_err(told).ok(), key: SpareKey::open().ok(), layout }
         } else {
-            (None, Some(SpareKey::open()?))
-        };
-        Ok(Self { keyboard, key })
+            let key = SpareKey::open().map_err(told).ok();
+            let layout = key.as_ref().and_then(|key| key.layout().ok());
+            Self { keyboard: None, key, layout }
+        }
     }
 
-    /// Types `text`; false where that is left to a US keyboard's keys.
+    /// The desktop's own keyboard layout, for what is typed as keys.
+    pub fn layout(&self) -> Option<&Layout> {
+        self.layout.as_ref()
+    }
+
+    /// Types `text`; false where that is left to the keyboard's keys.
     pub fn write(&mut self, text: &str) -> Result<bool, String> {
         let refused = |error: Failed| format!("the X server takes no text: {error}");
         match (&mut self.keyboard, &mut self.key) {
             (Some(_), Some(key)) if key.has_focus().map_err(refused)? => return Ok(false),
             (Some(keyboard), _) => keyboard.write(text)?,
-            (None, Some(key)) => key.write(text).map_err(refused)?,
-            (None, None) => return Ok(false),
+            (None, Some(key)) if !compositor::available() => key.write(text).map_err(refused)?,
+            _ => return Ok(false),
         }
         Ok(true)
     }
+}
+
+/// What a compositor says of its seat's keyboard: that there is one, and its layout as a file.
+#[derive(Default)]
+struct Hearing {
+    has_keyboard: bool,
+    layout: Option<(OwnedFd, u32)>,
+}
+
+impl Dispatch<WlRegistry, GlobalListContents> for Hearing {
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WlSeat, ()> for Hearing {
+    fn event(state: &mut Self, _: &WlSeat, event: wl_seat::Event, (): &(), _: &Connection, _: &QueueHandle<Self>) {
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(has) } = event {
+            state.has_keyboard = has.contains(wl_seat::Capability::Keyboard);
+        }
+    }
+}
+
+impl Dispatch<WlKeyboard, ()> for Hearing {
+    fn event(
+        state: &mut Self,
+        _: &WlKeyboard,
+        event: wl_keyboard::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_keyboard::Event::Keymap { format: WEnum::Value(KeymapFormat::XkbV1), fd, size } = event {
+            state.layout = Some((fd, size));
+        }
+    }
+}
+
+/// The layout of the desktop's keyboard, as the compositor tells every client that asks for the keyboard.
+fn desktop_layout() -> Option<Layout> {
+    let (_, globals, mut events) = compositor::connect::<Hearing>().ok()?;
+    let seat: WlSeat = compositor::bind(&globals, &events.handle()).ok()?;
+    let mut hearing = Hearing::default();
+    events.roundtrip(&mut hearing).ok()?;
+    if !hearing.has_keyboard {
+        return None; // asking for a keyboard that is not there is an error
+    }
+    seat.get_keyboard(&events.handle(), ());
+    events.roundtrip(&mut hearing).ok()?;
+    let (file, size) = hearing.layout?;
+    let mut text = vec![0; size as usize];
+    File::from(file).read_exact_at(&mut text, 0).ok()?;
+    turned_around(CStr::from_bytes_until_nul(&text).ok()?)
+}
+
+/// Reads a layout in XKB's text form and turns it around, with the library every Wayland desktop has for
+/// that, libxkbcommon. Of a key's levels the first four count, which by XKB's usual types are the plain one,
+/// the one with Shift, with AltGr, and with both. A character goes to the lowest level that makes it.
+fn turned_around(text: &CStr) -> Option<Layout> {
+    type Made = unsafe extern "C" fn(*mut c_void, u32, u32, u32, *mut *const u32) -> c_int;
+    let library = unsafe { libc::dlopen(c"libxkbcommon.so.0".as_ptr(), libc::RTLD_NOW) };
+    let find = |name: &CStr| {
+        (!library.is_null()).then(|| unsafe { libc::dlsym(library, name.as_ptr()) }).filter(|found| !found.is_null())
+    };
+    // As xkbcommon.h declares them.
+    let context: unsafe extern "C" fn(c_int) -> *mut c_void = unsafe { std::mem::transmute(find(c"xkb_context_new")?) };
+    let compile: unsafe extern "C" fn(*mut c_void, *const c_char, c_int, c_int) -> *mut c_void =
+        unsafe { std::mem::transmute(find(c"xkb_keymap_new_from_string")?) };
+    let bound: unsafe extern "C" fn(*mut c_void) -> u32 =
+        unsafe { std::mem::transmute(find(c"xkb_keymap_max_keycode")?) };
+    let levels: unsafe extern "C" fn(*mut c_void, u32, u32) -> u32 =
+        unsafe { std::mem::transmute(find(c"xkb_keymap_num_levels_for_key")?) };
+    let made: Made = unsafe { std::mem::transmute(find(c"xkb_keymap_key_get_syms_by_level")?) };
+    let character: unsafe extern "C" fn(u32) -> u32 = unsafe { std::mem::transmute(find(c"xkb_keysym_to_utf32")?) };
+    const XKB_TEXT_V1: c_int = 1;
+    let keymap = unsafe { compile(context(0), text.as_ptr(), XKB_TEXT_V1, 0) };
+    if keymap.is_null() {
+        return None;
+    }
+    let mut layout = Layout::new();
+    for level in 0..4 {
+        // The keys the host's own keyboard has (see input.rs), by XKB's codes.
+        for code in u32::from(FIRST_CODE) + 1..=unsafe { bound(keymap) }.min(u32::from(FIRST_CODE) + 247) {
+            let mut symbols = std::ptr::null();
+            if level < unsafe { levels(keymap, code, 0) } && unsafe { made(keymap, code, 0, level, &mut symbols) } == 1
+            {
+                let typed = char::from_u32(unsafe { character(*symbols) }).filter(|typed| !typed.is_control());
+                if let Some(typed) = typed {
+                    layout.entry(typed).or_insert(((code - u32::from(FIRST_CODE)) as u16, level as u8));
+                }
+            }
+        }
+    }
+    Some(layout)
 }
 
 /// The keys a layout here gives characters to, by evdev's codes: those that type on any keyboard, the rows of
@@ -230,6 +344,29 @@ impl SpareKey {
         open().map_err(|error| format!("the X server takes no text: {error}"))
     }
 
+    /// The layout of the X server's keyboard, turned around. A key's symbols are told in columns: plain and
+    /// with Shift, the same of a second layout, then with AltGr and with both.
+    fn layout(&self) -> Result<Layout, Failed> {
+        let first = self.x.setup().min_keycode;
+        let made = self.x.get_keyboard_mapping(first, self.x.setup().max_keycode - first + 1)?.reply()?;
+        let mut layout = Layout::new();
+        for (level, column) in [0, 1, 4, 5].into_iter().enumerate() {
+            for (at, made) in made.keysyms.chunks(made.keysyms_per_keycode.into()).enumerate() {
+                // A symbol is its character's number: as it is in Latin-1, and marked beyond.
+                let character = match made.get(column) {
+                    Some(&latin @ 0x20..0x100) => char::from_u32(latin),
+                    Some(&marked @ 0x0100_0000..) => char::from_u32(marked & 0xFF_FFFF),
+                    _ => None,
+                };
+                let code = (usize::from(first) + at).saturating_sub(FIRST_CODE.into()) as u16;
+                if let Some(character) = character.filter(|character| !character.is_control()) {
+                    layout.entry(character).or_insert((code, level as u8));
+                }
+            }
+        }
+        Ok(layout)
+    }
+
     /// Whether a window of this X server's is the one typed into. Under a compositor it has none while the
     /// window is the compositor's own.
     fn has_focus(&self) -> Result<bool, Failed> {
@@ -311,5 +448,38 @@ mod tests {
             let expected = if (character as u32) < 0x100 { character as u32 } else { 0x0100_0000 | character as u32 };
             assert_eq!((count, unsafe { *made }), (1, expected), "the key for {character:?}");
         }
+    }
+
+    /// A German keyboard, as libxkbcommon makes it where this machine has it and the layouts' descriptions:
+    /// z and y have changed places, ä has a key, and @ and € need AltGr.
+    #[test]
+    fn a_german_layout_is_turned_around() {
+        #[repr(C)]
+        struct Names([*const c_char; 5]);
+        type Named = unsafe extern "C" fn(*mut c_void, *const Names, c_int) -> *mut c_void;
+        let library = unsafe { libc::dlopen(c"libxkbcommon.so.0".as_ptr(), libc::RTLD_NOW) };
+        if library.is_null() {
+            return;
+        }
+        let find = |name: &CStr| unsafe { libc::dlsym(library, name.as_ptr()) };
+        let context: unsafe extern "C" fn(c_int) -> *mut c_void =
+            unsafe { std::mem::transmute(find(c"xkb_context_new")) };
+        let named: Named = unsafe { std::mem::transmute(find(c"xkb_keymap_new_from_names")) };
+        let written: unsafe extern "C" fn(*mut c_void, c_int) -> *mut c_char =
+            unsafe { std::mem::transmute(find(c"xkb_keymap_get_as_string")) };
+        let null = std::ptr::null();
+        let german = Names([null, c"pc105".as_ptr(), c"de".as_ptr(), null, null]);
+        let keymap = unsafe { named(context(0), &german, 0) };
+        if keymap.is_null() {
+            return;
+        }
+        let layout = turned_around(unsafe { CStr::from_ptr(written(keymap, 1)) }).expect("a layout");
+        let key = |character| layout.get(&character).copied();
+        assert_eq!((key('z'), key('y')), (Some((21, 0)), Some((44, 0))));
+        assert_eq!((key('a'), key('A'), key('ä')), (Some((30, 0)), Some((30, 1)), Some((40, 0))));
+        assert_eq!(
+            (key('@'), key('€'), key('1'), key('!')),
+            (Some((16, 2)), Some((18, 2)), Some((2, 0)), Some((2, 1)))
+        );
     }
 }

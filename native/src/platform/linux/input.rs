@@ -58,8 +58,8 @@ pub struct Input {
     pointer: File,
     /// Which of `MODIFIERS` are held down, a bit each.
     modifiers: AtomicU8,
-    /// What types text into the desktop, once some was to be typed; None where the desktop has no way to.
-    typist: OnceLock<Option<Mutex<Typist>>>,
+    /// What types text into the desktop, once some was to be typed.
+    typist: OnceLock<Mutex<Typist>>,
 }
 
 impl Input {
@@ -95,23 +95,18 @@ impl Input {
         emit(if code >= BTN_MOUSE { &self.pointer } else { &self.keyboard }, &[(EV_KEY, code, down as i32)]);
     }
 
-    /// Types text (see typing.rs): as it is where the desktop has a way to, and as a US keyboard's keys where
-    /// it has none, where that way fails, and while a modifier makes a shortcut of it.
+    /// Types text (see typing.rs): as it is where the desktop has a way to, and as keys where it has none,
+    /// where that way fails, and while a modifier makes a shortcut of it.
     pub fn text(&self, text: &str) {
-        let typist = self.typist.get_or_init(|| {
-            let opened = Typist::open().map_err(|error| warn!("typed text goes by a US keyboard's keys: {error}"));
-            opened.ok().map(Mutex::new)
-        });
-        if self.modifiers.load(Ordering::Relaxed) == 0
-            && let Some(typist) = typist
-        {
-            match typist.lock().unwrap().write(text) {
+        let mut typist = self.typist.get_or_init(|| Mutex::new(Typist::open())).lock().unwrap();
+        if self.modifiers.load(Ordering::Relaxed) == 0 {
+            match typist.write(text) {
                 Ok(true) => return,
                 Ok(false) => {}
-                Err(error) => warn!("typed text goes by a US keyboard's keys: {error}"),
+                Err(error) => warn!("typed text goes by the keyboard's keys: {error}"),
             }
         }
-        typing::by_keys(text, |code, down| self.key(code, down));
+        typing::by_keys(text, typist.layout(), |code, down| self.key(code, down));
     }
 
     /// Moves the pointer to a position given in 0..=65535 on each axis.

@@ -163,7 +163,7 @@ impl Input {
     /// layout, or as a US keyboard's key while Control, Option or Command makes a shortcut of it.
     pub fn text(&self, text: &str) {
         if self.held.lock().unwrap().flags & !SHIFT_FLAG != 0 {
-            return typing::by_keys(text, |code, down| self.key(code, down));
+            return typing::by_keys(text, None, |code, down| self.key(code, down));
         }
         for character in typing::characters(text) {
             let mut units = [0; 2];
