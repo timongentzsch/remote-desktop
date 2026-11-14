@@ -46,24 +46,37 @@ impl Typist {
     }
 }
 
-/// A keyboard's layouts have room for this many keys; one layout here has a key for each character.
-const MOST_KEYS: usize = 240;
-/// A layout's key codes begin here, by an old rule of X's, and a key is named to the compositor without it.
-const FIRST_CODE: usize = 8;
+/// The keys a layout here gives characters to, by evdev's codes: those that type on any keyboard, the rows of
+/// digits and letters and the space bar. A desktop takes a key for a shortcut by where it is on its own
+/// keyboard, whatever this layout says it makes: the key that is Print there took a screenshot on Hyprland.
+/// Nobody makes a shortcut of a letter alone.
+const KEYS: [u16; MOST_KEYS] = {
+    let (mut keys, mut at, mut code) = ([0; MOST_KEYS], 0, 2);
+    while code <= 57 {
+        if matches!(code, 2..=13 | 16..=27 | 30..=41 | 43..=53 | 57) {
+            keys[at] = code;
+            at += 1;
+        }
+        code += 1;
+    }
+    keys
+};
+const MOST_KEYS: usize = 48;
+/// A layout's key codes are evdev's and this, by an old rule of X's.
+const FIRST_CODE: u16 = 8;
 
-/// The keyboard layout, in XKB's text form, whose key `at + 1` makes `characters[at]`.
+/// The keyboard layout, in XKB's text form, whose key `KEYS[at]` makes `characters[at]`.
 fn layout(characters: &[char]) -> String {
-    let codes = (0..characters.len()).map(|at| format!("<K{at}> = {};", FIRST_CODE + 1 + at));
+    let codes = (0..characters.len()).map(|at| format!("<K{at}> = {};", FIRST_CODE + KEYS[at]));
     let symbols =
         characters.iter().enumerate().map(|(at, &character)| format!("key <K{at}> {{[U{:04X}]}};", character as u32));
     format!(
         "xkb_keymap {{\n\
-         xkb_keycodes \"typed\" {{ minimum = {FIRST_CODE}; maximum = {}; {} }};\n\
+         xkb_keycodes \"typed\" {{ minimum = {FIRST_CODE}; maximum = 255; {} }};\n\
          xkb_types \"typed\" {{ include \"complete\" }};\n\
          xkb_compatibility \"typed\" {{ include \"complete\" }};\n\
          xkb_symbols \"typed\" {{ {} }};\n\
          }};\n",
-        FIRST_CODE + 1 + characters.len(),
         codes.collect::<String>(),
         symbols.collect::<String>(),
     )
@@ -108,8 +121,11 @@ delegate_noop!(Deaf: ZwpVirtualKeyboardManagerV1);
 delegate_noop!(Deaf: ZwpVirtualKeyboardV1);
 
 /// A keyboard of the host's own beside the desktop's, with a layout of the characters it has typed so far.
+/// Tried on Hyprland 0.57 with a terminal that is a Wayland client.
 pub struct Keyboard {
     events: EventQueue<Deaf>,
+    seat: WlSeat,
+    manager: ZwpVirtualKeyboardManagerV1,
     keyboard: ZwpVirtualKeyboardV1,
     known: Vec<char>,
     since: Instant,
@@ -122,7 +138,11 @@ impl Keyboard {
         let seat: WlSeat = compositor::bind(&globals, &queue)?;
         let manager: ZwpVirtualKeyboardManagerV1 = compositor::bind(&globals, &queue)?;
         let keyboard = manager.create_virtual_keyboard(&seat, &queue, ());
-        Ok(Self { events, keyboard, known: Vec::new(), since: Instant::now() })
+        // It begins with the commonest characters, so that ordinary typing seldom takes a new layout.
+        let known = ('a'..='z').chain(" .,".chars()).collect();
+        let mut opened = Self { events, seat, manager, keyboard, known, since: Instant::now() };
+        opened.tell_layout()?;
+        Ok(opened)
     }
 
     fn write(&mut self, text: &str) -> Result<(), String> {
@@ -130,11 +150,13 @@ impl Keyboard {
         for piece in text.chunks(MOST_KEYS) {
             if learn(&mut self.known, piece) {
                 self.tell_layout()?;
+                // The compositor has taken the layout before the first key of it is pressed.
+                self.events.roundtrip(&mut Deaf).map_err(compositor::lost)?;
             }
             for character in piece {
                 let Some(key) = self.known.iter().position(|known| known == character) else { continue };
                 for state in [KeyState::Pressed, KeyState::Released] {
-                    self.keyboard.key(self.since.elapsed().as_millis() as u32, key as u32 + 1, state.into());
+                    self.keyboard.key(self.since.elapsed().as_millis() as u32, KEYS[key].into(), state.into());
                 }
             }
         }
@@ -142,8 +164,12 @@ impl Keyboard {
         self.events.roundtrip(&mut Deaf).map(|_| ()).map_err(compositor::lost)
     }
 
-    /// Hands the compositor the layout of the characters known, as a file in memory.
-    fn tell_layout(&self) -> Result<(), String> {
+    /// Hands the compositor the layout of the characters known, as a file in memory. It goes with a keyboard
+    /// of its own: Hyprland tells the window that is typed into the first layout a keyboard has, and no later
+    /// one.
+    fn tell_layout(&mut self) -> Result<(), String> {
+        self.keyboard.destroy();
+        self.keyboard = self.manager.create_virtual_keyboard(&self.seat, &self.events.handle(), ());
         let layout = layout(&self.known);
         let made = unsafe { libc::memfd_create(c"layout".as_ptr(), libc::MFD_CLOEXEC) };
         if made < 0 {
@@ -209,8 +235,8 @@ mod tests {
     #[test]
     fn a_layout_has_a_key_for_each_character() {
         let layout = layout(&['a', 'ä', '🙂']);
-        assert!(layout.contains("minimum = 8; maximum = 12;"));
-        assert!(layout.contains("<K0> = 9;<K1> = 10;<K2> = 11;"));
+        assert!(layout.contains("<K0> = 10;<K1> = 11;<K2> = 12;"), "the keys of 1, 2 and 3");
+        assert_eq!((KEYS[0], KEYS[12], KEYS[47]), (2, 16, 57), "digits, letters, and the space bar last");
         assert!(layout.contains("key <K0> {[U0061]};key <K1> {[U00E4]};key <K2> {[U1F642]};"));
         let mut known = vec!['a'];
         assert!(!learn(&mut known, &['a', 'a']), "nothing new");
@@ -243,7 +269,7 @@ mod tests {
         assert!(!keymap.is_null(), "libxkbcommon refuses the layout");
         for (at, character) in characters.into_iter().enumerate() {
             let mut made = std::ptr::null();
-            let count = unsafe { symbols(keymap, (FIRST_CODE + 1 + at) as u32, 0, 0, &mut made) };
+            let count = unsafe { symbols(keymap, (FIRST_CODE + KEYS[at]).into(), 0, 0, &mut made) };
             let expected = if (character as u32) < 0x100 { character as u32 } else { 0x0100_0000 | character as u32 };
             assert_eq!((count, unsafe { *made }), (1, expected), "the key for {character:?}");
         }
