@@ -15,7 +15,7 @@ pub use encode::{PROBE, probe};
 
 use crate::capture::{HEIGHTS, Output, Settings, Shape, Shared, Sink};
 use convert::Shrinker;
-use encode::{Codec, EFFORTS, Encoder, MOVING_QUALITY, STILL_QUALITY, Setup};
+use encode::{Codec, EFFORTS, Encoder, LONGEST_BUFFER, MOVING_QUALITY, STILL_QUALITY, Setup};
 use flv::Packet;
 
 /// How many times a second a still picture is encoded again to bring it up to the quality target. Far fewer
@@ -27,6 +27,15 @@ const REFINE_SECONDS: u32 = 20;
 /// The longest the capture waits for the screen to change before it looks whether it is still wanted.
 const LONGEST_WAIT: Duration = Duration::from_millis(250);
 const REFINE_INTERVAL: Duration = Duration::from_millis(1000 / REFINE_FPS as u64);
+/// For how many milliseconds of the bitrate cap one frame may take what it allows (see `encode::LONGEST_BUFFER`).
+/// A refinement may take what falls to it until the next. A new picture's frame has others close behind it,
+/// which wait while it leaves: it may take half the client's patience, so that on a link that carries little
+/// more than the rate they do not wait for longer than that, and never less than two frames' worth.
+pub const STILL_BUFFER: u32 = 1000 / REFINE_FPS;
+
+fn moving_buffer(patience: u32, fps: u32) -> u32 {
+    (patience / 2).clamp(2000 / fps, LONGEST_BUFFER)
+}
 
 /// Tells when refining a still picture has stopped paying. An encoder goes on spending a little on a picture
 /// that does not change, and how much depends on its settings, the picture's size and the machine's cores, so
@@ -197,8 +206,9 @@ pub struct Stream {
     full_chroma_unavailable: bool,
     /// What the encoder that is open encodes.
     codec: Codec,
-    /// The bitrate cap in kbit/s, the frames a second and the quality target the encoder was last told.
-    rate: (u32, u32, u32),
+    /// The bitrate cap in kbit/s, the frames a second, the quality target and the buffer in milliseconds that
+    /// the encoder was last told.
+    rate: (u32, u32, u32, u32),
     /// A bitrate cap can force a frame out coarser than wanted. The screen may then stay still, and no further
     /// frame would ever improve it, so the same picture is encoded again until that stops paying.
     refinements_left: u32,
@@ -231,7 +241,7 @@ impl Stream {
             size_rest: Rest::new(now),
             full_chroma_unavailable: false,
             codec: Codec::H264,
-            rate: (0, 0, 0),
+            rate: (0, 0, 0, 0),
             refinements_left: 0,
             still: Still::default(),
             encoded: now,
@@ -369,8 +379,10 @@ impl Stream {
         let shrinking = self.settings.height.is_some_and(|most| self.screen.1 > most);
         self.shrinker = if shrinking { Some(Shrinker::new(self.screen, (width, height))?) } else { None };
         let (fps, kbps, full_chroma) = (self.settings.fps, self.settings.kbps, self.settings.full_chroma);
+        let buffer = moving_buffer(self.shared.patience.load(Ordering::Relaxed), fps);
         let setup = Setup {
             hevc: self.settings.hevc as c_int,
+            buffer: buffer as c_int,
             ..Setup::new(width, height, fps, kbps, full_chroma, self.effort)
         };
         let mut encoder = Encoder::open(setup, self.settings.auto_chroma).ok_or("could not open the encoder")?;
@@ -379,7 +391,7 @@ impl Stream {
             // The GPU's encoder took the picture at 4:2:0: full colour detail is not tried again with it.
             (self.settings.full_chroma, self.full_chroma_unavailable) = (false, true);
         }
-        self.rate = (kbps, fps, MOVING_QUALITY);
+        self.rate = (kbps, fps, MOVING_QUALITY, buffer);
         let how = match (encoder.gpu, self.effort) {
             (true, _) => format!("as {} on the GPU with {}", encoder.codec.name(), encoder.name),
             (false, effort) => format!("with x264, effort {effort} of {}", EFFORTS - 1),
@@ -411,12 +423,15 @@ impl Stream {
             0 => self.settings.kbps,
             kbps => kbps,
         };
-        let (fps, quality) = match frame {
-            Frame::New => (self.settings.fps, MOVING_QUALITY),
-            Frame::Refined => (REFINE_FPS, STILL_QUALITY),
+        let (fps, quality, buffer) = match frame {
+            Frame::New => {
+                let fps = self.settings.fps;
+                (fps, MOVING_QUALITY, moving_buffer(self.shared.patience.load(Ordering::Relaxed), fps))
+            }
+            Frame::Refined => (REFINE_FPS, STILL_QUALITY, STILL_BUFFER),
         };
-        if self.rate != (wanted, fps, quality) && encoder.set_rate(wanted, fps, quality) {
-            self.rate = (wanted, fps, quality);
+        if self.rate != (wanted, fps, quality, buffer) && encoder.set_rate(wanted, fps, quality, buffer) {
+            self.rate = (wanted, fps, quality, buffer);
             self.settings.kbps = wanted;
         }
         let encoded = encoder.encode(fresh)?;

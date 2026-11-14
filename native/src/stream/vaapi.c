@@ -371,9 +371,9 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
     encoder->width_blocks = (setup->width + kind->block - 1) / kind->block;
     encoder->height_blocks = (setup->height + kind->block - 1) / kind->block;
     encoder->kbps = setup->kbps;
-    encoder->buffer_kbits = BUFFER_KBITS(setup->kbps);
+    encoder->buffer_kbits = BUFFER_KBITS(setup->kbps, setup->buffer);
     encoder->quality = setup->quality;
-    encoder->allowance = BUFFER_KBITS(setup->kbps) * 1000.0; /* the buffer begins full */
+    encoder->allowance = encoder->buffer_kbits * 1000.0; /* the buffer begins full */
     size_t luma = (size_t)setup->width * setup->height;
     for (int plane = 0; plane < 3; plane++)
         if (!(encoder->planes[plane] = malloc(plane ? luma / 4 : luma)))

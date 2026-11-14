@@ -47,7 +47,7 @@ struct encoder *software_open(const struct encoder_setup *setup)
        backgrounds that text sits on. Without it the same rate factor gave the same quality at every effort,
        and superfast 0.4 dB more for its 17% fewer bits. */
     param.rc.i_aq_mode = X264_AQ_NONE;
-    set_rate(&param, setup->kbps, BUFFER_KBITS(setup->kbps), setup->quality);
+    set_rate(&param, setup->kbps, BUFFER_KBITS(setup->kbps, setup->buffer), setup->quality);
     param.vui.b_fullrange = 1;
     param.vui.i_colorprim = param.vui.i_transfer = param.vui.i_colmatrix = BT709;
     param.vui.i_chroma_loc = CHROMA_AT_CENTRE; /* 4:2:0 chroma is the average of each 2x2 block */

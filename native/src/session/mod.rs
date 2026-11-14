@@ -98,7 +98,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     if let Some(message) = way_by_udp() {
         outbox.push_control(message);
     }
-    let shared = Arc::new(Shared::default());
+    let shared = Arc::new(Shared { patience: login.patience.into(), ..Shared::default() });
     let told = Arc::new(FromClient {
         ceiling: login.ceiling.into(),
         patience: login.patience.into(),
@@ -199,7 +199,9 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
                 told.ceiling.store(login::ceiling(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed)
             }
             Some("patience") => {
-                told.patience.store(login::patience(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed)
+                let patience = login::patience(parts.get(1).unwrap_or(&Value::Null));
+                told.patience.store(patience, Ordering::Relaxed);
+                shared.patience.store(patience, Ordering::Relaxed);
             }
             // The client's window changed size: so does the screen made for it. The pointer needs nothing new, as
             // that screen is then the only one.

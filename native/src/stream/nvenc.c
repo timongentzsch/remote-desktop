@@ -192,7 +192,7 @@ struct encoder *nvenc_open(const struct encoder_setup *setup)
         config->frameIntervalP = 1;
         config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
         config->rcParams.zeroReorderDelay = 1;
-        set_rate(&config->rcParams, kbps, BUFFER_KBITS(kbps), setup->quality);
+        set_rate(&config->rcParams, kbps, BUFFER_KBITS(kbps, setup->buffer), setup->quality);
         NV_ENC_CONFIG_H264 *h264 = &config->encodeCodecConfig.h264Config;
         h264->idrPeriod = NVENC_INFINITE_GOPLENGTH;
         h264->disableSPSPPS = 1; /* the parameter sets travel in the stream's configuration record instead */
