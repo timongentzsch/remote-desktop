@@ -130,7 +130,7 @@
   .touch .overlay { bottom: calc(var(--below, 0px) + var(--pad, 0px) - var(--control) - var(--inset)); padding: 0 var(--inset); align-items: flex-end; }
   .touch .panel { max-height: calc(100vh - var(--below, 0px) - var(--pad, 0px) - var(--edge)); overflow-y: auto; }
   .touch.connected .point { display: block; }
-  .point { position: fixed; left: 50%; top: var(--middle, 50%); width: 14px; height: 21px; background: 0 0 / 100% 100% no-repeat url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 21"><path d="M.5.9v17l4.500-4 3.500 6.600 3-1.600-3.500-6.400h5.500z" fill="white" stroke="black"/></svg>'); pointer-events: none; }
+  .point { position: fixed; left: var(--point-x, 50%); top: var(--point-y, 50%); width: calc(var(--point-size, 12px) * 2 / 3); height: var(--point-size, 12px); background: 0 0 / 100% 100% no-repeat url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 21"><path d="M.5.9v17l4.500-4 3.500 6.600 3-1.600-3.500-6.400h5.500z" fill="white" stroke="black"/></svg>'); pointer-events: none; }
   .touch.connected.keys .keybar { display: flex; }
   .keybar { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); border-top: 1px solid var(--text); background: var(--ground); overflow-x: auto; scrollbar-width: none; }
   .keybar button { flex: 1 0 auto; min-width: 42px; height: var(--key); padding: 0 8px; border: 0; border-right: 1px solid var(--line); background: var(--ground); }
@@ -733,20 +733,29 @@ function showPointer() {
 }
 
 // On a phone the picture is placed so that the remote pointer, `at` in the picture's pixels, is in the middle of
-// what is seen of it: the part of the window that the phone's keyboard, the key bar and the trackpad leave. At
-// `zoom` 1 the whole picture fits there.
+// what is seen of it: the part of the window that the phone's keyboard, the key bar and the trackpad leave. The
+// picture always fills that part, at `zoom` 1 just so: near the picture's edges it stays where it is and the
+// pointer leaves the middle instead, so that nothing but picture is seen.
+const ARROW = 24, SMALLEST_ARROW = 8;  // a desktop pointer's height in its pixels, and the least here
 let at = null, zoom = 1;
 function place() {
   if (TOUCH) {
     const seen = visualViewport, root = document.documentElement.style;
     root.setProperty('--below', `${Math.max(innerHeight - seen.height - seen.offsetTop, 0)}px`);
     const under = $('pad').offsetHeight + $('keybar').offsetHeight, height = Math.max(seen.height - under, 1);
-    const scale = Math.min(innerWidth / canvas.width, height / canvas.height) * zoom;
+    const scale = Math.max(innerWidth / canvas.width, height / canvas.height) * zoom;
     at ??= { x: canvas.width / 2, y: canvas.height / 2 };  // until it is moved: the middle
-    const [x, y] = [innerWidth / 2 - at.x * scale, seen.offsetTop + height / 2 - at.y * scale];
+    // Where the picture begins along one side of the window, of which `room` is seen from `start` on.
+    const begin = (start, room, at, size) => Math.min(start, Math.max(start + room - size, start + room / 2 - at));
+    const x = begin(0, innerWidth, at.x * scale, canvas.width * scale);
+    const y = begin(seen.offsetTop, height, at.y * scale, canvas.height * scale);
     canvas.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
     root.setProperty('--pad', `${under}px`);
-    root.setProperty('--middle', `${seen.offsetTop + height / 2}px`);
+    root.setProperty('--point-x', `${x + at.x * scale}px`);
+    root.setProperty('--point-y', `${y + at.y * scale}px`);
+    // The arrow that stands in for a pointer whose shape the host does not tell is as large as a desktop's
+    // would be in the picture, within what a finger's eye can make out.
+    root.setProperty('--point-size', `${Math.min(Math.max(ARROW * scale, SMALLEST_ARROW), ARROW)}px`);
     $('fit').hidden = zoom === 1;
   }
   showPointer();
@@ -988,7 +997,7 @@ canvas.addEventListener('wheel', event => {
 // click, and a drag begun right after a tap holds the button. Two fingers scroll, or tapped click the right
 // button; moved apart or together they zoom the picture, here only.
 const TAP = 250, SLOP = 8;       // ms a tap lasts at most, and the pixels a finger may stray in it
-const SPEED = 1.6, MOST_ZOOM = 8, PINCH = .12, SCROLL = 2;
+const SPEED = 1.6, MOST_ZOOM = 8, PINCH = .12, SCROLL = 5;
 const pad = $('pad'), fingers = new Map();
 let touch = null, lastTap = 0;   // the gesture under way, from the first finger down to the last up
 const apart = () => {
