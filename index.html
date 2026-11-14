@@ -733,9 +733,9 @@ function showPointer() {
 }
 
 // On a phone the picture is placed so that the remote pointer, `at` in the picture's pixels, is in the middle of
-// what is seen of it: the part of the window that the phone's keyboard, the key bar and the trackpad leave. The
-// picture always fills that part, at `zoom` 1 just so: near the picture's edges it stays where it is and the
-// pointer leaves the middle instead, so that nothing but picture is seen.
+// what is seen of it: the part of the window that the phone's keyboard, the key bar and the trackpad leave. At
+// `zoom` 1 the whole picture fits there, in the middle of what it does not fill. Zoomed in, the picture stays
+// where it is near its edges and the pointer leaves the middle instead, so that nothing beside it is seen.
 const ARROW = 24, SMALLEST_ARROW = 8;  // a desktop pointer's height in its pixels, and the least here
 let at = null, zoom = 1;
 function place() {
@@ -743,10 +743,11 @@ function place() {
     const seen = visualViewport, root = document.documentElement.style;
     root.setProperty('--below', `${Math.max(innerHeight - seen.height - seen.offsetTop, 0)}px`);
     const under = $('pad').offsetHeight + $('keybar').offsetHeight, height = Math.max(seen.height - under, 1);
-    const scale = Math.max(innerWidth / canvas.width, height / canvas.height) * zoom;
+    const scale = Math.min(innerWidth / canvas.width, height / canvas.height) * zoom;
     at ??= { x: canvas.width / 2, y: canvas.height / 2 };  // until it is moved: the middle
     // Where the picture begins along one side of the window, of which `room` is seen from `start` on.
-    const begin = (start, room, at, size) => Math.min(start, Math.max(start + room - size, start + room / 2 - at));
+    const begin = (start, room, at, size) =>
+      size <= room ? start + (room - size) / 2 : Math.min(start, Math.max(start + room - size, start + room / 2 - at));
     const x = begin(0, innerWidth, at.x * scale, canvas.width * scale);
     const y = begin(seen.offsetTop, height, at.y * scale, canvas.height * scale);
     canvas.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
@@ -997,7 +998,7 @@ canvas.addEventListener('wheel', event => {
 // click, and a drag begun right after a tap holds the button. Two fingers scroll, or tapped click the right
 // button; moved apart or together they zoom the picture, here only.
 const TAP = 250, SLOP = 8;       // ms a tap lasts at most, and the pixels a finger may stray in it
-const SPEED = 1.6, MOST_ZOOM = 8, PINCH = .12, SCROLL = 5;
+const SPEED = 1.6, MOST_ZOOM = 16, PINCH = .12, SCROLL = 5;
 const pad = $('pad'), fingers = new Map();
 let touch = null, lastTap = 0;   // the gesture under way, from the first finger down to the last up
 const apart = () => {
