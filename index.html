@@ -1175,6 +1175,8 @@ for (const [name, value] of TOUCH ? [['size', 'host'], ['cursor', 'no']] : []) {
 if (!document.documentElement.requestFullscreen) login.fullscreen.closest('label').hidden = $('fullscreen').hidden = true;
 showChoices();
 try { login.password.value = localStorage.password ?? ''; } catch {}
+try { login.fullscreen.checked = localStorage.fullscreen !== 'false'; } catch {}
+login.fullscreen.onchange = () => { try { localStorage.fullscreen = login.fullscreen.checked; } catch {} };
 login.password.required = !document.documentElement.classList.contains('open');
 $('host').textContent = location.hostname.replace(/\.local$/, '') || 'Remote Desktop';
 setConnected(false);
