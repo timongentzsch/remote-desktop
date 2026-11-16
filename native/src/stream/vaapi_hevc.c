@@ -1,7 +1,8 @@
 /* HEVC through VA-API (see vaapi.c): Main profile, 4:2:0, each frame referring to the one before it. The
-   block sizes and tools are those Intel's GPUs encode with (32x32 coding tree blocks, coding blocks from 8x8,
-   asymmetric motion partitions, no SAO or temporal motion vector prediction), which their driver does not
-   report and ffmpeg's encoder chooses as well. */
+   block sizes and asymmetric motion partitions are those the driver says it encodes with, as ffmpeg takes
+   them; where it says nothing, as Intel's does for its Coffee Lake GPUs, those Intel's GPUs encode with: 32x32
+   coding tree blocks, coding blocks from 8x8, asymmetric motion partitions. SAO and temporal motion vector
+   prediction are off. */
 #ifdef __linux__
 
 #include "vaapi.h"
@@ -10,11 +11,15 @@
 #define PROFILE_MAIN 1
 #define LEVEL 150
 #define MOST_SAMPLES 8912896
+/* The blocks where the driver does not say, in log2 of pixels. */
 #define LOG2_CTB 5
 #define LOG2_MIN_CB 3
 #define LOG2_MIN_TB 2
 #define LOG2_MAX_TB 5
 #define TRANSFORM_DEPTH 3
+/* The coded picture's size is a multiple of this at least, as ffmpeg makes it. The standard asks only for a
+   multiple of the smallest coding block, but Intel's driver encodes nothing for a picture 2168 lines high. */
+#define LEAST_ALIGNMENT 16
 /* The picture order count's low bits, 12 of them, go in each slice header. */
 #define LOG2_MAX_POC_LSB 12
 #define MERGE_CANDIDATES 5
@@ -28,23 +33,50 @@
 /* No collocated picture: temporal motion vector prediction is off. */
 #define NO_COLLOCATED 0xFF
 
-/* The picture's coded size: a multiple of 16, as ffmpeg makes it. The standard asks only for a multiple of the
-   smallest coding block, 8, but Intel's driver encodes nothing for a picture 2168 lines high. */
-static int coded(int length)
+static int round_up(int length, int multiple)
 {
-    int block = 16;
-    return (length + block - 1) / block * block;
+    return (length + multiple - 1) / multiple * multiple;
+}
+
+static int largest(int a, int b, int c)
+{
+    return a > b ? (a > c ? a : c) : (b > c ? b : c);
+}
+
+/* Takes the blocks and tools the driver says it encodes with, and from them the coded picture's size: a
+   multiple of the smallest coding block, of what the driver asks surfaces to be and of LEAST_ALIGNMENT. */
+static void configure(struct vaapi *encoder)
+{
+    struct hevc_blocks *hevc = &encoder->hevc;
+    *hevc = (struct hevc_blocks){ LOG2_CTB, LOG2_MIN_CB, LOG2_MIN_TB, LOG2_MAX_TB, TRANSFORM_DEPTH, TRANSFORM_DEPTH, 1, 0, 0 };
+    VAConfigAttribValEncHEVCBlockSizes sizes = { .value = vaapi_attribute(encoder, VAConfigAttribEncHEVCBlockSizes) };
+    if (sizes.value != VA_ATTRIB_NOT_SUPPORTED) {
+        hevc->log2_ctb = sizes.bits.log2_max_coding_tree_block_size_minus3 + 3;
+        hevc->log2_min_cb = sizes.bits.log2_min_luma_coding_block_size_minus3 + 3;
+        hevc->log2_min_tb = sizes.bits.log2_min_luma_transform_block_size_minus2 + 2;
+        hevc->log2_max_tb = sizes.bits.log2_max_luma_transform_block_size_minus2 + 2;
+        hevc->depth_inter = sizes.bits.max_max_transform_hierarchy_depth_inter;
+        hevc->depth_intra = sizes.bits.max_max_transform_hierarchy_depth_intra;
+    }
+    VAConfigAttribValEncHEVCFeatures features = { .value = vaapi_attribute(encoder, VAConfigAttribEncHEVCFeatures) };
+    if (features.value != VA_ATTRIB_NOT_SUPPORTED)
+        hevc->amp = features.bits.amp != VA_FEATURE_NOT_SUPPORTED;
+    hevc->width = round_up(encoder->width, largest(LEAST_ALIGNMENT, 1 << hevc->log2_min_cb, encoder->align_width));
+    hevc->height = round_up(encoder->height, largest(LEAST_ALIGNMENT, 1 << hevc->log2_min_cb, encoder->align_height));
+    encoder->block = 1 << hevc->log2_ctb;
+    encoder->width_blocks = round_up(hevc->width, encoder->block) / encoder->block;
+    encoder->height_blocks = round_up(hevc->height, encoder->block) / encoder->block;
 }
 
 /* The part of the coded picture that is not shown, right and below, in pairs of pixels as 4:2:0 counts it. */
 static int crop_right(const struct vaapi *encoder)
 {
-    return (coded(encoder->width) - encoder->width) / 2;
+    return (encoder->hevc.width - encoder->width) / 2;
 }
 
 static int crop_bottom(const struct vaapi *encoder)
 {
-    return (coded(encoder->height) - encoder->height) / 2;
+    return (encoder->hevc.height - encoder->height) / 2;
 }
 
 /* profile_tier_level, as the VPS and SPS both carry it: progressive frames only. */
@@ -104,8 +136,8 @@ static void write_sps(struct vaapi *encoder)
     write_profile(&sps);
     bits_put_ue(&sps, 0); /* sps_seq_parameter_set_id */
     bits_put_ue(&sps, 1); /* chroma_format_idc: 4:2:0 */
-    bits_put_ue(&sps, coded(encoder->width));
-    bits_put_ue(&sps, coded(encoder->height));
+    bits_put_ue(&sps, encoder->hevc.width);
+    bits_put_ue(&sps, encoder->hevc.height);
     int cropped = crop_right(encoder) || crop_bottom(encoder);
     bits_put(&sps, cropped, 1); /* conformance_window_flag */
     if (cropped) {
@@ -118,14 +150,14 @@ static void write_sps(struct vaapi *encoder)
     bits_put_ue(&sps, 0); /* bit_depth_chroma_minus8 */
     bits_put_ue(&sps, LOG2_MAX_POC_LSB - 4);
     write_ordering(&sps);
-    bits_put_ue(&sps, LOG2_MIN_CB - 3);
-    bits_put_ue(&sps, LOG2_CTB - LOG2_MIN_CB);
-    bits_put_ue(&sps, LOG2_MIN_TB - 2);
-    bits_put_ue(&sps, LOG2_MAX_TB - LOG2_MIN_TB);
-    bits_put_ue(&sps, TRANSFORM_DEPTH); /* max_transform_hierarchy_depth_inter */
-    bits_put_ue(&sps, TRANSFORM_DEPTH); /* max_transform_hierarchy_depth_intra */
-    bits_put(&sps, 0, 1);               /* scaling_list_enabled_flag */
-    bits_put(&sps, 1, 1);               /* amp_enabled_flag */
+    bits_put_ue(&sps, encoder->hevc.log2_min_cb - 3);
+    bits_put_ue(&sps, encoder->hevc.log2_ctb - encoder->hevc.log2_min_cb);
+    bits_put_ue(&sps, encoder->hevc.log2_min_tb - 2);
+    bits_put_ue(&sps, encoder->hevc.log2_max_tb - encoder->hevc.log2_min_tb);
+    bits_put_ue(&sps, encoder->hevc.depth_inter); /* max_transform_hierarchy_depth_inter */
+    bits_put_ue(&sps, encoder->hevc.depth_intra); /* max_transform_hierarchy_depth_intra */
+    bits_put(&sps, 0, 1);                         /* scaling_list_enabled_flag */
+    bits_put(&sps, encoder->hevc.amp, 1);         /* amp_enabled_flag */
     bits_put(&sps, 0, 1);               /* sample_adaptive_offset_enabled_flag */
     bits_put(&sps, 0, 1);               /* pcm_enabled_flag */
     bits_put_ue(&sps, 0);               /* num_short_term_ref_pic_sets: each slice says its own */
@@ -220,18 +252,18 @@ static int add_sequence(struct vaapi *encoder, VABufferID *buffers, int *count)
         .intra_period = NO_PERIOD,
         .intra_idr_period = NO_PERIOD,
         .ip_period = 1,
-        .pic_width_in_luma_samples = coded(encoder->width),
-        .pic_height_in_luma_samples = coded(encoder->height),
+        .pic_width_in_luma_samples = encoder->hevc.width,
+        .pic_height_in_luma_samples = encoder->hevc.height,
         .seq_fields.bits = {
             .chroma_format_idc = 1,
-            .amp_enabled_flag = 1,
+            .amp_enabled_flag = encoder->hevc.amp,
         },
-        .log2_min_luma_coding_block_size_minus3 = LOG2_MIN_CB - 3,
-        .log2_diff_max_min_luma_coding_block_size = LOG2_CTB - LOG2_MIN_CB,
-        .log2_min_transform_block_size_minus2 = LOG2_MIN_TB - 2,
-        .log2_diff_max_min_transform_block_size = LOG2_MAX_TB - LOG2_MIN_TB,
-        .max_transform_hierarchy_depth_inter = TRANSFORM_DEPTH,
-        .max_transform_hierarchy_depth_intra = TRANSFORM_DEPTH,
+        .log2_min_luma_coding_block_size_minus3 = encoder->hevc.log2_min_cb - 3,
+        .log2_diff_max_min_luma_coding_block_size = encoder->hevc.log2_ctb - encoder->hevc.log2_min_cb,
+        .log2_min_transform_block_size_minus2 = encoder->hevc.log2_min_tb - 2,
+        .log2_diff_max_min_transform_block_size = encoder->hevc.log2_max_tb - encoder->hevc.log2_min_tb,
+        .max_transform_hierarchy_depth_inter = encoder->hevc.depth_inter,
+        .max_transform_hierarchy_depth_intra = encoder->hevc.depth_intra,
         /* The VUI is in the SPS as it is written; the driver is not told it, as ffmpeg does not tell it. */
     };
     return vaapi_add(encoder, VAEncSequenceParameterBufferType, &sequence, sizeof sequence, buffers, count);
@@ -315,6 +347,7 @@ const struct vaapi_codec vaapi_hevc = {
     .profile = VAProfileHEVCMain,
     .block = 1 << LOG2_CTB,
     .most_samples = MOST_SAMPLES,
+    .configure = configure,
     /* Intel's driver writes no slice headers of its own: without them, encoding fails. */
     .packed_headers = VA_ENC_PACKED_HEADER_SEQUENCE | VA_ENC_PACKED_HEADER_SLICE,
     .write_headers = write_headers,

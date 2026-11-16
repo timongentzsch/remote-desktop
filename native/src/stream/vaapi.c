@@ -51,7 +51,8 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
     F(vaInitialize) F(vaTerminate) F(vaSetErrorCallback) F(vaSetInfoCallback) F(vaGetConfigAttributes) \
     F(vaCreateConfig) F(vaDestroyConfig) F(vaCreateSurfaces) F(vaDestroySurfaces) F(vaCreateContext) \
     F(vaDestroyContext) F(vaCreateBuffer) F(vaDestroyBuffer) F(vaMapBuffer) F(vaUnmapBuffer) F(vaBeginPicture) \
-    F(vaRenderPicture) F(vaEndPicture) F(vaSyncSurface) F(vaDeriveImage) F(vaDestroyImage)
+    F(vaRenderPicture) F(vaEndPicture) F(vaSyncSurface) F(vaDeriveImage) F(vaDestroyImage) \
+    F(vaQuerySurfaceAttributes)
 
 static struct {
     VADisplay (*vaGetDisplayDRM)(int fd);
@@ -332,6 +333,32 @@ static int vaapi_set_rate(struct encoder *base, int kbps, int buffer_kbits, int 
     return 0;
 }
 
+unsigned vaapi_attribute(const struct vaapi *encoder, VAConfigAttribType type)
+{
+    VAConfigAttrib attribute = { .type = type };
+    pthread_mutex_lock(&calls);
+    int told = va.vaGetConfigAttributes(display, encoder->codec->profile, ENTRYPOINT, &attribute, 1) == VA_STATUS_SUCCESS;
+    pthread_mutex_unlock(&calls);
+    return told ? attribute.value : VA_ATTRIB_NOT_SUPPORTED;
+}
+
+/* Takes what the driver asks the surfaces' size be a multiple of, where it says (AMD's does, for HEVC). */
+static void take_alignment(struct vaapi *encoder)
+{
+    unsigned count = 0;
+    if (va.vaQuerySurfaceAttributes(display, encoder->config, NULL, &count) != VA_STATUS_SUCCESS || !count)
+        return;
+    VASurfaceAttrib *attributes = calloc(count, sizeof *attributes);
+    if (attributes && va.vaQuerySurfaceAttributes(display, encoder->config, attributes, &count) == VA_STATUS_SUCCESS)
+        for (unsigned at = 0; at < count; at++)
+            if (attributes[at].type == VASurfaceAttribAlignmentSize) {
+                VASurfaceAttribAlignmentStruct alignment = { .value = (uint32_t)attributes[at].value.value.i };
+                encoder->align_width = 1 << alignment.bits.log2_width_alignment;
+                encoder->align_height = 1 << alignment.bits.log2_height_alignment;
+            }
+    free(attributes);
+}
+
 static void vaapi_close(struct encoder *base)
 {
     struct vaapi *encoder = (struct vaapi *)base;
@@ -369,8 +396,10 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
         encoder->surfaces[at] = VA_INVALID_SURFACE;
     encoder->width = setup->width;
     encoder->height = setup->height;
+    encoder->block = kind->block;
     encoder->width_blocks = (setup->width + kind->block - 1) / kind->block;
     encoder->height_blocks = (setup->height + kind->block - 1) / kind->block;
+    encoder->align_width = encoder->align_height = 1;
     encoder->kbps = setup->kbps;
     encoder->buffer_kbits = BUFFER_KBITS(setup->kbps, setup->buffer);
     encoder->quality = setup->quality;
@@ -379,20 +408,28 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
     for (int plane = 0; plane < 3; plane++)
         if (!(encoder->planes[plane] = malloc(plane ? luma / 4 : luma)))
             goto failed;
-    kind->write_headers(encoder);
-    for (int at = 0; at < encoder->header_count; at++)
-        if (encoder->header_sizes[at] < 0)
-            goto failed;
-
     VAConfigAttrib attributes[] = {
         { .type = VAConfigAttribRTFormat, .value = VA_RT_FORMAT_YUV420 },
         { .type = VAConfigAttribRateControl, .value = VA_RC_CQP },
         { .type = VAConfigAttribEncPackedHeaders, .value = kind->packed_headers },
     };
-    int surface_width = encoder->width_blocks * kind->block, surface_height = encoder->height_blocks * kind->block;
     pthread_mutex_lock(&calls);
-    int made = va.vaCreateConfig(display, kind->profile, ENTRYPOINT, attributes, 3, &encoder->config) == VA_STATUS_SUCCESS
-        && va.vaCreateSurfaces(display, VA_RT_FORMAT_YUV420, surface_width, surface_height, encoder->surfaces, SURFACES, NULL, 0) == VA_STATUS_SUCCESS
+    int configured = va.vaCreateConfig(display, kind->profile, ENTRYPOINT, attributes, 3, &encoder->config) == VA_STATUS_SUCCESS;
+    if (configured)
+        take_alignment(encoder);
+    pthread_mutex_unlock(&calls);
+    if (!configured)
+        goto failed;
+    if (kind->configure)
+        kind->configure(encoder);
+    kind->write_headers(encoder);
+    for (int at = 0; at < encoder->header_count; at++)
+        if (encoder->header_sizes[at] < 0)
+            goto failed;
+
+    int surface_width = encoder->width_blocks * encoder->block, surface_height = encoder->height_blocks * encoder->block;
+    pthread_mutex_lock(&calls);
+    int made = va.vaCreateSurfaces(display, VA_RT_FORMAT_YUV420, surface_width, surface_height, encoder->surfaces, SURFACES, NULL, 0) == VA_STATUS_SUCCESS
         && va.vaCreateContext(display, encoder->config, surface_width, surface_height, VA_PROGRESSIVE, encoder->surfaces, SURFACES, &encoder->context) == VA_STATUS_SUCCESS
         /* A coded frame is never larger than the picture's raw size. */
         && va.vaCreateBuffer(display, encoder->context, VAEncCodedBufferType, surface_width * surface_height * 3 / 2, 1, NULL, &encoder->coded) == VA_STATUS_SUCCESS;

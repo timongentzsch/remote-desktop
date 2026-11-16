@@ -24,13 +24,17 @@ struct vaapi;
 struct vaapi_codec {
     int codec; /* as nal.h names it */
     VAProfile profile;
-    /* Surfaces are a multiple of this many pixels each way: H.264's macroblock, HEVC's coding tree block. */
+    /* Surfaces are a multiple of this many pixels each way: H.264's macroblock, HEVC's coding tree block, unless
+       `configure` chooses another. */
     int block;
     /* The most luma samples a picture may have at the level the parameter sets state. */
     int most_samples;
     /* Which headers the codec's file writes for the driver (VA_ENC_PACKED_HEADER_...): the parameter sets
        always, the slice headers where the driver does not write them itself. */
     unsigned packed_headers;
+    /* Where set, chooses what the driver allows once its configuration is made (vaapi_attribute): the block
+       sizes, encoder->block and the size in blocks with them, and whatever else the parameter sets need. */
+    void (*configure)(struct vaapi *encoder);
     /* Writes the parameter sets into encoder->headers. */
     void (*write_headers)(struct vaapi *encoder);
     /* Adds the buffers that go with an IDR, and those of a frame: one that refers to nothing if `idr`, else
@@ -48,8 +52,14 @@ struct vaapi {
     VAContextID context;
     VASurfaceID surfaces[SURFACES];
     VABufferID coded;
-    /* The picture's size, and in blocks. */
-    int width, height, width_blocks, height_blocks;
+    /* The picture's size, and in blocks of `block` pixels. */
+    int width, height, block, width_blocks, height_blocks;
+    /* What the driver asks the surfaces' size be a multiple of, each way; 1 where it says nothing. */
+    int align_width, align_height;
+    /* HEVC's coding blocks and tools (vaapi_hevc.c), in log2 of pixels, and its coded picture's size. */
+    struct hevc_blocks {
+        int log2_ctb, log2_min_cb, log2_min_tb, log2_max_tb, depth_inter, depth_intra, amp, width, height;
+    } hevc;
     int kbps, buffer_kbits, quality;
     /* What the cap allows to be sent now, in bits: it fills by the cap's share of each frame up to the size of
        the buffer, and each frame empties it by its size. And the quantiser and size of the last frame. */
@@ -67,6 +77,9 @@ struct vaapi {
     int header_sizes[MOST_PARAMETER_SETS], header_count;
 };
 
+/* The value of the encoder's configuration attribute `type`, VA_ATTRIB_NOT_SUPPORTED where the driver does not
+   say. */
+unsigned vaapi_attribute(const struct vaapi *encoder, VAConfigAttribType type);
 /* Makes a parameter buffer of `type` with a copy of `data` and adds it to `buffers`. */
 int vaapi_add(struct vaapi *encoder, VABufferType type, const void *data, unsigned size, VABufferID *buffers, int *count);
 /* One of the encoder's settings, as libva takes them: a type and its value in one buffer. */
