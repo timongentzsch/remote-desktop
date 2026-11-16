@@ -28,10 +28,11 @@
 /* No collocated picture: temporal motion vector prediction is off. */
 #define NO_COLLOCATED 0xFF
 
-/* The picture's coded size: a multiple of the smallest coding block. */
+/* The picture's coded size: a multiple of 16, as ffmpeg makes it. The standard asks only for a multiple of the
+   smallest coding block, 8, but Intel's driver encodes nothing for a picture 2168 lines high. */
 static int coded(int length)
 {
-    int block = 1 << LOG2_MIN_CB;
+    int block = 16;
     return (length + block - 1) / block * block;
 }
 
