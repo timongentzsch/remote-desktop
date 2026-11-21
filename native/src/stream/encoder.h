@@ -71,6 +71,15 @@ struct encoder_setup {
     int buffer;
 };
 
+/* How many of the last frames an H.264 encoder keeps, to refer to instead for a client that lost the frames
+   after one of them: as many as the decoder's buffer holds at level 5.1 (184320 macroblocks), at most 16. Kept
+   frames are not searched, so they cost no time. */
+static inline int h264_kept_frames(int width, int height)
+{
+    int frames = 184320 / (((width + 15) / 16) * ((height + 15) / 16));
+    return frames < 16 ? frames : 16;
+}
+
 /* The most parameter sets a codec has: HEVC's VPS, SPS and PPS. */
 #define MOST_PARAMETER_SETS 3
 

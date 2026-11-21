@@ -412,6 +412,42 @@ mod tests {
         assert_eq!((keyframe, recovered, nal_type), (true, false, 19), "an IDR");
     }
 
+    /// x264, and NVIDIA's encoder where there is one, recover the same way, from any of the last frames, and
+    /// with a keyframe from one they no longer keep.
+    #[test]
+    fn h264_recovers_from_a_frame_the_client_has() {
+        let _alone = GPU.lock();
+        let setup = Setup::new(640, 480, 60, 2000, false, 0);
+        let x264 = Encoder::open_on(false, setup).expect("x264 opens");
+        let nvenc = Encoder::open_on(true, setup).filter(|encoder| encoder.name == "nvenc");
+        for encoder in [Some(x264), nvenc].into_iter().flatten() {
+            recovers(encoder);
+        }
+    }
+
+    fn recovers(mut encoder: Encoder) {
+        let name = encoder.name;
+        draw_detail(&mut encoder);
+        let mut encode = |id, want, confirmed| {
+            encoder.planes()[0].bytes[id as usize * 100] ^= 0xFF; // a little changes from frame to frame
+            let encoded = encoder.encode(id, want, confirmed).expect("a frame in gives a frame out");
+            (encoded.unit.len(), encoded.keyframe, encoded.recovered)
+        };
+        let (first, ..) = encode(0, Want::Next, None);
+        for id in 1..5 {
+            encode(id, Want::Next, None);
+        }
+        let (size, keyframe, recovered) = encode(5, Want::Recover, Some(2));
+        assert_eq!((keyframe, recovered), (false, true), "{name}: a frame that refers to frame 2");
+        assert!(size * 4 < first, "{name}: and is far smaller than a keyframe: {size} against {first}");
+        println!("{name}: a frame that goes on from frame 2 takes {size} bytes, a keyframe {first}");
+        for id in 6..40 {
+            encode(id, Want::Next, Some(id - 1));
+        }
+        let (_, keyframe, recovered) = encode(40, Want::Recover, Some(10));
+        assert_eq!((keyframe, recovered), (true, false), "{name}: frame 10 is no longer kept");
+    }
+
     /// A bitrate cap forces a detailed picture out coarse at first. Encoding it again at the pace of refinement
     /// must improve it and then come to rest, or a still screen would either stay blurry or be re-sent forever.
     #[test]
