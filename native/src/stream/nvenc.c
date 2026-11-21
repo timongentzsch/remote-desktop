@@ -1,6 +1,7 @@
-/* Hardware H.264 encoding on NVIDIA GPUs. The driver's libraries are loaded at run time, so the binary needs
-   them neither to build nor to start; where they are missing or the GPU has no encoder, nvenc_open fails
-   and the caller uses x264. */
+/* Hardware encoding on NVIDIA GPUs: H.264, at 4:2:0 or with full colour detail, or HEVC at 4:2:0 for a client
+   that decodes it. Not HEVC with full colour detail: Chrome on a Mac (158, macOS 27) took it and showed nothing,
+   without a word of error. The driver's libraries are loaded at run time, so the binary needs them neither to build nor
+   to start; where they are missing or the GPU has no encoder, nvenc_open fails and the caller uses x264. */
 /* The loader reports what it cannot find; here a missing library is an ordinary case and needs no message. */
 #define FFNV_LOG_FUNC(logctx, msg, ...) ((void)(logctx))
 #define FFNV_DEBUG_LOG_FUNC(logctx, msg, ...) ((void)(logctx))
@@ -23,8 +24,10 @@ struct nvenc {
     NV_ENC_INPUT_PTR input;
     NV_ENC_OUTPUT_PTR output;
     int width, height, full_chroma;
-    /* The id of the last keyframe, before which nothing is kept, and of the last frame, -1 before the first. */
+    /* The id of the last keyframe, before which nothing is kept, and of the last frame, -1 before the first;
+       and how many of the last frames are kept. */
     int64_t keyframe, last;
+    int kept;
     /* The picture as the caller fills it; it is copied into the driver's buffer for each frame. */
     uint8_t *planes[3];
     /* The last access unit, converted to length-prefixed NAL units. */
@@ -80,6 +83,60 @@ static void set_rate(NV_ENC_RC_PARAMS *rate, int kbps, int buffer_kbits, int qua
     rate->targetQuality = (uint8_t)quality;
     rate->averageBitRate = rate->maxBitRate = (uint32_t)kbps * 1000;
     rate->vbvBufferSize = rate->vbvInitialDelay = (uint32_t)buffer_kbits * 1000;
+}
+
+/* How many of the last frames HEVC keeps for a client that lost those after one of them: as many as a decoder
+   holds at level 5.1 for a picture of this size (H.265, A.4.2), less the one it decodes. */
+static int hevc_kept_frames(int width, int height)
+{
+    const long most = 8912896; /* luma samples of the largest picture at level 5.1 */
+    long samples = (long)width * height;
+    return (samples <= most / 4 ? 16 : samples <= most / 2 ? 12 : samples <= most * 3 / 4 ? 8 : 6) - 1;
+}
+
+/* How the colours are meant, as encoder.h says, which H.264 and HEVC state alike. */
+static void describe_colours(NV_ENC_CONFIG_H264_VUI_PARAMETERS *vui)
+{
+    vui->videoSignalTypePresentFlag = 1;
+    vui->videoFormat = 5; /* unspecified */
+    vui->videoFullRangeFlag = 1;
+    vui->colourDescriptionPresentFlag = 1;
+    vui->colourPrimaries = vui->transferCharacteristics = vui->colourMatrix = BT709;
+    vui->chromaSampleLocationFlag = 1;
+    vui->chromaSampleLocationTop = vui->chromaSampleLocationBot = CHROMA_AT_CENTRE;
+}
+
+/* One key frame at the start, then every frame refers to the one before it, in one slice, with the parameter
+   sets in the stream's configuration record instead of the stream. The last frames are kept for a client that
+   lost those after one of them; only the last is searched. */
+static void configure_h264(NV_ENC_CONFIG *config, int width, int height, int full_chroma)
+{
+    config->profileGUID = full_chroma ? NV_ENC_H264_PROFILE_HIGH_444_GUID : NV_ENC_H264_PROFILE_HIGH_GUID;
+    NV_ENC_CONFIG_H264 *h264 = &config->encodeCodecConfig.h264Config;
+    h264->idrPeriod = NVENC_INFINITE_GOPLENGTH;
+    h264->disableSPSPPS = 1;
+    h264->chromaFormatIDC = full_chroma ? 3 : 1;
+    h264->sliceMode = 3; /* a fixed number of slices per frame: one */
+    h264->sliceModeData = 1;
+    h264->maxNumRefFrames = h264_kept_frames(width, height);
+    h264->numRefL0 = NV_ENC_NUM_REF_FRAMES_1;
+    describe_colours(&h264->h264VUIParameters);
+}
+
+static void configure_hevc(NV_ENC_CONFIG *config, int width, int height)
+{
+    config->profileGUID = NV_ENC_HEVC_PROFILE_MAIN_GUID;
+    NV_ENC_CONFIG_HEVC *hevc = &config->encodeCodecConfig.hevcConfig;
+    hevc->level = NV_ENC_LEVEL_HEVC_51;
+    hevc->tier = NV_ENC_TIER_HEVC_MAIN;
+    hevc->idrPeriod = NVENC_INFINITE_GOPLENGTH;
+    hevc->disableSPSPPS = 1;
+    hevc->chromaFormatIDC = 1;
+    hevc->sliceMode = 3;
+    hevc->sliceModeData = 1;
+    hevc->maxNumRefFramesInDPB = hevc_kept_frames(width, height);
+    hevc->numRefL0 = NV_ENC_NUM_REF_FRAMES_1;
+    describe_colours(&hevc->hevcVUIParameters);
 }
 
 static int width_of(const struct nvenc *encoder, int plane)
@@ -183,39 +240,30 @@ struct encoder *nvenc_open(const struct encoder_setup *setup)
         .device = context,
         .apiVersion = NVENCAPI_VERSION,
     };
-    int opened = api.nvEncOpenEncodeSessionEx(&session, &encoder->session) == NV_ENC_SUCCESS
-        && api.nvEncGetEncodePresetConfigEx(encoder->session, NV_ENC_CODEC_H264_GUID, PRESET, TUNING, &preset) == NV_ENC_SUCCESS;
+    /* HEVC where the client decodes it, the colours are reduced and the GPU encodes it; H.264 otherwise. */
+    int opened = api.nvEncOpenEncodeSessionEx(&session, &encoder->session) == NV_ENC_SUCCESS;
+    int hevc = opened && setup->hevc && !full_chroma
+        && api.nvEncGetEncodePresetConfigEx(encoder->session, NV_ENC_CODEC_HEVC_GUID, PRESET, TUNING, &preset) == NV_ENC_SUCCESS;
+    opened = opened
+        && (hevc || api.nvEncGetEncodePresetConfigEx(encoder->session, NV_ENC_CODEC_H264_GUID, PRESET, TUNING, &preset) == NV_ENC_SUCCESS);
     if (opened) {
         NV_ENC_CONFIG *config = &encoder->config;
         *config = preset.presetCfg;
-        config->profileGUID = full_chroma ? NV_ENC_H264_PROFILE_HIGH_444_GUID : NV_ENC_H264_PROFILE_HIGH_GUID;
-        /* One key frame at the start, then every frame refers to the one before it. */
         config->gopLength = NVENC_INFINITE_GOPLENGTH;
         config->frameIntervalP = 1;
         config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
         config->rcParams.zeroReorderDelay = 1;
         set_rate(&config->rcParams, kbps, BUFFER_KBITS(kbps, setup->buffer), setup->quality);
-        NV_ENC_CONFIG_H264 *h264 = &config->encodeCodecConfig.h264Config;
-        h264->idrPeriod = NVENC_INFINITE_GOPLENGTH;
-        h264->disableSPSPPS = 1; /* the parameter sets travel in the stream's configuration record instead */
-        h264->chromaFormatIDC = full_chroma ? 3 : 1;
-        h264->sliceMode = 3; /* a fixed number of slices per frame: one */
-        h264->sliceModeData = 1;
-        /* The last frames are kept for a client that lost those after one of them; only the last is searched. */
-        h264->maxNumRefFrames = h264_kept_frames(width, height);
-        h264->numRefL0 = NV_ENC_NUM_REF_FRAMES_1;
-        NV_ENC_CONFIG_H264_VUI_PARAMETERS *vui = &h264->h264VUIParameters;
-        vui->videoSignalTypePresentFlag = 1;
-        vui->videoFormat = 5; /* unspecified */
-        vui->videoFullRangeFlag = 1;
-        vui->colourDescriptionPresentFlag = 1;
-        vui->colourPrimaries = vui->transferCharacteristics = vui->colourMatrix = BT709;
-        vui->chromaSampleLocationFlag = 1;
-        vui->chromaSampleLocationTop = vui->chromaSampleLocationBot = CHROMA_AT_CENTRE;
+        if (hevc)
+            configure_hevc(config, width, height);
+        else
+            configure_h264(config, width, height, full_chroma);
+        encoder->base.codec = hevc ? CODEC_HEVC : CODEC_H264;
+        encoder->kept = hevc ? hevc_kept_frames(width, height) : h264_kept_frames(width, height);
 
         encoder->setup = (NV_ENC_INITIALIZE_PARAMS){
             .version = NV_ENC_INITIALIZE_PARAMS_VER,
-            .encodeGUID = NV_ENC_CODEC_H264_GUID,
+            .encodeGUID = hevc ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID,
             .presetGUID = PRESET,
             .tuningInfo = TUNING,
             .encodeWidth = width,
@@ -270,17 +318,19 @@ static int nvenc_headers(struct encoder *base, uint8_t **sets, int *sizes)
     leave();
     if (status != NV_ENC_SUCCESS)
         return -1;
+    int codec = encoder->base.codec;
     for (int code = nal_start_code(encoder->headers, size, 0), begin, next; code < (int)size; code = next) {
         int length = nal_unit(encoder->headers, size, code, &begin, &next);
-        int type = length ? nal_type(encoder->headers + begin, CODEC_H264) : 0;
-        /* SPS first, then PPS. */
-        int at = type == NAL_SPS ? 0 : type == NAL_PPS ? 1 : -1;
+        int type = length ? nal_type(encoder->headers + begin, codec) : 0;
+        /* H.264's SPS and PPS, HEVC's VPS, SPS and PPS, in that order. */
+        int at = codec == CODEC_HEVC ? (type == NAL_HEVC_VPS ? 0 : type == NAL_HEVC_SPS ? 1 : type == NAL_HEVC_PPS ? 2 : -1)
+                                     : (type == NAL_SPS ? 0 : type == NAL_PPS ? 1 : -1);
         if (at >= 0) {
             sets[at] = encoder->headers + begin;
             sizes[at] = length;
         }
     }
-    return 2;
+    return codec == CODEC_HEVC ? 3 : 2;
 }
 
 /* Recovers by telling the driver that the frames after the one confirmed are lost; it refers to an older one
@@ -290,7 +340,7 @@ static int nvenc_encode(struct encoder *base, const struct encode_request *reque
     struct nvenc *encoder = (struct nvenc *)base;
     int size = -1;
     /* The frames kept: since the last keyframe, and no more than the buffer holds. */
-    int64_t first = encoder->last - encoder->config.encodeCodecConfig.h264Config.maxNumRefFrames + 1;
+    int64_t first = encoder->last - encoder->kept + 1;
     first = first > encoder->keyframe ? first : encoder->keyframe;
     int recover = request->kind == ENCODE_RECOVER && request->confirmed >= first;
     enter();
@@ -327,7 +377,7 @@ static int nvenc_encode(struct encoder *base, const struct encode_request *reque
     /* Locking the output waits until the frame is encoded. */
     if (api.nvEncEncodePicture(encoder->session, &picture) != NV_ENC_SUCCESS || api.nvEncLockBitstream(encoder->session, &stream) != NV_ENC_SUCCESS)
         goto done;
-    size = nal_length_prefixed(&encoder->unit, stream.bitstreamBufferPtr, stream.bitstreamSizeInBytes, CODEC_H264);
+    size = nal_length_prefixed(&encoder->unit, stream.bitstreamBufferPtr, stream.bitstreamSizeInBytes, encoder->base.codec);
     *data = encoder->unit.bytes;
     *keyframe = stream.pictureType == NV_ENC_PIC_TYPE_IDR;
     /* Whether the cap decided how good the frame is, this encoder does not say: its quality target is not a
