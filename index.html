@@ -35,6 +35,11 @@
   .field label { grid-column: 1 / -1; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
   .field input { min-width: 0; height: var(--field); box-sizing: border-box; padding: 0 14px; border: 1px solid var(--text); border-right: 0; background: var(--ground); font-size: 16px; letter-spacing: .2em; }
   .primary { height: var(--field); padding: 0 22px; border: 1px solid var(--text); background: var(--text); color: var(--ground); font-weight: 500; letter-spacing: .08em; text-transform: uppercase; }
+  /* While the login is out, the button says so and turns a small square. */
+  .primary[aria-busy="true"] { display: flex; align-items: center; gap: 10px; cursor: progress; }
+  .primary[aria-busy="true"]::before { content: ""; width: 8px; height: 8px; border: 1px solid currentColor; animation: turn 1s linear infinite; }
+  @keyframes turn { to { rotate: 1turn; } }
+  @media (prefers-reduced-motion: reduce) { .primary[aria-busy="true"]::before { animation: none; background: currentColor; } }
   .open .field { grid-template-columns: 1fr; }
   .open .field label, .open .field input { display: none; }
   .option { display: flex; align-items: flex-start; gap: 14px; cursor: pointer; }
@@ -645,8 +650,17 @@ function showPanel(open) {
   document.body.classList.toggle('panel-open', open);
 }
 
+// The login's button while a login is out, which ends when the session begins or ends.
+function setConnecting(on) {
+  const button = login.querySelector('.primary');
+  button.disabled = on;
+  button.ariaBusy = on;
+  button.textContent = on ? 'Connecting' : 'Connect';
+}
+
 function setConnected(on, problem = '') {
   document.body.classList.toggle('connected', on);
+  setConnecting(false);
   if (on) {
     if (settings.closest('.connect')) {  // from the login; a reconnect leaves the panel as it is
       $('pill').before(settings);
@@ -1134,6 +1148,8 @@ const enterFullscreen = () => document.documentElement.requestFullscreen?.()?.th
 login.onsubmit = event => {
   event.preventDefault();
   if (login.fullscreen.checked) enterFullscreen();
+  setConnecting(true);
+  $('summary').textContent = '';
   connect();
 };
 settings.onsubmit = event => event.preventDefault();
