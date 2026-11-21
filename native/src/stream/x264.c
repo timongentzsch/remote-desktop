@@ -1,4 +1,5 @@
-/* Software H.264 encoding with x264, which is built into the binary. */
+/* Software H.264 encoding with x264, which is built into the binary. It keeps the last frames (see
+   h264_kept_frames) for a client that lost those after one of them (x264_encoder_invalidate_reference). */
 #include <stdint.h>
 #include <stdlib.h>
 #include <x264.h>
@@ -9,7 +10,9 @@ struct software {
     x264_t *x264;
     x264_picture_t picture;
     int quality; /* the target now, which tells a coarse frame */
+    int64_t keyframe; /* the id of the last keyframe, before which nothing is kept */
 };
+
 
 static const struct encoder_ops software_ops;
 
@@ -52,6 +55,7 @@ struct encoder *software_open(const struct encoder_setup *setup)
     param.vui.i_colorprim = param.vui.i_transfer = param.vui.i_colmatrix = BT709;
     param.vui.i_chroma_loc = CHROMA_AT_CENTRE; /* 4:2:0 chroma is the average of each 2x2 block */
     param.i_log_level = X264_LOG_WARNING;
+    param.i_dpb_size = h264_kept_frames(setup->width, setup->height);
 
     struct software *encoder = calloc(1, sizeof *encoder);
     if (!encoder)
@@ -96,15 +100,19 @@ static int software_headers(struct encoder *base, uint8_t **sets, int *sizes)
     return 2;
 }
 
-/* Recovers with a keyframe. */
+/* Recovers by leaving out the frames after the one confirmed; x264 makes a keyframe where it kept none
+   before them. */
 static int software_encode(struct encoder *base, const struct encode_request *request, uint8_t **data, int *keyframe, int *flags)
 {
     struct software *encoder = (struct software *)base;
     x264_nal_t *nal;
     int count;
     x264_picture_t out;
-    encoder->picture.i_pts++;
-    encoder->picture.i_type = request->kind != ENCODE_NEXT ? X264_TYPE_IDR : X264_TYPE_AUTO;
+    int recover = request->kind == ENCODE_RECOVER && request->confirmed >= encoder->keyframe;
+    if (recover)
+        x264_encoder_invalidate_reference(encoder->x264, request->confirmed + 1);
+    encoder->picture.i_pts = request->id;
+    encoder->picture.i_type = request->kind != ENCODE_NEXT && !recover ? X264_TYPE_IDR : X264_TYPE_AUTO;
     int size = x264_encoder_encode(encoder->x264, &nal, &count, &encoder->picture, &out);
     if (size > 0) {
         *data = nal[0].p_payload;
@@ -113,6 +121,9 @@ static int software_encode(struct encoder *base, const struct encode_request *re
            reported a still picture's empty refinements as coarse. */
         *flags = out.prop.f_crf_avg > encoder->quality + COARSE_MARGIN ? FRAME_COARSE : 0;
         *flags |= out.i_qpplus1 - 1 > POOR_QP ? FRAME_POOR : 0;
+        *flags |= recover && !out.b_keyframe ? FRAME_RECOVERED : 0;
+        if (out.b_keyframe)
+            encoder->keyframe = request->id;
     }
     return size;
 }

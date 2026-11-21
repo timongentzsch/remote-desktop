@@ -5,7 +5,8 @@
 # loss in percent, seconds, and by how many ms the delay swings (default 0). With DETAIL set in the
 # environment, the frames are also told second by second; with TCP set, the browser has no UDP to take; SET
 # holds JavaScript that chooses settings in the page before the session begins, TELL an expression whose value
-# is printed at the end.
+# is printed at the end. LOSS replaces the loss with netem's own words for it, such as "gemodel 1% 30%" for
+# loss in runs (a run begins with 1% likelihood and ends with 30%, about 3% lost in runs of three).
 cd "$(dirname "$0")"
 cc=$1; rtt=$2; loss=$3; seconds=${4:-20}; swing=${5:-0}
 clean() { docker rm -f rd-rate-host rd-rate-client >/dev/null 2>&1; }
@@ -20,11 +21,11 @@ docker run -d --name rd-rate-client --network rd-rate -e CHROME=/usr/bin/chromiu
 # the delay swings.
 for end in rd-rate-host rd-rate-client; do
   docker run --rm --network container:$end --cap-add NET_ADMIN rd-test-net sh -c \
-    "ethtool -K eth0 tso off gso off >/dev/null && tc qdisc replace dev eth0 root handle 1: netem delay $((rtt / 2))ms ${swing}ms loss $loss% limit 10000 && tc qdisc add dev eth0 parent 1:1 pfifo limit 10000" || exit 1
+    "ethtool -K eth0 tso off gso off >/dev/null && tc qdisc replace dev eth0 root handle 1: netem delay $((rtt / 2))ms ${swing}ms loss ${LOSS:-$loss%} limit 10000 && tc qdisc add dev eth0 parent 1:1 pfifo limit 10000" || exit 1
 done
 until docker exec rd-rate-host python3 -c "import socket; socket.create_connection(('127.0.0.1', 8765), 1)" 2>/dev/null; do sleep 1; done
 sleep 3
-printf '%-5s round trip %3s ms%s, loss %4s%%: ' $cc $rtt "${5:+ swinging by $swing}" $loss
+printf '%-5s round trip %3s ms%s, loss %s: ' $cc $rtt "${5:+ swinging by $swing}" "${LOSS:-$loss%}"
 # Without WebTransport in the page, video stays on TCP.
 docker exec ${DETAIL:+-e DETAIL=1} ${TELL:+-e TELL="$TELL"} -e SET="${TCP:+window.WebTransport = undefined; }$SET" rd-rate-client node late-check.mjs https://rd-rate-host:8765/ $seconds
 clean

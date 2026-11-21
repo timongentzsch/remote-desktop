@@ -21,9 +21,12 @@ const STRAGGLERS: u64 = 30;
 /// On a way whose round trip swings by itself, the patience is at least this many times the usual swing: a
 /// round trip of 45 to 210 ms, as a relay showed, would else look like a full link most of the time.
 const SWINGS: u32 = 4;
-/// How long a client that is behind may stand still, a round trip apart, before it is given a frame to begin
-/// with.
+/// How long a client that is behind but misses nothing it knows of may stand still, a round trip apart, before
+/// it is given a frame to begin with: the latest piece may have been lost, which nothing after it shows.
 const STUCK: Duration = Duration::from_millis(300);
+/// How long a client that says it misses a piece may wait, a round trip apart, for what was asked for it before
+/// it is asked for again: the answer itself may have been lost.
+const ASKED: Duration = Duration::from_millis(100);
 
 /// How much the spares' share keeps of what it was with each piece, so that it follows the last few dozen;
 const KEPT: f64 = 0.95;
@@ -142,25 +145,21 @@ impl<'a> Datagrams<'a> {
     /// the piece gets that many more spares, which take the place of the probe's padding: where the link
     /// drops what it does not carry, the probe then costs fewer of the frames sent during it. They are the
     /// probe's, and do not count towards the spares' share of the rate.
-    /// A frame that goes on from an earlier one comes after a piece that says which: a client that lost
-    /// pieces since that one goes on from there.
+    /// A frame that goes on from an earlier one carries in front, in the same piece, which piece that was: a
+    /// client that lost pieces since that one goes on from there.
     pub(super) fn piece(&mut self, piece: &[u8], frame: Option<Frame>, kbps: u32, surplus: f64) {
         if !self.behind() {
             self.since = Instant::now(); // from here on the client has something to catch up with
         }
+        let mut resumed = None;
         if let Some(Frame { id, after }) = frame {
             if let Some(after) = after {
                 self.carried.forget_after(after);
-                if let Some(at) = self.carried.piece(after) {
-                    self.cut_and_send(&stream::resume(at), kbps, surplus);
-                }
+                resumed = self.carried.piece(after).map(|at| [&stream::resume(at)[..], piece].concat());
             }
             self.carried.note(self.pieces, id);
         }
-        self.cut_and_send(piece, kbps, surplus);
-    }
-
-    fn cut_and_send(&mut self, piece: &[u8], kbps: u32, surplus: f64) {
+        let piece = resumed.as_deref().unwrap_or(piece);
         let datagrams = fec::cut(self.pieces, piece, self.link.room(), self.loss.max(LEAST_LOSS), surplus);
         let took: usize = datagrams.iter().map(Vec::len).sum();
         if surplus == 0.0 {
@@ -232,7 +231,8 @@ impl<'a> Datagrams<'a> {
             (self.status, self.since) = (status, now);
         }
         let gap = status.1 != quic::NOTHING && status.1 >= self.fresh_from;
-        let stuck = self.behind() && now.duration_since(self.since) > STUCK + round_trip;
+        let patience = if status.1 == quic::NOTHING { STUCK } else { ASKED };
+        let stuck = self.behind() && now.duration_since(self.since) > patience + round_trip;
         if !gap && !stuck {
             return None;
         }

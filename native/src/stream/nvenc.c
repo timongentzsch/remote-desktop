@@ -23,7 +23,8 @@ struct nvenc {
     NV_ENC_INPUT_PTR input;
     NV_ENC_OUTPUT_PTR output;
     int width, height, full_chroma;
-    uint64_t frames;
+    /* The id of the last keyframe, before which nothing is kept, and of the last frame, -1 before the first. */
+    int64_t keyframe, last;
     /* The picture as the caller fills it; it is copied into the driver's buffer for each frame. */
     uint8_t *planes[3];
     /* The last access unit, converted to length-prefixed NAL units. */
@@ -96,7 +97,7 @@ static void destroy(struct nvenc *encoder)
 {
     if (encoder->session) {
         enter();
-        if (encoder->frames) {
+        if (encoder->last >= 0) {
             /* The driver must be told that the stream has ended before its encoder is taken apart. */
             NV_ENC_PIC_PARAMS end = { .version = NV_ENC_PIC_PARAMS_VER, .encodePicFlags = NV_ENC_PIC_FLAG_EOS };
             api.nvEncEncodePicture(encoder->session, &end);
@@ -165,6 +166,7 @@ struct encoder *nvenc_open(const struct encoder_setup *setup)
         give_turn();
         return NULL;
     }
+    encoder->last = -1;
     encoder->base.ops = &nvenc_ops;
     encoder->width = width;
     encoder->height = height;
@@ -199,6 +201,9 @@ struct encoder *nvenc_open(const struct encoder_setup *setup)
         h264->chromaFormatIDC = full_chroma ? 3 : 1;
         h264->sliceMode = 3; /* a fixed number of slices per frame: one */
         h264->sliceModeData = 1;
+        /* The last frames are kept for a client that lost those after one of them; only the last is searched. */
+        h264->maxNumRefFrames = h264_kept_frames(width, height);
+        h264->numRefL0 = NV_ENC_NUM_REF_FRAMES_1;
         NV_ENC_CONFIG_H264_VUI_PARAMETERS *vui = &h264->h264VUIParameters;
         vui->videoSignalTypePresentFlag = 1;
         vui->videoFormat = 5; /* unspecified */
@@ -278,12 +283,19 @@ static int nvenc_headers(struct encoder *base, uint8_t **sets, int *sizes)
     return 2;
 }
 
-/* Recovers with a keyframe. */
+/* Recovers by telling the driver that the frames after the one confirmed are lost; it refers to an older one
+   it kept, or makes an intra frame. */
 static int nvenc_encode(struct encoder *base, const struct encode_request *request, uint8_t **data, int *keyframe, int *flags)
 {
     struct nvenc *encoder = (struct nvenc *)base;
     int size = -1;
+    /* The frames kept: since the last keyframe, and no more than the buffer holds. */
+    int64_t first = encoder->last - encoder->config.encodeCodecConfig.h264Config.maxNumRefFrames + 1;
+    first = first > encoder->keyframe ? first : encoder->keyframe;
+    int recover = request->kind == ENCODE_RECOVER && request->confirmed >= first;
     enter();
+    for (int64_t lost = request->confirmed + 1; recover && lost <= encoder->last; lost++)
+        api.nvEncInvalidateRefFrames(encoder->session, (uint64_t)lost);
 
     NV_ENC_LOCK_INPUT_BUFFER input = { .version = NV_ENC_LOCK_INPUT_BUFFER_VER, .inputBuffer = encoder->input };
     if (api.nvEncLockInputBuffer(encoder->session, &input) != NV_ENC_SUCCESS)
@@ -308,8 +320,8 @@ static int nvenc_encode(struct encoder *base, const struct encode_request *reque
         .outputBitstream = encoder->output,
         .bufferFmt = encoder->full_chroma ? NV_ENC_BUFFER_FORMAT_YUV444 : NV_ENC_BUFFER_FORMAT_IYUV,
         .pictureStruct = NV_ENC_PIC_STRUCT_FRAME,
-        .inputTimeStamp = encoder->frames++,
-        .encodePicFlags = request->kind != ENCODE_NEXT ? NV_ENC_PIC_FLAG_FORCEIDR : 0,
+        .inputTimeStamp = (uint64_t)request->id,
+        .encodePicFlags = request->kind != ENCODE_NEXT && !recover ? NV_ENC_PIC_FLAG_FORCEIDR : 0,
     };
     NV_ENC_LOCK_BITSTREAM stream = { .version = NV_ENC_LOCK_BITSTREAM_VER, .outputBitstream = encoder->output };
     /* Locking the output waits until the frame is encoded. */
@@ -321,6 +333,10 @@ static int nvenc_encode(struct encoder *base, const struct encode_request *reque
     /* Whether the cap decided how good the frame is, this encoder does not say: its quality target is not a
        quantiser to compare with. A quantiser this coarse is far from any target. */
     *flags = stream.frameAvgQP > POOR_QP ? FRAME_POOR : 0;
+    *flags |= recover && !*keyframe ? FRAME_RECOVERED : 0;
+    if (*keyframe)
+        encoder->keyframe = request->id;
+    encoder->last = request->id;
     api.nvEncUnlockBitstream(encoder->session, encoder->output);
 done:
     leave();
