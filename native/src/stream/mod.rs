@@ -83,6 +83,10 @@ impl Still {
 /// they are coarse on any link. When frames take longer than that half, it goes a step back and does not try
 /// again; so a screen too large for the first effort is soon given the least.
 const EFFORT_FRAMES: u32 = 60;
+
+/// More frames a second than this are kept only where they fit (see `keeps_pace`): the rate otherwise falls back
+/// to it.
+const STEADY_FPS: u32 = 60;
 const STEP_COST: u32 = 2;
 /// The effort a stream begins at: superfast, whose fewer bits are worth its little more time where that fits.
 const FIRST_EFFORT: u32 = 1;
@@ -159,6 +163,17 @@ struct Weighed {
     coarse: u32,
     poor: u32,
     time: Duration,
+    /// Of the gaps between those frames, how many came at the wanted rate, and how many at `STEADY_FPS`.
+    quick: u32,
+    steady: u32,
+}
+
+/// Whether more frames a second than `STEADY_FPS` keep their pace: each is encoded within its interval, and the
+/// screen gives them that often. A screen that refreshes at the steady rate showed many gaps of that length
+/// among the last frames (`steady`) and none shorter (`quick`); frames merely far apart, as typing makes them,
+/// say nothing.
+fn keeps_pace(fps: u32, average: Duration, quick: u32, steady: u32) -> bool {
+    fps <= STEADY_FPS || (average <= Duration::from_secs(1) / fps && (quick > 0 || steady < EFFORT_FRAMES / 2))
 }
 
 /// The effort to go on with, and the most that may be tried from then on.
@@ -199,6 +214,8 @@ pub struct Stream {
     effort: u32,
     most_effort: u32,
     weighed: Weighed,
+    /// When the last new frame was weighed (see `weigh_effort`).
+    last_weighed: Option<Instant>,
     /// With colour detail left to the stream: when full colour may be tried again, and the rest after the
     /// next time it has to be given up.
     chroma_rest: Rest,
@@ -242,6 +259,7 @@ impl Stream {
             effort: FIRST_EFFORT,
             most_effort: EFFORTS - 1,
             weighed: Weighed::default(),
+            last_weighed: None,
             chroma_rest: Rest::new(now),
             size_rest: Rest::new(now),
             full_chroma_unavailable: false,
@@ -340,6 +358,11 @@ impl Stream {
     /// Counts a new frame and, every `EFFORT_FRAMES` of them, reconsiders the colour detail where it is the
     /// stream's to choose, and else the software encoder's effort.
     fn weigh_effort(&mut self, took: Duration, coarse: bool, poor: bool) {
+        let now = Instant::now();
+        let gap = self.last_weighed.replace(now).map(|before| now.duration_since(before));
+        let steady = Duration::from_secs(1) / STEADY_FPS;
+        self.weighed.quick += gap.is_some_and(|gap| gap < steady * 3 / 4) as u32;
+        self.weighed.steady += gap.is_some_and(|gap| gap >= steady * 3 / 4 && gap < steady * 5 / 4) as u32;
         self.weighed.frames += 1;
         self.weighed.coarse += coarse as u32;
         self.weighed.poor += poor as u32;
@@ -350,7 +373,11 @@ impl Stream {
         let weighed = std::mem::take(&mut self.weighed);
         let (average, budget) = (weighed.time / weighed.frames, self.frame_interval() / 2);
         let mostly_coarse = weighed.coarse * 2 > weighed.frames;
-        let now = Instant::now();
+        if !keeps_pace(self.settings.fps, average, weighed.quick, weighed.steady) {
+            warn!("{} frames a second do not fit here: {STEADY_FPS} from now on", self.settings.fps);
+            self.settings.fps = STEADY_FPS;
+            return;
+        }
         if self.settings.auto_chroma && !self.full_chroma_unavailable {
             // A frame is late if either end is slow with it, and full colour detail costs the decoder as well.
             let decode = Duration::from_micros(self.shared.decode_micros.load(Ordering::Relaxed).into());
@@ -560,6 +587,16 @@ mod tests {
         let mut still = Still::default();
         let held_back = (0..5).any(|_| still.finished(20, share, true));
         assert!(!held_back, "tiny frames the cap held back do not finish the picture");
+    }
+
+    #[test]
+    fn more_frames_than_the_steady_rate_are_kept_only_where_they_fit() {
+        let (quick, slow) = (Duration::from_millis(6), Duration::from_millis(11));
+        assert!(keeps_pace(60, slow * 2, 0, 59), "the steady rate always");
+        assert!(keeps_pace(120, quick, 40, 10), "frames that came quickly and were encoded in time");
+        assert!(!keeps_pace(120, slow, 40, 10), "encoded too slowly");
+        assert!(!keeps_pace(120, quick, 0, 50), "a screen that refreshes 60 times a second");
+        assert!(keeps_pace(120, quick, 0, 5), "frames far apart say nothing");
     }
 
     #[test]

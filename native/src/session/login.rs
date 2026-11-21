@@ -13,7 +13,7 @@ use crate::screen::Window;
 /// How long after a wrong password no login is accepted, which limits guessing to this pace overall.
 const GUESS_INTERVAL: Duration = Duration::from_secs(1);
 /// The frame rates the panel offers; anything else means the first.
-const FRAME_RATES: [u32; 3] = [60, 30, 15];
+const FRAME_RATES: [u32; 4] = [60, 120, 30, 15];
 /// The bitrate a client may ask for at most, in kbit/s.
 const CEILING_LIMIT: i64 = 50000;
 /// The patience the panel's middle stands for, and the ends of its range, in milliseconds.
