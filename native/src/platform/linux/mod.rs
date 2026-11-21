@@ -18,7 +18,7 @@ mod typing;
 pub mod virtual_screen;
 mod xserver;
 
-pub use super::unix::{fd, hostname, write_private};
+pub use super::unix::{fd, hostname, without_echo, write_private};
 pub use install::{data_directory, password_path};
 
 use crate::screen::Screen;

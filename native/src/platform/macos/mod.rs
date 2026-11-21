@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-pub use super::unix::{fd, hostname, write_private};
+pub use super::unix::{fd, hostname, without_echo, write_private};
 use crate::capture::Shared;
 use crate::screen::Screen;
 

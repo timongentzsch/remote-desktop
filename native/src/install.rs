@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
 use crate::platform::install::{self as service, BINARY};
-use crate::platform::{password_path, write_private};
+use crate::platform::{password_path, without_echo, write_private};
 use crate::{PORT, certificate, fail};
 
 /// `remote-desktop install`: asks for a password unless there is one, makes the certificate unless there is one,
@@ -104,22 +104,6 @@ pub fn remove_password() {
 /// An empty password: no password is asked for.
 fn clear_password() {
     write_private(&password_path(), b"").unwrap_or_else(|error| fail(&error));
-}
-
-/// Runs `action` with terminal echo off, if standard input is a terminal.
-fn without_echo<T>(action: impl FnOnce() -> T) -> T {
-    let mut terminal = unsafe { std::mem::zeroed::<libc::termios>() };
-    let is_terminal = unsafe { libc::tcgetattr(0, &mut terminal) } == 0;
-    if is_terminal {
-        let mut silent = terminal;
-        silent.c_lflag &= !libc::ECHO;
-        unsafe { libc::tcsetattr(0, libc::TCSANOW, &silent) };
-    }
-    let result = action();
-    if is_terminal {
-        unsafe { libc::tcsetattr(0, libc::TCSANOW, &terminal) };
-    }
-    result
 }
 
 /// Runs a command that has to succeed, or else ends with what went wrong.

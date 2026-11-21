@@ -1,7 +1,7 @@
 # Checks and tests every push and pull request, and builds the portable binaries.
 # Pushing a tag such as v0.1.0 also publishes them as a release, with install.sh, which is what the install
 # line in the README downloads: releases/latest/download/install.sh, which fetches remote-desktop-<architecture>
-# (remote-desktop-aarch64-macos on a Mac).
+# (remote-desktop-aarch64-macos on a Mac). The Windows binary is remote-desktop-x86_64-windows.exe.
 name: Build
 
 on:
@@ -12,7 +12,7 @@ on:
 
 jobs:
   build:
-    needs: macos
+    needs: [macos, windows-tests]
     runs-on: ubuntu-24.04
     permissions:
       contents: write # to create the release for a tag
@@ -46,6 +46,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: remote-desktop-macos
+          path: native/dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: remote-desktop-windows
           path: native/dist/
       - uses: actions/upload-artifact@v4
         with:
@@ -81,3 +85,47 @@ jobs:
         with:
           name: remote-desktop-macos
           path: native/dist/
+
+  # Windows, built on Linux with mingw-w64 into one .exe that needs no runtime besides Windows' own. Its tests
+  # are built here too and run on Windows itself.
+  windows:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+          components: clippy
+      - name: Install nasm and mingw-w64 with POSIX threads (which nvenc.c uses)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes nasm gcc-mingw-w64-x86-64-posix
+      - run: cargo clippy --release --all-targets --target x86_64-pc-windows-gnu -- --deny warnings
+      - run: |
+          cargo build --release --target x86_64-pc-windows-gnu
+          cargo test --release --target x86_64-pc-windows-gnu --no-run
+          mkdir dist windows-tests
+          cp target/x86_64-pc-windows-gnu/release/remote-desktop.exe dist/remote-desktop-x86_64-windows.exe
+          cp target/x86_64-pc-windows-gnu/release/deps/remote_desktop-*.exe windows-tests/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-desktop-windows
+          path: native/dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-tests
+          path: native/windows-tests/
+
+  windows-tests:
+    needs: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-tests
+      - run: Get-ChildItem *.exe | ForEach-Object { & $_.FullName; if ($LASTEXITCODE) { exit $LASTEXITCODE } }

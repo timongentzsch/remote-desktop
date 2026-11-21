@@ -1,6 +1,6 @@
 //! Everything that differs from one operating system to another, behind the one surface the rest of the host
-//! uses. Each system is a module here that provides these same names, chosen when the host is built; Linux is
-//! the only one so far. The rest of the host (the server and sessions, the bitrate, QUIC, the stream and its
+//! uses. Each system is a module here that provides these same names, chosen when the host is built: Linux,
+//! macOS and Windows. The rest of the host (the server and sessions, the bitrate, QUIC, the stream and its
 //! encoders, and the client) is the same everywhere. What Linux and macOS do alike is in unix/.
 
 #[cfg(unix)]
@@ -16,7 +16,12 @@ mod macos;
 #[cfg(target_os = "macos")]
 use macos as os;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as os;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 compile_error!("there is no platform module for this operating system yet: see platform/mod.rs");
 
 // The screen: its picture for a session (`capture(settings, shared, sink)`, see capture.rs), the screens there
@@ -43,8 +48,8 @@ pub use os::clipboard;
 pub use os::greeter::run as login_screen;
 pub use os::install;
 
-// Where the password and certificate are kept, and the machine's name.
-pub use os::{data_directory, hostname, password_path, write_private};
+// Where the password and certificate are kept, the machine's name, and typing the password unseen.
+pub use os::{data_directory, hostname, password_path, without_echo, write_private};
 
 // Waiting on a socket (`socket_readable`), and on a socket or a wake from another thread (`Waker`); the
 // kernel's side of a TCP connection (`tcp`).

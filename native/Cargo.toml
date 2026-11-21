@@ -32,6 +32,10 @@ wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 x11rb = { version = "0.14", default-features = false, features = ["damage", "randr", "shm", "xfixes", "xtest"] }
 
+# and on Windows (see src/platform/windows).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_Console"] }
+
 [build-dependencies]
 cc = "1"
 
