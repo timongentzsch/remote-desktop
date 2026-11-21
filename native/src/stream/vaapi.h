@@ -7,10 +7,12 @@
 #include "encoder.h"
 #include "nal.h"
 
-/* Surfaces: the picture to encode, and two the driver reconstructs frames into, the one being made and the one
-   it refers to. */
+/* How many frames besides the last one a codec may keep for a client that lost the frames after them. */
+#define MOST_KEPT 3
+/* Surfaces: the picture to encode, and those the driver reconstructs frames into: the one being made, the one
+   it refers to, and those kept. */
 #define INPUT 0
-#define SURFACES 3
+#define SURFACES (3 + MOST_KEPT)
 /* The quantiser parameter sets and pictures state before each slice adjusts it. */
 #define INITIAL_QP 26
 /* No IDR comes unasked: the driver is given one as long a period as it takes. */
@@ -29,6 +31,9 @@ struct vaapi_codec {
     int block;
     /* The most luma samples a picture may have at the level the parameter sets state. */
     int most_samples;
+    /* How many frames besides the last one it keeps, up to MOST_KEPT, for a client that lost those after them
+       (ENCODE_RECOVER): a frame for it refers to the latest of them that the client has. */
+    int kept;
     /* Which headers the codec's file writes for the driver (VA_ENC_PACKED_HEADER_...): the parameter sets
        always, the slice headers where the driver does not write them itself. */
     unsigned packed_headers;
@@ -38,7 +43,7 @@ struct vaapi_codec {
     /* Writes the parameter sets into encoder->headers. */
     void (*write_headers)(struct vaapi *encoder);
     /* Adds the buffers that go with an IDR, and those of a frame: one that refers to nothing if `idr`, else
-       to the surface encoder->reference; made into the surface `current` at quantiser `qp`. */
+       to encoder->references[0], keeping the others; made into the surface `current` at quantiser `qp`. */
     int (*add_sequence)(struct vaapi *encoder, VABufferID *buffers, int *count);
     int (*add_frame)(struct vaapi *encoder, int idr, int current, int qp, VABufferID *buffers, int *count);
 };
@@ -65,10 +70,17 @@ struct vaapi {
        the buffer, and each frame empties it by its size. And the quantiser and size of the last frame. */
     double allowance;
     int last_qp, last_bits;
-    /* Frames since the last IDR, which is numbered by idr_id; reference is the surface the last frame was
-       reconstructed into, 0 before the first. */
+    /* Frames since the last IDR, which is numbered by idr_id. */
     uint32_t frames, idr_id;
-    int reference;
+    /* The frames the next may refer to, newest first: the one it refers to, then those kept besides (see
+       vaapi_codec.kept). Each is the surface it was reconstructed into, its id (encode_request.id) and its
+       order since the IDR. None before the first frame. */
+    struct reference {
+        int surface;
+        int64_t id;
+        uint32_t order;
+    } references[1 + MOST_KEPT];
+    int reference_count;
     /* The picture as the caller fills it, 4:2:0 in three planes; it is copied into the input surface. */
     uint8_t *planes[3];
     struct nal_units unit;

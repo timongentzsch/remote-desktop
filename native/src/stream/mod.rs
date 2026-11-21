@@ -417,13 +417,11 @@ impl Stream {
     /// Encodes the picture currently in the encoder's planes, as one of `fps` frames a second, and sends it.
     /// Says how long that took since `started`, sending apart, and whether the frame came out coarse, and poor.
     fn encode(&mut self, started: Instant, frame: Frame) -> Option<(Duration, bool, bool)> {
+        let confirmed = self.shared.confirmed.load(Ordering::Relaxed).checked_sub(1);
         let want = if self.shared.fresh.swap(false, Ordering::Relaxed) {
             Want::Keyframe
         } else if self.shared.recover.swap(false, Ordering::Relaxed) {
-            match self.shared.confirmed.load(Ordering::Relaxed) {
-                0 => Want::Keyframe,
-                confirmed => Want::Recover { confirmed: confirmed - 1 },
-            }
+            if confirmed.is_some() { Want::Recover } else { Want::Keyframe }
         } else {
             Want::Next
         };
@@ -446,7 +444,7 @@ impl Stream {
         }
         let id = self.next_id;
         self.next_id += 1;
-        let encoded = encoder.encode(id, want)?;
+        let encoded = encoder.encode(id, want, confirmed)?;
         let (unit, keyframe, coarse, held_back, poor, recovered) = (
             encoded.unit.to_vec(),
             encoded.keyframe,
@@ -478,10 +476,7 @@ impl Stream {
             }
         }
         self.encoded = Instant::now();
-        let after = match want {
-            Want::Recover { confirmed } if recovered => Some(confirmed),
-            _ => None,
-        };
+        let after = if recovered { confirmed } else { None };
         self.send_tag(Packet::Frame { keyframe }, &unit, Some(capture::Frame { id, after }));
         Some((took, coarse, poor))
     }

@@ -5,7 +5,9 @@
 
    VA-API encodes what it is told to: the codecs' files write the stream's parameter sets themselves, which the
    stream needs for its decoder configuration anyway, and give the driver every frame's picture and slice. Each
-   frame refers to the one before; the first, and one a client needs to begin with, is an IDR. Only 4:2:0.
+   frame refers to the one before; the first, and one a client needs to begin with, is an IDR. A codec may keep
+   older frames besides (vaapi_codec.kept), which a frame for a client that lost those after them refers to
+   instead. Only 4:2:0.
 
    The bitrate is this file's to keep, around a constant quantiser: the drivers' own rate controls that aim for
    a quality under a cap fell well short of the quality (Intel's QVBR began at quantiser 48 where 20 was asked
@@ -46,6 +48,9 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
 #define MOST_QP_FALL 2
 #define START_CODE_LENGTH 4
 #define MOST_BUFFERS 16
+/* Frames are kept for at most this many frames: HEVC's picture order counts in the decoder's buffer must lie
+   within 2048 of each other. */
+#define MOST_AGE 1024
 
 #define FUNCTIONS(F) \
     F(vaInitialize) F(vaTerminate) F(vaSetErrorCallback) F(vaSetInfoCallback) F(vaGetConfigAttributes) \
@@ -265,19 +270,81 @@ done:
     return size;
 }
 
+static void drop(struct vaapi *encoder, int at)
+{
+    struct reference *list = encoder->references;
+    memmove(list + at, list + at + 1, (size_t)(encoder->reference_count - at - 1) * sizeof *list);
+    encoder->reference_count--;
+}
+
+/* Leaves out the frames after the one `confirmed`, so that the next refers to that one or one before it.
+   Returns -1 where none is left. */
+static int go_back(struct vaapi *encoder, int64_t confirmed)
+{
+    while (encoder->reference_count && encoder->references[0].id > confirmed)
+        drop(encoder, 0);
+    return encoder->reference_count ? 0 : -1;
+}
+
+/* A surface to reconstruct the next frame into: one that holds none of the frames referred to. */
+static int free_surface(const struct vaapi *encoder)
+{
+    for (int surface = INPUT + 1;; surface++) {
+        int taken = 0;
+        for (int at = 0; at < encoder->reference_count; at++)
+            taken |= encoder->references[at].surface == surface;
+        if (!taken)
+            return surface;
+    }
+}
+
+/* Makes the frame just made the one the next refers to, and keeps of those before it what the codec allows,
+   newest first: the latest one the client has (`confirmed`), and none older, which it will not need; the last
+   one only where it is at least a share of the frames the client lags behind newer than the next kept, so
+   that those kept reach back to what the client has; and of the others the newest. */
+static void keep(struct vaapi *encoder, struct reference made, int64_t confirmed)
+{
+    struct reference *list = encoder->references;
+    int kept = encoder->codec->kept;
+    if (!kept)
+        encoder->reference_count = 0;
+    int64_t has = -1;
+    for (int at = 0; at < encoder->reference_count && has < 0; at++)
+        if (list[at].id <= confirmed) {
+            has = list[at].id;
+            encoder->reference_count = at + 1;
+        }
+    int64_t spacing = confirmed >= 0 ? (made.id - confirmed) / (kept > 1 ? kept - 1 : 1) : 0;
+    if (encoder->reference_count >= 2 && list[0].id != has && list[0].id - list[1].id < spacing)
+        drop(encoder, 0);
+    for (int at = encoder->reference_count - 1; at >= 0; at--)
+        if (made.order - list[at].order >= MOST_AGE)
+            drop(encoder, at);
+    while (encoder->reference_count > kept) {
+        int oldest = encoder->reference_count - 1;
+        drop(encoder, list[oldest].id == has ? oldest - 1 : oldest);
+    }
+    memmove(list + 1, list, (size_t)encoder->reference_count * sizeof *list);
+    list[0] = made;
+    encoder->reference_count++;
+}
+
 static int vaapi_encode(struct encoder *base, const struct encode_request *request, uint8_t **data, int *keyframe, int *flags)
 {
     struct vaapi *encoder = (struct vaapi *)base;
-    int idr = request->kind != ENCODE_NEXT || encoder->reference == 0, size = -1;
+    int idr = request->kind == ENCODE_KEYFRAME || encoder->reference_count == 0, size = -1;
+    int recovered = !idr && request->kind == ENCODE_RECOVER;
+    if (recovered && go_back(encoder, request->confirmed) < 0)
+        idr = 1, recovered = 0;
     if (idr) {
+        encoder->reference_count = 0;
         encoder->frames = 0;
         encoder->idr_id++;
     }
     /* What the cap allows fills by its share of a frame, up to the buffer's size. */
     double buffer = encoder->buffer_kbits * 1000.0, share = encoder->kbps * 1000.0 / encoder->base.fps;
     encoder->allowance = encoder->allowance + share < buffer ? encoder->allowance + share : buffer;
-    /* The new frame is reconstructed into whichever of the two surfaces the last one is not in. */
-    int current = encoder->reference == 1 ? 2 : 1, qp = choose_qp(encoder);
+    int current = free_surface(encoder), qp = choose_qp(encoder);
     pthread_mutex_lock(&calls);
     if (upload(encoder) == 0)
         size = encode_at(encoder, idr, current, qp);
@@ -297,10 +364,11 @@ static int vaapi_encode(struct encoder *base, const struct encode_request *reque
     /* The cap, not the quality target, set the quantiser, as the budget this file keeps said. */
     *flags = qp > encoder->quality + COARSE_MARGIN ? FRAME_COARSE | FRAME_HELD_BACK : 0;
     *flags |= qp > POOR_QP ? FRAME_POOR : 0;
+    *flags |= recovered ? FRAME_RECOVERED : 0;
     encoder->last_qp = qp;
     encoder->last_bits = size * 8;
     encoder->allowance -= size * 8.0;
-    encoder->reference = current;
+    keep(encoder, (struct reference){ current, request->id, encoder->frames }, request->confirmed);
     encoder->frames++;
     return size;
 }

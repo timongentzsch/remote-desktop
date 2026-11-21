@@ -195,7 +195,7 @@ static int add_frame(struct vaapi *encoder, int idr, int current, int qp, VABuff
         slice.RefPicList0[at] = slice.RefPicList1[at] = nothing();
     if (!idr) {
         VAPictureH264 before = {
-            .picture_id = encoder->surfaces[encoder->reference],
+            .picture_id = encoder->surfaces[encoder->references[0].surface],
             .frame_idx = (encoder->frames - 1) % (1u << LOG2_MAX_FRAME_NUM),
             .flags = VA_PICTURE_H264_SHORT_TERM_REFERENCE,
             .TopFieldOrderCnt = 2 * (encoder->frames - 1),

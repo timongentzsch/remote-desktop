@@ -89,9 +89,10 @@ pub enum Want {
     Next,
     /// One that needs no frame before it.
     Keyframe,
-    /// One that a client can decode which has frame `confirmed` but perhaps none after it: one that refers to
-    /// no later frame where the encoder can make it (`Encoded::recovered`), a keyframe otherwise.
-    Recover { confirmed: u64 },
+    /// One that a client can decode which has the frame confirmed (see `Encoder::encode`) but perhaps none
+    /// after it: one that refers to no later frame where the encoder can make it (`Encoded::recovered`), a
+    /// keyframe otherwise.
+    Recover,
 }
 
 /// A frame to encode, as `struct encode_request` in encoder.h.
@@ -251,12 +252,14 @@ impl Encoder {
     }
 
     /// Encodes the picture in `planes` as frame `id`, which counts up from frame to frame, and as `want` says.
-    pub fn encode(&mut self, id: u64, want: Want) -> Option<Encoded<'_>> {
-        let (kind, confirmed) = match want {
-            Want::Next => (0, -1),
-            Want::Keyframe => (1, -1),
-            Want::Recover { confirmed } => (2, confirmed as i64),
+    /// `confirmed` is the latest frame the client is known to have, which tells the encoder what to keep.
+    pub fn encode(&mut self, id: u64, want: Want, confirmed: Option<u64>) -> Option<Encoded<'_>> {
+        let kind = match want {
+            Want::Next => 0,
+            Want::Keyframe => 1,
+            Want::Recover => 2,
         };
+        let confirmed = confirmed.map_or(-1, |frame| frame as i64);
         let request = Request { id: id as i64, kind, confirmed };
         let (mut data, mut keyframe, mut flags) = (ptr::null_mut(), 0, 0);
         let size = unsafe { encoder_encode(self.raw, &request, &mut data, &mut keyframe, &mut flags) };
@@ -332,14 +335,14 @@ mod tests {
                     for plane in encoder.planes() {
                         plane.bytes.fill(100 + frame * 50);
                     }
-                    let encoded = encoder.encode(frame as u64, Want::Next).expect("a frame in gives a frame out");
+                    let encoded = encoder.encode(frame as u64, Want::Next, None).expect("a frame in gives a frame out");
                     let length = u32::from_be_bytes(encoded.unit[..4].try_into().unwrap()) as usize;
                     assert!(length > 0 && 4 + length <= encoded.unit.len(), "NAL units carry their length in front");
                     assert_eq!(encoded.keyframe, expect_keyframe);
                 }
                 assert!(encoder.set_rate(500, 60, MOVING_QUALITY, 50), "the bitrate cap can change mid-stream");
                 assert!(
-                    encoder.encode(2, Want::Next).is_some_and(|encoded| !encoded.keyframe),
+                    encoder.encode(2, Want::Next, None).is_some_and(|encoded| !encoded.keyframe),
                     "and the stream simply continues"
                 );
             }
@@ -374,10 +377,39 @@ mod tests {
         draw_detail(&mut encoder);
         // HEVC's NAL unit type is in the first byte after the length: IDR_W_RADL is 19, TRAIL_R 1.
         for (frame, expected_type) in [(0, 19), (1, 1), (2, 1)] {
-            let encoded = encoder.encode(frame, Want::Next).expect("a frame in gives a frame out");
+            let encoded = encoder.encode(frame, Want::Next, None).expect("a frame in gives a frame out");
             assert_eq!((encoded.unit[4] >> 1) & 0x3F, expected_type, "frame {frame}");
             assert_eq!(encoded.keyframe, frame == 0);
         }
+    }
+
+    /// Where the GPU encodes HEVC, a client that lost frames is given one that goes on from the latest it has,
+    /// as small as any other, as long as the encoder kept that one; a keyframe otherwise.
+    #[test]
+    fn hevc_recovers_from_a_frame_the_client_has() {
+        let _alone = GPU.lock();
+        let setup = Setup { hevc: 1, ..Setup::new(640, 480, 60, 2000, false, 0) };
+        let Some(mut encoder) = Encoder::open_on(true, setup).filter(|encoder| encoder.codec == Codec::Hevc) else {
+            return; // this machine's GPU does not encode HEVC
+        };
+        draw_detail(&mut encoder);
+        let mut encode = |id, want, confirmed| {
+            encoder.planes()[0].bytes[id as usize * 100] ^= 0xFF; // a little changes from frame to frame
+            let encoded = encoder.encode(id, want, confirmed).expect("a frame in gives a frame out");
+            (encoded.unit.len(), encoded.keyframe, encoded.recovered, (encoded.unit[4] >> 1) & 0x3F)
+        };
+        let (first, ..) = encode(0, Want::Next, None);
+        for id in 1..5 {
+            encode(id, Want::Next, None);
+        }
+        // The client has frame 2 but lost 3 and 4.
+        let (size, keyframe, recovered, nal_type) = encode(5, Want::Recover, Some(2));
+        assert_eq!((keyframe, recovered, nal_type), (false, true, 1), "a frame that refers to frame 2");
+        assert!(size * 4 < first, "and is far smaller than a keyframe: {size} against {first}");
+        assert!(!encode(6, Want::Next, Some(2)).1, "the stream goes on from it");
+        // Nothing before frame 2 was kept, as the client had that one.
+        let (_, keyframe, recovered, nal_type) = encode(7, Want::Recover, Some(1));
+        assert_eq!((keyframe, recovered, nal_type), (true, false, 19), "an IDR");
     }
 
     /// A bitrate cap forces a detailed picture out coarse at first. Encoding it again at the pace of refinement
@@ -390,7 +422,7 @@ mod tests {
                 let mut encoder =
                     Encoder::open_on(false, Setup::new(640, 480, 60, kbps, false, effort)).expect("x264 opens");
                 draw_detail(&mut encoder);
-                let frame = |id| encoder.encode(id, Want::Next).map(|encoded| (encoded.coarse, encoded.poor));
+                let frame = |id| encoder.encode(id, Want::Next, None).map(|encoded| (encoded.coarse, encoded.poor));
                 (0..frames).map(frame).last().unwrap().expect("a frame in gives a frame out")
             };
             assert_eq!(after(1, 200), (true, true), "under a low cap the picture begins poor (effort {effort})");
@@ -408,12 +440,12 @@ mod tests {
         {
             let (full_chroma, gpu) = (encoder.full_chroma, encoder.gpu);
             draw_detail(&mut encoder);
-            let first = encoder.encode(0, Want::Next).expect("a frame in gives a frame out").unit.len();
+            let first = encoder.encode(0, Want::Next, None).expect("a frame in gives a frame out").unit.len();
             assert!(encoder.set_rate(kbps, REFINE_FPS, STILL_QUALITY, LONGEST_BUFFER));
             let (mut sizes, mut still) = (Vec::new(), Still::default());
             still.finished(first, Still::share(kbps), false);
             for id in 1.. {
-                let encoded = encoder.encode(id, Want::Next).expect("a frame in gives a frame out");
+                let encoded = encoder.encode(id, Want::Next, None).expect("a frame in gives a frame out");
                 let (size, held_back) = (encoded.unit.len(), encoded.held_back);
                 sizes.push(size);
                 if still.finished(size, Still::share(kbps), held_back) {

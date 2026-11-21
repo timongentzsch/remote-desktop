@@ -1,4 +1,5 @@
-/* HEVC through VA-API (see vaapi.c): Main profile, 4:2:0, each frame referring to the one before it. The
+/* HEVC through VA-API (see vaapi.c): Main profile, 4:2:0, each frame referring to the one before it, or for a
+   client that lost frames to one it has, of up to MOST_KEPT older ones every frame keeps. The
    block sizes and asymmetric motion partitions are those the driver says it encodes with, as ffmpeg takes
    them; where it says nothing, as Intel's does for its Coffee Lake GPUs, those Intel's GPUs encode with: 32x32
    coding tree blocks, coding blocks from 8x8, asymmetric motion partitions. SAO and temporal motion vector
@@ -96,11 +97,12 @@ static void write_profile(struct bits *bits)
     bits_put(bits, LEVEL, 8);
 }
 
-/* A decoder holds the picture being decoded and the one it refers to, and shows each at once. */
+/* A decoder holds the picture being decoded, the one it refers to and those kept, and shows each at once. At
+   level 5.0 it holds at least six pictures of the largest size. */
 static void write_ordering(struct bits *bits)
 {
-    bits_put(bits, 0, 1); /* sub_layer_ordering_info_present_flag */
-    bits_put_ue(bits, 1); /* max_dec_pic_buffering_minus1 */
+    bits_put(bits, 0, 1);         /* sub_layer_ordering_info_present_flag */
+    bits_put_ue(bits, 1 + MOST_KEPT); /* max_dec_pic_buffering_minus1 */
     bits_put_ue(bits, 0); /* max_num_reorder_pics */
     bits_put_ue(bits, 0); /* max_latency_increase_plus1 */
 }
@@ -270,7 +272,7 @@ static int add_sequence(struct vaapi *encoder, VABufferID *buffers, int *count)
 }
 
 /* The slice segment header of a frame's one slice, as the SPS and PPS have it: an IDR's, or a P slice's that
-   refers to the frame before it, at quantiser `qp`. */
+   refers to encoder->references[0] and keeps the others, at quantiser `qp`. */
 static int add_slice_header(struct vaapi *encoder, int idr, int qp, VABufferID *buffers, int *count)
 {
     struct bits header = { 0 };
@@ -282,10 +284,14 @@ static int add_slice_header(struct vaapi *encoder, int idr, int qp, VABufferID *
     if (!idr) {
         bits_put(&header, encoder->frames % (1u << LOG2_MAX_POC_LSB), LOG2_MAX_POC_LSB);
         bits_put(&header, 0, 1); /* short_term_ref_pic_set_sps_flag: the set follows */
-        bits_put_ue(&header, 1); /* num_negative_pics: the frame before */
-        bits_put_ue(&header, 0); /* num_positive_pics */
-        bits_put_ue(&header, 0); /* delta_poc_s0_minus1: just before */
-        bits_put(&header, 1, 1); /* used_by_curr_pic_s0_flag */
+        bits_put_ue(&header, encoder->reference_count); /* num_negative_pics: newest first */
+        bits_put_ue(&header, 0);                         /* num_positive_pics */
+        uint32_t before = encoder->frames;
+        for (int at = 0; at < encoder->reference_count; at++) {
+            bits_put_ue(&header, before - encoder->references[at].order - 1); /* delta_poc_s0_minus1 */
+            bits_put(&header, at == 0, 1);                                     /* used_by_curr_pic_s0_flag */
+            before = encoder->references[at].order;
+        }
         bits_put(&header, 0, 1); /* num_ref_idx_active_override_flag */
         bits_put_ue(&header, 5 - MERGE_CANDIDATES); /* five_minus_max_num_merge_cand */
     }
@@ -328,14 +334,15 @@ static int add_frame(struct vaapi *encoder, int idr, int current, int qp, VABuff
     };
     for (int at = 0; at < 15; at++)
         picture.reference_frames[at] = slice.ref_pic_list0[at] = slice.ref_pic_list1[at] = nothing();
-    if (!idr) {
-        VAPictureHEVC before = {
-            .picture_id = encoder->surfaces[encoder->reference],
-            .pic_order_cnt = (int32_t)encoder->frames - 1,
+    /* Every frame kept is told, as ffmpeg tells them; the slice refers to the first. */
+    for (int at = 0; at < encoder->reference_count && !idr; at++)
+        picture.reference_frames[at] = (VAPictureHEVC){
+            .picture_id = encoder->surfaces[encoder->references[at].surface],
+            .pic_order_cnt = (int32_t)encoder->references[at].order,
             .flags = VA_PICTURE_HEVC_RPS_ST_CURR_BEFORE,
         };
-        picture.reference_frames[0] = slice.ref_pic_list0[0] = before;
-    }
+    if (!idr)
+        slice.ref_pic_list0[0] = picture.reference_frames[0];
     if (vaapi_add(encoder, VAEncPictureParameterBufferType, &picture, sizeof picture, buffers, count) < 0
         || add_slice_header(encoder, idr, qp, buffers, count) < 0)
         return -1;
@@ -347,6 +354,7 @@ const struct vaapi_codec vaapi_hevc = {
     .profile = VAProfileHEVCMain,
     .block = 1 << LOG2_CTB,
     .most_samples = MOST_SAMPLES,
+    .kept = MOST_KEPT,
     .configure = configure,
     /* Intel's driver writes no slice headers of its own: without them, encoding fails. */
     .packed_headers = VA_ENC_PACKED_HEADER_SEQUENCE | VA_ENC_PACKED_HEADER_SLICE,
