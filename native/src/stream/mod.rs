@@ -12,10 +12,11 @@ mod flv;
 mod record;
 
 pub use encode::{PROBE, probe};
+pub use flv::resume;
 
-use crate::capture::{HEIGHTS, Output, Settings, Shape, Shared, Sink};
+use crate::capture::{self, HEIGHTS, Output, Settings, Shape, Shared, Sink};
 use convert::Shrinker;
-use encode::{Codec, EFFORTS, Encoder, LONGEST_BUFFER, MOVING_QUALITY, STILL_QUALITY, Setup};
+use encode::{Codec, EFFORTS, Encoder, LONGEST_BUFFER, MOVING_QUALITY, STILL_QUALITY, Setup, Want};
 use flv::Packet;
 
 /// How many times a second a still picture is encoded again to bring it up to the quality target. Far fewer
@@ -213,8 +214,9 @@ pub struct Stream {
     /// frame would ever improve it, so the same picture is encoded again until that stops paying.
     refinements_left: u32,
     still: Still,
-    /// When the latest frame, new or refined, was encoded.
+    /// When the latest frame, new or refined, was encoded, and the id the next one gets (see `capture::Frame`).
     encoded: Instant,
+    next_id: u64,
     started: Instant,
     wrote_header: bool,
     /// The pointer's shape as the session last heard of it.
@@ -246,6 +248,7 @@ impl Stream {
             refinements_left: 0,
             still: Still::default(),
             encoded: now,
+            next_id: 0,
             started: now,
             wrote_header: false,
             pointer: None,
@@ -357,10 +360,11 @@ impl Stream {
     }
 
     /// Encodes the latest picture once more if the screen has stood still long enough and the picture is not
-    /// yet as good as it should be, or if the client needs a frame to begin with.
+    /// yet as good as it should be, or if the client needs a frame to begin or go on with.
     pub fn refine(&mut self) {
-        if self.shared.fresh.load(Ordering::Relaxed) && self.encoder.is_some() {
-            // A client waits for a frame to begin with: the latest picture again, refined from there.
+        let waits = self.shared.fresh.load(Ordering::Relaxed) || self.shared.recover.load(Ordering::Relaxed);
+        if waits && self.encoder.is_some() {
+            // A client waits for a frame to begin or go on with: the latest picture again, refined from there.
             self.refine_anew();
             self.encode(Instant::now(), Frame::New);
         } else if self.refinements_left > 0 && self.encoded.elapsed() >= REFINE_INTERVAL {
@@ -405,7 +409,7 @@ impl Stream {
             self.wrote_header = true;
         }
         let configuration = encoder.configuration();
-        self.send_tag(Packet::Configuration, &configuration);
+        self.send_tag(Packet::Configuration, &configuration, None);
         self.encoder = Some(encoder);
         Ok(())
     }
@@ -413,12 +417,16 @@ impl Stream {
     /// Encodes the picture currently in the encoder's planes, as one of `fps` frames a second, and sends it.
     /// Says how long that took since `started`, sending apart, and whether the frame came out coarse, and poor.
     fn encode(&mut self, started: Instant, frame: Frame) -> Option<(Duration, bool, bool)> {
-        // A client that lost its place in the stream is told again how to decode, and begins anew with this frame.
-        let fresh = self.shared.fresh.swap(false, Ordering::Relaxed);
-        if fresh {
-            let configuration = self.encoder.as_mut()?.configuration();
-            self.send_tag(Packet::Configuration, &configuration);
-        }
+        let want = if self.shared.fresh.swap(false, Ordering::Relaxed) {
+            Want::Keyframe
+        } else if self.shared.recover.swap(false, Ordering::Relaxed) {
+            match self.shared.confirmed.load(Ordering::Relaxed) {
+                0 => Want::Keyframe,
+                confirmed => Want::Recover { confirmed: confirmed - 1 },
+            }
+        } else {
+            Want::Next
+        };
         let encoder = self.encoder.as_mut()?;
         // The session may allow another bitrate by now, and refining goes at another pace and quality.
         let wanted = match self.shared.kbps.load(Ordering::Relaxed) {
@@ -436,9 +444,23 @@ impl Stream {
             self.rate = (wanted, fps, quality, buffer);
             self.settings.kbps = wanted;
         }
-        let encoded = encoder.encode(fresh)?;
-        let (unit, keyframe, coarse, held_back, poor) =
-            (encoded.unit.to_vec(), encoded.keyframe, encoded.coarse, encoded.held_back, encoded.poor);
+        let id = self.next_id;
+        self.next_id += 1;
+        let encoded = encoder.encode(id, want)?;
+        let (unit, keyframe, coarse, held_back, poor, recovered) = (
+            encoded.unit.to_vec(),
+            encoded.keyframe,
+            encoded.coarse,
+            encoded.held_back,
+            encoded.poor,
+            encoded.recovered,
+        );
+        // A client that lost its place in the stream is told again how to decode, and begins anew with this frame,
+        // unless the frame goes on from one it has.
+        if want != Want::Next && !recovered {
+            let configuration = encoder.configuration();
+            self.send_tag(Packet::Configuration, &configuration, None);
+        }
         let took = started.elapsed();
         self.shared.encode_micros.store(took.as_micros() as u32, Ordering::Relaxed);
         // Only a new picture says whether the bitrate holds the video back: a refined one aims higher than that.
@@ -456,14 +478,18 @@ impl Stream {
             }
         }
         self.encoded = Instant::now();
-        self.send_tag(Packet::Frame { keyframe }, &unit);
+        let after = match want {
+            Want::Recover { confirmed } if recovered => Some(confirmed),
+            _ => None,
+        };
+        self.send_tag(Packet::Frame { keyframe }, &unit, Some(capture::Frame { id, after }));
         Some((took, coarse, poor))
     }
 
-    /// Sends one video tag, timed from the stream's start.
-    fn send_tag(&mut self, packet: Packet, payload: &[u8]) {
+    /// Sends one video tag, timed from the stream's start, and the frame it carries, if it carries one.
+    fn send_tag(&mut self, packet: Packet, payload: &[u8], frame: Option<capture::Frame>) {
         let tag = flv::tag(packet, self.codec, self.started.elapsed().as_millis() as u32, payload);
-        self.send(&tag);
+        self.put_out(Output::Video(&tag, frame));
     }
 
     /// Passes the pointer's shape on, unless it is the one passed on last.
@@ -475,7 +501,7 @@ impl Stream {
     }
 
     fn send(&mut self, bytes: &[u8]) {
-        self.put_out(Output::Video(bytes));
+        self.put_out(Output::Video(bytes, None));
     }
 
     fn put_out(&mut self, output: Output) {

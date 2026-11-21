@@ -467,17 +467,25 @@ function rebuild(shards, k) {
 
 // Whether a piece of the stream says how to decode what follows, which is where a decoder can begin.
 const begins = piece => piece[0] === VIDEO && piece[12] === 0;
+// The piece after which a frame goes on that leaves out the frames since, in the data tag before it
+// (stream/flv.rs); null for any other piece.
+const DATA = 18;
+const after = piece => piece[0] === DATA ? new DataView(piece.buffer, piece.byteOffset).getUint32(TAG_HEAD) : null;
 
 // Puts pieces back together from their datagrams and hands them to `use` in order. When a piece cannot be had,
 // those after it are of no use either: `ask` is called for the host to be told, which then sends a frame to
-// begin with, and the stream goes on from the next piece that says how to decode. A piece counts as lost when
-// one after it is under way and it is still not whole GRACE ms later.
+// go on with, and the stream goes on from the next piece that says how to decode, or that goes on after a
+// piece that was used since the decoder last began. A piece counts as lost when one after it is under way and
+// it is still not whole GRACE ms later.
 const GRACE = 8, MOST_OPEN = 512;
 function pieceJoiner(use, ask) {
   const open = new Map();  // by number: the pieces under way and those whole but not yet due
   let due = null;          // the number of the piece to hand on next; null until the stream has begun
   let from = 0;            // pieces before this one are from a way the video has left since
   let used = NOTHING, missing = NOTHING, timer = 0;
+  let base = null, skipped = [];  // where the decoder last began, and the stretches of pieces passed over since
+  const has = number => number >= base && number <= used && !skipped.some(([first, end]) => number >= first && number < end);
+  const starts = bytes => begins(bytes) || (missing !== NOTHING && base !== null && after(bytes) !== null && has(after(bytes)));
   function lose() {
     [timer, missing] = [0, due];
     ask();
@@ -486,8 +494,10 @@ function pieceJoiner(use, ask) {
   function advance() {
     if (due === null || missing !== NOTHING) {
       const whole = [...open].filter(([, piece]) => piece.bytes);
-      const start = whole.filter(([, piece]) => begins(piece.bytes)).map(([number]) => number).sort((a, b) => a - b)[0];
+      const start = whole.filter(([, piece]) => starts(piece.bytes)).map(([number]) => number).sort((a, b) => a - b)[0];
       if (start === undefined) return whole.forEach(([number]) => open.delete(number));
+      if (begins(open.get(start).bytes)) [base, skipped] = [start, []];
+      else if (skipped.push([missing, start]) > MOST_OPEN) skipped.shift();  // the host names none that old
       [due, missing] = [start, NOTHING];
     }
     for (let piece; (piece = open.get(due))?.bytes; due++) {

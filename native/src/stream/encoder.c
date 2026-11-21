@@ -44,12 +44,12 @@ int encoder_codec(struct encoder *encoder)
 
 /* Encodes the picture in the planes. Returns the size of the access unit at *data (length-prefixed NAL
    units, valid until the next call), or 0 or less if there is none. *flags says what the encoder can tell of the
-   frame (FRAME_COARSE, FRAME_HELD_BACK). With `fresh` the frame is one
-   that needs none before it, for a client that lost its place in the stream. */
-int encoder_encode(struct encoder *encoder, int fresh, uint8_t **data, int *keyframe, int *flags)
+   frame (FRAME_COARSE, FRAME_HELD_BACK, FRAME_RECOVERED). `request` says which frame it is and what it is to be
+   (see encode_request). */
+int encoder_encode(struct encoder *encoder, const struct encode_request *request, uint8_t **data, int *keyframe, int *flags)
 {
     *flags = 0;
-    return encoder->ops->encode(encoder, fresh, data, keyframe, flags);
+    return encoder->ops->encode(encoder, request, data, keyframe, flags);
 }
 
 /* Tells a running encoder the bitrate cap and how many frames a second it will be given from now on, which

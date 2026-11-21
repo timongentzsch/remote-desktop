@@ -1,5 +1,5 @@
 //! FLV, the container the video reaches the page in (index.html reads it): a header, then one tag for each
-//! decoder configuration and each frame.
+//! decoder configuration and each frame. Over UDP a tag of another type may come between them (see `resume`).
 
 use super::encode::Codec;
 use crate::ws;
@@ -9,6 +9,8 @@ use crate::ws;
 pub const HEADER: &[u8] = b"FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00";
 /// A tag's type: video. The page tells video by it among the binary messages (see ws.rs).
 const VIDEO: u8 = ws::VIDEO;
+/// A tag's type that FLV has for data, here a piece number (see `resume`).
+const DATA: u8 = 18;
 /// A video tag's first byte: the frame's kind (1 a keyframe, 2 another) in the high four bits, the codec in the
 /// low four: 7 for H.264, and for HEVC 12, as FLV's extension for it has it.
 const KEYFRAME: u8 = 0x10;
@@ -26,6 +28,18 @@ pub enum Packet {
     Configuration,
     /// One frame, and whether it is a keyframe.
     Frame { keyframe: bool },
+}
+
+/// The tag in front of a frame that refers to none after piece `after` (see session/datagrams.rs): a client
+/// that lost pieces after that one goes on from here if it has it.
+pub fn resume(after: u32) -> Vec<u8> {
+    let size = 4u32;
+    let mut tag = vec![DATA];
+    tag.extend(&size.to_be_bytes()[1..]);
+    tag.extend([0; 7]); // no time, no stream
+    tag.extend(after.to_be_bytes());
+    tag.extend((size + TAG_HEAD).to_be_bytes());
+    tag
 }
 
 /// One video tag of a stream in `codec`, at `time` milliseconds into the stream.
@@ -59,5 +73,10 @@ mod tests {
         assert_eq!(tag[19..], 19u32.to_be_bytes());
         assert_eq!(super::tag(Packet::Configuration, Codec::H264, 0, b"")[11..13], [0x17, 0]);
         assert_eq!(super::tag(Packet::Frame { keyframe: true }, Codec::Hevc, 0, b"")[11..13], [0x1C, 1], "HEVC is 12");
+    }
+
+    #[test]
+    fn a_resume_tag_carries_its_piece_number() {
+        assert_eq!(resume(0x0102_0304), [18, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 0, 0, 0, 15]);
     }
 }

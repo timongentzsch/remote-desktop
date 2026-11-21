@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::capture::Frame;
+
 /// How many packets of sound may wait, at 20 ms each a fifth of a second; the oldest give way beyond that.
 const AUDIO_BACKLOG: usize = 10;
 
@@ -18,8 +20,8 @@ pub struct Outbox {
 
 #[derive(Default)]
 struct Pending {
-    /// The piece and when it was ready.
-    video: Option<(Vec<u8>, Instant)>,
+    /// The piece, when it was ready, and the frame it carries, if it carries one.
+    video: Option<(Vec<u8>, Instant, Option<Frame>)>,
     /// For how long video has been held up since that was last asked, each piece waiting for the one before
     /// it to be taken, and since when a piece is waiting right now.
     held_up: Duration,
@@ -32,8 +34,10 @@ struct Pending {
 /// What `Outbox::next` found.
 #[derive(Debug, PartialEq)]
 pub enum Next {
-    /// Bytes to send; for a piece of video, also when it was ready.
-    Send(Vec<u8>, Option<Instant>),
+    /// A message to send as it is.
+    Send(Vec<u8>),
+    /// A piece of video, when it was ready, and the frame it carries, if it carries one.
+    Video(Vec<u8>, Instant, Option<Frame>),
     /// A packet of sound, which may take another way than the rest.
     Sound(Vec<u8>),
     /// Nothing came up in the time given.
@@ -44,7 +48,7 @@ pub enum Next {
 
 impl Outbox {
     /// Waits until the previous piece of video has gone out. False once the session is over.
-    pub fn push_video(&self, piece: Vec<u8>) -> bool {
+    pub fn push_video(&self, piece: Vec<u8>, frame: Option<Frame>) -> bool {
         let ready = Instant::now();
         let mut pending = self.pending.lock().unwrap();
         if pending.video.is_some() && !pending.closed {
@@ -53,7 +57,7 @@ impl Outbox {
             let waited = pending.waiting_since.take().map_or(Duration::ZERO, |since| since.elapsed());
             pending.held_up += waited;
         }
-        pending.video = Some((piece, ready));
+        pending.video = Some((piece, ready, frame));
         self.changed.notify_all();
         !pending.closed
     }
@@ -88,11 +92,11 @@ impl Outbox {
         }
         let pending = &mut *pending;
         let next = if let Some(message) = pending.control.pop_front() {
-            Next::Send(message, None)
+            Next::Send(message)
         } else if let Some(packet) = pending.audio.pop_front() {
             Next::Sound(packet)
-        } else if let Some((piece, ready)) = pending.video.take_if(|_| video) {
-            Next::Send(piece, Some(ready))
+        } else if let Some((piece, ready, frame)) = pending.video.take_if(|_| video) {
+            Next::Video(piece, ready, frame)
         } else {
             return Next::Nothing;
         };
@@ -128,25 +132,26 @@ mod tests {
     #[test]
     fn outbox_sends_control_before_video_and_holds_one_piece() {
         let outbox = Arc::new(Outbox::default());
-        assert!(outbox.push_video(vec![1]));
+        assert!(outbox.push_video(vec![1], None));
         outbox.push_control(vec![2]);
         // A second piece of video has to wait until the first was taken, and its wait is counted as it goes.
         let second = thread::spawn({
             let outbox = outbox.clone();
-            move || outbox.push_video(vec![3])
+            move || outbox.push_video(vec![3], None)
         });
         while outbox.take_held_up().is_zero() {
             thread::yield_now();
         }
         // What comes next and whether it is video.
         let next = || match outbox.next(Duration::from_millis(10), true) {
-            Next::Send(bytes, ready) => Some((bytes, ready.is_some())),
+            Next::Send(bytes) => Some((bytes, false)),
+            Next::Video(bytes, _, _) => Some((bytes, true)),
             other => {
                 assert_eq!(other, Next::Nothing);
                 None
             }
         };
-        assert_eq!(outbox.next(Duration::ZERO, false), Next::Send(vec![2], None));
+        assert_eq!(outbox.next(Duration::ZERO, false), Next::Send(vec![2]));
         assert_eq!(outbox.next(Duration::ZERO, false), Next::Nothing, "video waits where it is told to");
         assert_eq!(next(), Some((vec![1], true)));
         assert!(second.join().unwrap());
@@ -154,6 +159,6 @@ mod tests {
         assert_eq!(next(), None, "an empty outbox is not waited on for longer than asked");
         outbox.close();
         assert_eq!(outbox.next(Duration::from_secs(60), true), Next::Closed);
-        assert!(!outbox.push_video(vec![4]));
+        assert!(!outbox.push_video(vec![4], None));
     }
 }

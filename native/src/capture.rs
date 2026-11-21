@@ -2,7 +2,7 @@
 //! different ways, each a capture of the platform's (see platform/), which feeds pictures to a `Stream` for as
 //! long as the stream wants them.
 
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 
 pub struct Settings {
     pub kbps: u32,
@@ -32,8 +32,12 @@ pub const HEIGHTS: [usize; 4] = [1080, 720, 540, 360];
 pub struct Shared {
     /// Set by the session to end the capture.
     pub stop: AtomicBool,
-    /// Set by the session when its client needs a frame it can decode without any before it.
+    /// Set by the session when its client needs a frame it can decode without any before it,
     pub fresh: AtomicBool,
+    /// and when it lost frames after the one `confirmed` says: it needs one it can decode from that one on.
+    pub recover: AtomicBool,
+    /// The latest frame the client is known to have, as its id (see `Frame`) plus one; 0 while none is.
+    pub confirmed: AtomicU64,
     /// The bitrate in kbit/s the session now allows; 0 until it sets one.
     pub kbps: AtomicU32,
     /// Set while that bitrate is still on its way up to what the link carries or the client wants,
@@ -76,10 +80,18 @@ impl Shape {
     }
 }
 
+/// A frame of the video stream: its id, which counts up from frame to frame for as long as the stream lasts,
+/// and for a frame that a client which lost frames decodes from the one it has, that one's id.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    pub id: u64,
+    pub after: Option<u64>,
+}
+
 /// What a capture hands to its session.
 pub enum Output<'a> {
-    /// The next piece of the video stream.
-    Video(&'a [u8]),
+    /// The next piece of the video stream, and the frame it carries, if it carries one.
+    Video(&'a [u8], Option<Frame>),
     /// The pointer's shape, where the client draws the pointer and the desktop tells its shape.
     Pointer(&'a Shape),
 }

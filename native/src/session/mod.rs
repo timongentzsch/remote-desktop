@@ -23,7 +23,7 @@ use crate::{screen, ws};
 mod datagrams;
 mod login;
 
-use datagrams::Datagrams;
+use datagrams::{Datagrams, Need};
 use login::Login;
 
 /// How long a logged-in client may stay silent. Its page measures the round trip several times a second, and
@@ -122,7 +122,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
                 let sink = Box::new({
                     let outbox = outbox.clone();
                     move |output: Output| match output {
-                        Output::Video(piece) => outbox.push_video(piece.to_vec()),
+                        Output::Video(piece, frame) => outbox.push_video(piece.to_vec(), frame),
                         // A message of its own kind: the shape's size and the place of its tip, then its pixels.
                         Output::Pointer(shape) => {
                             let numbers = [shape.width, shape.height, shape.hot.0, shape.hot.1];
@@ -297,8 +297,8 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
         match (outbox.next(patience, room), &mut udp) {
             (Next::Closed, _) => break,
             (Next::Nothing, _) => {}
-            (Next::Send(piece, Some(ready)), Some(udp)) => {
-                udp.piece(&piece, kbps, surplus);
+            (Next::Video(piece, ready, frame), Some(udp)) => {
+                udp.piece(&piece, frame, kbps, surplus);
                 (left, sending) = (1, sending + ready.elapsed());
             }
             (Next::Sound(packet), Some(udp)) => {
@@ -314,16 +314,19 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
                 written += message.len() as u64;
                 spoken += message.len() as u64;
             }
-            (Next::Send(bytes, ready), _) => {
-                // A piece of video is yet to be made a message; everything else comes as one.
-                let message = if ready.is_some() { ws::frame(ws::BINARY, &bytes) } else { bytes };
+            (Next::Video(piece, ready, _), None) => {
+                let message = ws::frame(ws::BINARY, &piece);
                 if connection.write(&message).is_err() {
                     break;
                 }
                 written += message.len() as u64;
-                if let Some(ready) = ready {
-                    (left, sending) = (1, sending + ready.elapsed());
+                (left, sending) = (1, sending + ready.elapsed());
+            }
+            (Next::Send(message), _) => {
+                if connection.write(&message).is_err() {
+                    break;
                 }
+                written += message.len() as u64;
             }
         }
         frames += left;
@@ -370,10 +373,13 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
         shared.kbps.store((video as f64 * share) as u32, Ordering::Relaxed);
         shared.climbing.store(verdict.climbing, Ordering::Relaxed);
         shared.held_back.store(verdict.held_back, Ordering::Relaxed);
-        if let Some(udp) = &mut udp
-            && udp.needs_fresh(now, reading.round_trip.unwrap_or_default())
-        {
-            shared.fresh.store(true, Ordering::Relaxed);
+        if let Some(udp) = &mut udp {
+            match udp.needs(now, reading.round_trip.unwrap_or_default()) {
+                Some(Need::Keyframe) => shared.fresh.store(true, Ordering::Relaxed),
+                Some(Need::Recover) => shared.recover.store(true, Ordering::Relaxed),
+                None => {}
+            }
+            shared.confirmed.store(udp.confirmed().map_or(0, |frame| frame + 1), Ordering::Relaxed);
         }
         patience = if verdict.probing { PROBE_LOOK } else { LOOK };
         if reported.elapsed() >= REPORT {

@@ -6,13 +6,28 @@
 
 struct encoder;
 
+/* What the next frame is to be (encode_request.kind): whatever comes next; one that needs no frame before it;
+   or one that a client can decode which has frame `confirmed` but perhaps none after it, as the encoder can
+   make it, a keyframe otherwise. */
+#define ENCODE_NEXT 0
+#define ENCODE_KEYFRAME 1
+#define ENCODE_RECOVER 2
+
+/* The frame to encode: its id, which counts up from frame to frame, what it is to be, and the id of the latest
+   frame the client is known to have, or -1. */
+struct encode_request {
+    int64_t id;
+    int kind;
+    int64_t confirmed;
+};
+
 struct encoder_ops {
     const char *name;
     uint8_t *(*plane)(struct encoder *encoder, int index, int *stride);
     /* The parameter sets, raw (without start code or length), in the order the codec's decoder configuration
        lists them: H.264's SPS and PPS, HEVC's VPS, SPS and PPS. Returns how many, or -1. */
     int (*headers)(struct encoder *encoder, uint8_t **sets, int *sizes);
-    int (*encode)(struct encoder *encoder, int fresh, uint8_t **data, int *keyframe, int *flags);
+    int (*encode)(struct encoder *encoder, const struct encode_request *request, uint8_t **data, int *keyframe, int *flags);
     /* The bitrate at the frame rate the encoder was opened with, the most one frame may take, and the quality
        target. */
     int (*set_rate)(struct encoder *encoder, int kbps, int buffer_kbits, int quality);
@@ -33,10 +48,12 @@ struct encoder {
    how good it is (FRAME_COARSE); the cap's budget held it back so far that its size says nothing of how
    good the picture is by now (FRAME_HELD_BACK), which only an encoder that keeps the budget itself can say;
    and its quantiser is above POOR_QP (FRAME_POOR), where text gets hard to read and fewer pixels, each given
-   more of the bits, show more. */
+   more of the bits, show more. And for ENCODE_RECOVER, that the frame refers to none after the one confirmed
+   (FRAME_RECOVERED), where it is not a keyframe. */
 #define FRAME_COARSE 1
 #define FRAME_HELD_BACK 2
 #define FRAME_POOR 4
+#define FRAME_RECOVERED 8
 #define POOR_QP 33
 
 /* How much one frame may take at most, in kbit: what the bitrate cap allows in this many milliseconds. */

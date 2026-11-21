@@ -96,14 +96,15 @@ static int software_headers(struct encoder *base, uint8_t **sets, int *sizes)
     return 2;
 }
 
-static int software_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *flags)
+/* Recovers with a keyframe. */
+static int software_encode(struct encoder *base, const struct encode_request *request, uint8_t **data, int *keyframe, int *flags)
 {
     struct software *encoder = (struct software *)base;
     x264_nal_t *nal;
     int count;
     x264_picture_t out;
     encoder->picture.i_pts++;
-    encoder->picture.i_type = fresh ? X264_TYPE_IDR : X264_TYPE_AUTO;
+    encoder->picture.i_type = request->kind != ENCODE_NEXT ? X264_TYPE_IDR : X264_TYPE_AUTO;
     int size = x264_encoder_encode(encoder->x264, &nal, &count, &encoder->picture, &out);
     if (size > 0) {
         *data = nal[0].p_payload;

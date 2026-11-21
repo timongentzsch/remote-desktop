@@ -278,7 +278,8 @@ static int nvenc_headers(struct encoder *base, uint8_t **sets, int *sizes)
     return 2;
 }
 
-static int nvenc_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *flags)
+/* Recovers with a keyframe. */
+static int nvenc_encode(struct encoder *base, const struct encode_request *request, uint8_t **data, int *keyframe, int *flags)
 {
     struct nvenc *encoder = (struct nvenc *)base;
     int size = -1;
@@ -308,7 +309,7 @@ static int nvenc_encode(struct encoder *base, int fresh, uint8_t **data, int *ke
         .bufferFmt = encoder->full_chroma ? NV_ENC_BUFFER_FORMAT_YUV444 : NV_ENC_BUFFER_FORMAT_IYUV,
         .pictureStruct = NV_ENC_PIC_STRUCT_FRAME,
         .inputTimeStamp = encoder->frames++,
-        .encodePicFlags = fresh ? NV_ENC_PIC_FLAG_FORCEIDR : 0,
+        .encodePicFlags = request->kind != ENCODE_NEXT ? NV_ENC_PIC_FLAG_FORCEIDR : 0,
     };
     NV_ENC_LOCK_BITSTREAM stream = { .version = NV_ENC_LOCK_BITSTREAM_VER, .outputBitstream = encoder->output };
     /* Locking the output waits until the frame is encoded. */

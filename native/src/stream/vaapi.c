@@ -265,10 +265,10 @@ done:
     return size;
 }
 
-static int vaapi_encode(struct encoder *base, int fresh, uint8_t **data, int *keyframe, int *flags)
+static int vaapi_encode(struct encoder *base, const struct encode_request *request, uint8_t **data, int *keyframe, int *flags)
 {
     struct vaapi *encoder = (struct vaapi *)base;
-    int idr = fresh || encoder->reference == 0, size = -1;
+    int idr = request->kind != ENCODE_NEXT || encoder->reference == 0, size = -1;
     if (idr) {
         encoder->frames = 0;
         encoder->idr_id++;
