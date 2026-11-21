@@ -48,8 +48,9 @@ pub use os::clipboard;
 pub use os::greeter::run as login_screen;
 pub use os::install;
 
-// Where the password and certificate are kept, the machine's name, and typing the password unseen.
-pub use os::{data_directory, hostname, password_path, without_echo, write_private};
+// Where the password and certificate are kept, the machine's name, typing the password unseen, and a host that
+// runs without a terminal saying what it says somewhere it is kept (`serve_quietly()`).
+pub use os::{data_directory, hostname, password_path, serve_quietly, without_echo, write_private};
 
 // Waiting on a socket (`socket_readable`), and on a socket or a wake from another thread (`Waker`); the
 // kernel's side of a TCP connection (`tcp`).

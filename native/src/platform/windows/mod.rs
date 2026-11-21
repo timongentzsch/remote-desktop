@@ -1,28 +1,28 @@
 //! Windows: the picture through Desktop Duplication (capture.rs), keys and the pointer through SendInput
-//! (input.rs). Sound, the clipboard and installing are not built yet, and say so.
+//! (input.rs), sound through WASAPI (audio.rs), the clipboard (clipboard.rs), and a host started at logon from
+//! the user's Run key (install.rs). The login screen is not built yet, and says so.
 
-use std::io;
+use std::fs::File;
+use std::os::windows::io::IntoRawHandle;
 use std::path::PathBuf;
-use std::sync::Arc;
 
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput};
 use windows::Win32::System::Console::{
-    CONSOLE_MODE, ENABLE_ECHO_INPUT, GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode,
+    CONSOLE_MODE, ENABLE_ECHO_INPUT, FreeConsole, GetConsoleMode, GetConsoleProcessList, GetStdHandle,
+    STD_ERROR_HANDLE, STD_INPUT_HANDLE, SetConsoleMode, SetStdHandle,
 };
 
-use crate::capture::Shared;
 use crate::screen::Screen;
 
+pub mod audio;
 pub mod capture;
+pub mod clipboard;
 pub mod fd;
 pub mod input;
 pub mod install;
 
 const NOT_YET: &str = "this part of the host is not built for Windows yet";
-
-fn not_yet<T>() -> Result<T, String> {
-    Err(NOT_YET.into())
-}
 
 /// Where the password and the certificate are kept: the user's local application data, which only the user
 /// (and the system's administrators) can read.
@@ -44,6 +44,20 @@ pub fn write_private(path: &std::path::Path, contents: &[u8]) -> Result<(), Stri
 /// The machine's name, or nothing where it has none.
 pub fn hostname() -> String {
     std::env::var("COMPUTERNAME").unwrap_or_default()
+}
+
+/// A host started at logon or by `install` has no console, or one opened for it alone, whose window it closes:
+/// what it says goes to a log beside its data instead. Started from a terminal, it goes on saying it there.
+pub fn serve_quietly() {
+    let mut processes = [0u32; 2];
+    if unsafe { GetConsoleProcessList(&mut processes) } > 1 {
+        return;
+    }
+    let _ = unsafe { FreeConsole() };
+    let log = data_directory().join(format!("{}.log", crate::NAME));
+    if let Ok(file) = std::fs::create_dir_all(data_directory()).and_then(|()| File::create(log)) {
+        let _ = unsafe { SetStdHandle(STD_ERROR_HANDLE, HANDLE(file.into_raw_handle())) };
+    }
 }
 
 /// Runs `action` with the console's echo off, if standard input is a console.
@@ -127,35 +141,6 @@ pub mod virtual_screen {
         pub fn resize(&self, _window: Window) -> Result<(), String> {
             Ok(())
         }
-    }
-}
-
-pub mod audio {
-    use super::*;
-    use crate::audio::Sound;
-
-    pub fn run(_shared: Arc<Shared>, _sound: &mut Sound) -> Result<(), String> {
-        not_yet()
-    }
-}
-
-pub mod clipboard {
-    use super::*;
-
-    pub type Copied = Box<dyn FnMut(String) + Send>;
-
-    pub struct Inbox(());
-
-    impl Inbox {
-        pub fn new() -> io::Result<Arc<Self>> {
-            Err(io::Error::new(io::ErrorKind::Unsupported, NOT_YET))
-        }
-
-        pub fn put(&self, _text: String) {}
-    }
-
-    pub fn run(_inbox: &Inbox, _shared: &Shared, _copied: Copied) -> Result<(), String> {
-        not_yet()
     }
 }
 

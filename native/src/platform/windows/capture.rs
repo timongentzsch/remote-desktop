@@ -46,7 +46,6 @@ pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), St
 #[derive(Default)]
 struct Pointer {
     width: usize,
-    height: usize,
     pixels: Vec<u32>,
     at: Option<(i32, i32)>,
 }
@@ -191,7 +190,7 @@ fn new_shape(
         .ok()?;
     let (width, height, pixels) = premultiplied(&shape, &buffer);
     let hot = (shape.HotSpot.x as u16, shape.HotSpot.y as u16);
-    *pointer = Pointer { width, height, pixels, at: pointer.at };
+    *pointer = Pointer { width, pixels, at: pointer.at };
     Some(Shape::from_premultiplied(width as u16, height as u16, hot, pointer.pixels.iter().copied()))
 }
 
@@ -279,7 +278,7 @@ mod tests {
         };
         let (_, _, pixels) = premultiplied(&shape, &[200, 100, 50, 128]);
         assert_eq!(pixels, [u32::from_le_bytes([100, 50, 25, 128])]);
-        let pointer = Pointer { width: 1, height: 1, pixels, at: Some((1, 0)) };
+        let pointer = Pointer { width: 1, pixels, at: Some((1, 0)) };
         let mut picture = [10u8; 8];
         paint(&pointer, &mut picture, 2, 1);
         assert_eq!(picture, [10, 10, 10, 10, 104, 54, 29, 10], "half of the pointer over half of what is under");

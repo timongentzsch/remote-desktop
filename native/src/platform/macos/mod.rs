@@ -91,6 +91,9 @@ fn display(wanted: Option<&str>) -> Result<u32, String> {
 /// Nothing is left changed in the desktop by a host here.
 pub fn restore_leftovers() {}
 
+/// launchd keeps what the host says (see install.rs).
+pub fn serve_quietly() {}
+
 pub mod displays {
     /// A sleeping display wakes for the capture by itself.
     pub fn wake_displays(_input: &super::input::Input) {}

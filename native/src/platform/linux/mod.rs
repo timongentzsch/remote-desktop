@@ -23,6 +23,9 @@ pub use install::{data_directory, password_path};
 
 use crate::screen::Screen;
 
+/// The service manager keeps what the host says.
+pub fn serve_quietly() {}
+
 /// Undoes what a host that ended without undoing it, as one that crashed would, left changed in the desktop.
 pub fn restore_leftovers() {
     virtual_screen::restore_leftover();
