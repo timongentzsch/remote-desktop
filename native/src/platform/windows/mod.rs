@@ -1,10 +1,11 @@
-//! Windows: so far only what the host needs to build and run its tests. The picture, input, sound, the
-//! clipboard and installing are not built yet, and say so.
+//! Windows: the picture through Desktop Duplication (capture.rs), keys and the pointer through SendInput
+//! (input.rs). Sound, the clipboard and installing are not built yet, and say so.
 
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput};
 use windows::Win32::System::Console::{
     CONSOLE_MODE, ENABLE_ECHO_INPUT, GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode,
 };
@@ -12,7 +13,9 @@ use windows::Win32::System::Console::{
 use crate::capture::Shared;
 use crate::screen::Screen;
 
+pub mod capture;
 pub mod fd;
+pub mod input;
 pub mod install;
 
 const NOT_YET: &str = "this part of the host is not built for Windows yet";
@@ -58,41 +61,41 @@ pub fn without_echo<T>(action: impl FnOnce() -> T) -> T {
     result
 }
 
+/// The displays that are part of the desktop, each with the graphics adapter that drives it, in the order
+/// Windows lists them: the main display first.
+fn outputs() -> windows::core::Result<Vec<(Screen, IDXGIAdapter1, IDXGIOutput)>> {
+    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }?;
+    let mut outputs = Vec::new();
+    for adapter in (0..).map_while(|index| unsafe { factory.EnumAdapters1(index) }.ok()) {
+        for output in (0..).map_while(|index| unsafe { adapter.EnumOutputs(index) }.ok()) {
+            let description = unsafe { output.GetDesc() }?;
+            if !description.AttachedToDesktop.as_bool() {
+                continue;
+            }
+            let name = String::from_utf16_lossy(&description.DeviceName);
+            let bounds = description.DesktopCoordinates;
+            let screen = Screen {
+                // \\.\DISPLAY1 is called DISPLAY1.
+                name: name.trim_end_matches('\0').trim_start_matches(r"\\.\").to_owned(),
+                x: bounds.left,
+                y: bounds.top,
+                width: bounds.right - bounds.left,
+                height: bounds.bottom - bounds.top,
+            };
+            outputs.push((screen, adapter.clone(), output));
+        }
+    }
+    Ok(outputs)
+}
+
+/// The displays, named as Windows names them, where they lie on the desktop in pixels.
 pub fn screens() -> Result<Vec<Screen>, String> {
-    not_yet()
+    let outputs = outputs().map_err(|error| format!("the displays cannot be listed: {error}"))?;
+    Ok(outputs.into_iter().map(|(screen, ..)| screen).collect())
 }
 
 /// Nothing is left changed in the desktop by a host here.
 pub fn restore_leftovers() {}
-
-pub mod capture {
-    use super::*;
-    use crate::capture::{Settings, Sink};
-
-    pub fn run(_settings: Settings, _shared: Arc<Shared>, _sink: Sink) -> Result<(), String> {
-        not_yet()
-    }
-}
-
-pub mod input {
-    use super::*;
-
-    pub struct Input(());
-
-    impl Input {
-        pub fn open() -> io::Result<Self> {
-            Err(io::Error::new(io::ErrorKind::Unsupported, NOT_YET))
-        }
-
-        pub fn key(&self, _code: u16, _down: bool) {}
-
-        pub fn text(&self, _text: &str) {}
-
-        pub fn move_to(&self, _x: i32, _y: i32) {}
-
-        pub fn scroll(&self, _horizontal: i32, _vertical: i32) {}
-    }
-}
 
 pub mod displays {
     /// A sleeping display wakes for the capture by itself.
