@@ -1,21 +1,12 @@
-//! macOS: the picture through ScreenCaptureKit (capture.rs), keys and the pointer as CGEvents (input.rs), a
-//! virtual display for a client's size (virtual_screen.rs), and a LaunchAgent (install.rs). Sound and the
-//! clipboard are not built yet, and say so.
+//! macOS: the picture and the sound through ScreenCaptureKit (capture.rs, audio.rs), keys and the pointer as
+//! CGEvents (input.rs), the clipboard (clipboard.rs), a virtual display for a client's size
+//! (virtual_screen.rs), and a LaunchAgent (install.rs).
 
-use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 pub use super::unix::{fd, hostname, write_private};
-use crate::capture::Shared;
 use crate::screen::Screen;
-
-const NOT_YET: &str = "this part of the host is not built for macOS yet";
-
-fn not_yet<T>() -> Result<T, String> {
-    Err(NOT_YET.into())
-}
 
 /// Where the password and the certificate are kept: the user's Application Support.
 pub fn data_directory() -> PathBuf {
@@ -27,7 +18,9 @@ pub fn password_path() -> PathBuf {
     data_directory().join("password")
 }
 
+pub mod audio;
 pub mod capture;
+pub mod clipboard;
 pub mod input;
 pub mod install;
 pub mod virtual_screen;
@@ -102,35 +95,6 @@ pub mod pointer {
 
     pub fn hide() -> Option<HiddenPointer> {
         None
-    }
-}
-
-pub mod audio {
-    use super::*;
-    use crate::audio::Sound;
-
-    pub fn run(_shared: Arc<Shared>, _sound: &mut Sound) -> Result<(), String> {
-        not_yet()
-    }
-}
-
-pub mod clipboard {
-    use super::*;
-
-    pub type Copied = Box<dyn FnMut(String) + Send>;
-
-    pub struct Inbox(());
-
-    impl Inbox {
-        pub fn new() -> io::Result<Arc<Self>> {
-            Err(io::Error::new(io::ErrorKind::Unsupported, NOT_YET))
-        }
-
-        pub fn put(&self, _text: String) {}
-    }
-
-    pub fn run(_inbox: &Inbox, _shared: &Shared, _copied: Copied) -> Result<(), String> {
-        not_yet()
     }
 }
 

@@ -32,9 +32,15 @@ const ENCODERS: [&str; 7] = [
 /// libva's headers, of which va/va_version.h is made from its template, with the version libva's build gives it.
 const LIBVA: &str = "libva";
 const PIPEWIRE: &str = "src/platform/linux/capture/pipewire_stream.c";
-/// macOS's screen capture and virtual display, and the frameworks they use.
-const OBJECTIVE_C: [&str; 2] = ["src/platform/macos/capture.m", "src/platform/macos/virtual_screen.m"];
-const FRAMEWORKS: [&str; 5] = ["ScreenCaptureKit", "CoreMedia", "CoreVideo", "Foundation", "ApplicationServices"];
+/// macOS's screen capture, sound, clipboard and virtual display, and the frameworks they use.
+const OBJECTIVE_C: [&str; 4] = [
+    "src/platform/macos/capture.m",
+    "src/platform/macos/sound.m",
+    "src/platform/macos/pasteboard.m",
+    "src/platform/macos/virtual_screen.m",
+];
+const FRAMEWORKS: [&str; 6] =
+    ["ScreenCaptureKit", "CoreMedia", "CoreVideo", "Foundation", "ApplicationServices", "AppKit"];
 
 /// Makes va/va_version.h from libva's template and the VA-API version in its meson.build; returns the directory
 /// to add to the include path for it.
