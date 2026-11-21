@@ -17,8 +17,10 @@
 #define INITIAL_QP 26
 /* No IDR comes unasked: the driver is given one as long a period as it takes. */
 #define NO_PERIOD 0x7FFFFFFF
-/* The driver's speed against quality, 1 the best and 7 the fastest. */
-#define SPEED 4
+/* The driver's speed against quality, 1 the best and 7 the fastest. On Intel's Coffee Lake, HEVC at
+   3456x1994 with code scrolling by: 7 took 9.4 ms a frame where 4 took 26.5, for the same picture (51.6 dB)
+   in 12% more bits; at 4 such a screen got no more than 38 frames a second. */
+#define SPEED 7
 
 struct vaapi;
 
