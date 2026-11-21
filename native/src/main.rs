@@ -10,8 +10,8 @@
 //!     remote-desktop [--listen ADDRESS]         run the host (default 0.0.0.0:8765)
 //!     remote-desktop login-screen [ADDRESS]     as root: run the host at the login screen whenever there is one
 
-// macOS has no sound and no pointer shapes for the client yet, and Windows makes no screen of the client's
-// size, which leaves what serves them unused there.
+// macOS tells the client no pointer shapes yet, and Windows makes no screen of the client's size, which leaves
+// what serves them unused there.
 #![cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
 
 /// Tells what happened on standard error, which the service's log keeps, under the program's name.
