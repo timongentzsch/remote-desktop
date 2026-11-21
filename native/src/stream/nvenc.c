@@ -357,4 +357,7 @@ static int nvenc_set_rate(struct encoder *base, int kbps, int buffer_kbits, int 
     return status == NV_ENC_SUCCESS ? 0 : -1;
 }
 
-static const struct encoder_ops nvenc_ops = { "nvenc", nvenc_plane, nvenc_headers, nvenc_encode, nvenc_set_rate, nvenc_close };
+/* Pictures come in its planes only. */
+static const struct encoder_ops nvenc_ops = {
+    "nvenc", nvenc_plane, nvenc_headers, nvenc_encode, nvenc_set_rate, nvenc_close, NULL, NULL,
+};

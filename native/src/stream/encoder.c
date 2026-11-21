@@ -61,6 +61,18 @@ int encoder_set_rate(struct encoder *encoder, int kbps, int fps, int quality, in
     return encoder->ops->set_rate(encoder, (int)((int64_t)kbps * encoder->fps / fps), BUFFER_KBITS(kbps, buffer), quality);
 }
 
+/* The buffer on the GPU the screen can be copied into (see encoder_ops.gpu_buffer); -1 where there is none. */
+int encoder_gpu_buffer(struct encoder *encoder, int width, int height, struct gpu_buffer *buffer)
+{
+    return encoder->ops->gpu_buffer ? encoder->ops->gpu_buffer(encoder, width, height, buffer) : -1;
+}
+
+/* Takes the picture in that buffer as the next to encode. */
+int encoder_take_gpu_picture(struct encoder *encoder)
+{
+    return encoder->ops->take_gpu_picture ? encoder->ops->take_gpu_picture(encoder) : -1;
+}
+
 /* Which encoder it is: "x264", "nvenc" or "vaapi". */
 const char *encoder_name(struct encoder *encoder)
 {

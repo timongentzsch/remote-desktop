@@ -11,7 +11,7 @@ mod encode;
 mod flv;
 mod record;
 
-pub use encode::{PROBE, probe};
+pub use encode::{GpuBuffer, PROBE, probe};
 pub use flv::resume;
 
 use crate::capture::{self, HEIGHTS, Output, Settings, Shape, Shared, Sink};
@@ -217,6 +217,8 @@ pub struct Stream {
     /// When the latest frame, new or refined, was encoded, and the id the next one gets (see `capture::Frame`).
     encoded: Instant,
     next_id: u64,
+    /// How many encoders were opened, which tells a buffer on the GPU of an encoder gone (see `gpu_picture`).
+    opened: u64,
     started: Instant,
     wrote_header: bool,
     /// The pointer's shape as the session last heard of it.
@@ -249,6 +251,7 @@ impl Stream {
             still: Still::default(),
             encoded: now,
             next_id: 0,
+            opened: 0,
             started: now,
             wrote_header: false,
             pointer: None,
@@ -301,6 +304,37 @@ impl Stream {
         {
             self.weigh_effort(took, coarse, poor);
         }
+    }
+
+    /// A buffer on the GPU for a screen of `width` x `height` to be copied into, where the encoder takes its
+    /// pictures that way, and which encoder it belongs to (see `gpu_picture`). None where it does not: the
+    /// capture then hands over pictures in memory (`picture`).
+    pub fn gpu_buffer(&mut self, width: usize, height: usize) -> Option<(GpuBuffer, u64)> {
+        if (self.encoder.is_none() || self.screen != (width, height) || self.resize)
+            && let Err(reason) = self.open(width, height)
+        {
+            self.ended = Some(Err(reason));
+            return None;
+        }
+        let buffer = self.encoder.as_mut()?.gpu_buffer(width, height)?;
+        Some((buffer, self.opened))
+    }
+
+    /// Encodes the new picture of the screen in the buffer on the GPU of encoder `opened`, made at its size
+    /// there. False, with nothing encoded, where that encoder is gone or another size is due: the capture
+    /// then asks for a new buffer.
+    pub fn gpu_picture(&mut self, opened: u64) -> bool {
+        let started = Instant::now();
+        if opened != self.opened || self.resize || !self.encoder.as_mut().is_some_and(Encoder::take_gpu_picture) {
+            return false;
+        }
+        self.refine_anew();
+        if let Some((took, coarse, poor)) = self.encode(started, Frame::New)
+            && !self.shared.climbing.load(Ordering::Relaxed)
+        {
+            self.weigh_effort(took, coarse, poor);
+        }
+        true
     }
 
     /// Counts a new frame and, every `EFFORT_FRAMES` of them, reconsiders the colour detail where it is the
@@ -392,6 +426,7 @@ impl Stream {
             ..Setup::new(width, height, fps, kbps, full_chroma, self.effort)
         };
         let mut encoder = Encoder::open(setup, self.settings.auto_chroma).ok_or("could not open the encoder")?;
+        self.opened += 1;
         self.codec = encoder.codec;
         if full_chroma && !encoder.full_chroma {
             // The GPU's encoder took the picture at 4:2:0: full colour detail is not tried again with it.

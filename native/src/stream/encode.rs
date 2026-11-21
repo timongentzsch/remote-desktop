@@ -27,6 +27,8 @@ unsafe extern "C" {
     ) -> c_int;
     fn encoder_set_rate(encoder: *mut Raw, kbps: c_int, fps: c_int, quality: c_int, buffer: c_int) -> c_int;
     fn encoder_name(encoder: *mut Raw) -> *const c_char;
+    fn encoder_gpu_buffer(encoder: *mut Raw, width: c_int, height: c_int, buffer: *mut GpuBuffer) -> c_int;
+    fn encoder_take_gpu_picture(encoder: *mut Raw) -> c_int;
     fn encoder_close(encoder: *mut Raw);
 }
 
@@ -121,6 +123,19 @@ impl Codec {
 
 /// The most parameter sets a codec has, as encoder.h says: HEVC's VPS, SPS and PPS.
 const MOST_PARAMETER_SETS: usize = 3;
+
+/// A buffer on the GPU the screen can be copied into, as `struct gpu_buffer` in encoder.h: a DMA-BUF's file,
+/// which its receiver owns, the DRM format of its pixels, where they begin, the length of a row in bytes, and
+/// the modifier that says how they are laid out.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GpuBuffer {
+    pub fd: c_int,
+    pub format: u32,
+    pub offset: u32,
+    pub pitch: u32,
+    pub modifier: u64,
+}
 
 /// One plane of the picture to encode: its bytes and the length of a row in them.
 pub struct Plane<'a> {
@@ -249,6 +264,19 @@ impl Encoder {
     pub fn set_rate(&mut self, kbps: u32, fps: u32, quality: u32, buffer: u32) -> bool {
         let (kbps, fps, quality, buffer) = (kbps as c_int, fps as c_int, quality as c_int, buffer as c_int);
         unsafe { encoder_set_rate(self.raw, kbps, fps, quality, buffer) == 0 }
+    }
+
+    /// The buffer on the GPU a screen of `width` x `height` can be copied into, where this encoder takes its
+    /// pictures that way (VA-API does).
+    pub fn gpu_buffer(&mut self, width: usize, height: usize) -> Option<GpuBuffer> {
+        let mut buffer = GpuBuffer::default();
+        let made = unsafe { encoder_gpu_buffer(self.raw, width as c_int, height as c_int, &mut buffer) } == 0;
+        made.then_some(buffer)
+    }
+
+    /// Takes the picture in that buffer as the next to encode, instead of the planes.
+    pub fn take_gpu_picture(&mut self) -> bool {
+        unsafe { encoder_take_gpu_picture(self.raw) == 0 }
     }
 
     /// Encodes the picture in `planes` as frame `id`, which counts up from frame to frame, and as `want` says.

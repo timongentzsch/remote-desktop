@@ -4,6 +4,8 @@
 #define VAAPI_H
 
 #include <va/va.h>
+#include <va/va_drmcommon.h>
+#include <va/va_vpp.h>
 #include "encoder.h"
 #include "nal.h"
 
@@ -85,6 +87,13 @@ struct vaapi {
     int reference_count;
     /* The picture as the caller fills it, 4:2:0 in three planes; it is copied into the input surface. */
     uint8_t *planes[3];
+    /* The screen as the capture copies it on the GPU, at its own size, and the video processor that makes the
+       input of it; none until a buffer on the GPU is asked for. While the pictures come that way (`on_gpu`),
+       the planes are not copied. */
+    VASurfaceID screen;
+    int screen_width, screen_height, on_gpu;
+    VAConfigID processor_config;
+    VAContextID processor;
     struct nal_units unit;
     /* The parameter sets as NAL units after start codes, as the driver writes them into the stream. */
     uint8_t headers[MOST_PARAMETER_SETS][BITS_ROOM * 2];
