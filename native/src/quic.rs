@@ -73,12 +73,16 @@ pub const NOTHING: u32 = u32::MAX;
 /// What a session does with a move of the pointer that came over UDP: its count, x and y.
 pub type Moved = Box<dyn Fn(u32, u16, u16) + Send + Sync>;
 /// A client says how it is doing many times a second. One that has said nothing for this long cannot be
-/// reached this way any more, or its page is hidden and its browser lets it do little.
+/// reached this way any more, or its page is hidden and its browser lets it do little; one whose page is in
+/// sight, as it says over its connection, cannot be reached this way after a shorter silence.
 const SILENCE: Duration = Duration::from_millis(1500);
-/// How long a connection may take to show a token before it is closed, and how many connections there may be
-/// at a time. Further ones go unanswered.
+const SILENCE_IN_SIGHT: Duration = Duration::from_millis(500);
+/// How long a connection may take to show a token before it is closed, how many connections there may be at a
+/// time, and how many of them without a token, so that strangers cannot take every place from the clients of
+/// sessions. Further ones go unanswered.
 const STRANGER: Duration = Duration::from_secs(10);
 const MOST_CLIENTS: usize = 64;
+const MOST_STRANGERS: usize = 16;
 /// A connection that takes no datagrams of at least this size cannot carry video.
 const LEAST_ROOM: usize = 600;
 /// How often a quiet connection is asked whether it is still there, which also keeps it open while its page
@@ -301,13 +305,14 @@ pub struct Fared {
 }
 
 impl Link {
-    /// Whether the client can be reached this way right now.
-    pub fn is_up(&self) -> bool {
+    /// Whether the client, whose page is `in_sight` or not, can be reached this way right now.
+    pub fn is_up(&self, in_sight: bool) -> bool {
         let heard = Duration::from_micros(self.heard.load(Ordering::Relaxed));
+        let silence = if in_sight { SILENCE_IN_SIGHT } else { SILENCE };
         self.counts.lock().unwrap().is_some()
             && self.room() >= LEAST_ROOM
             && !heard.is_zero()
-            && self.shared.started.elapsed() < heard + SILENCE
+            && self.shared.started.elapsed() < heard + silence
     }
 
     /// The largest datagram that can be sent, in bytes.
@@ -550,7 +555,9 @@ fn serve(
             out.clear();
             match endpoint.handle(now, remote, None, None, BytesMut::from(&packet[..size]), &mut out) {
                 Some(DatagramEvent::NewConnection(incoming))
-                    if clients.len() >= MOST_CLIENTS || (tailnet_only && !crate::server::on_tailnet(remote.ip())) =>
+                    if clients.len() >= MOST_CLIENTS
+                        || clients.values().filter(|client| client.link.is_none()).count() >= MOST_STRANGERS
+                        || (tailnet_only && !crate::server::on_tailnet(remote.ip())) =>
                 {
                     endpoint.ignore(incoming)
                 }

@@ -38,6 +38,8 @@ const PADDING_PIECE: usize = 16 * 1024;
 const REPORT: Duration = Duration::from_secs(1);
 /// The longest round trip a client's report is taken at, in milliseconds.
 const LONGEST_ROUND_TRIP: i64 = 60_000;
+/// A page counts as in sight while its pings said within this long how much arrived (a hidden one says nothing).
+const IN_SIGHT: Duration = Duration::from_secs(1);
 /// Whatever sound takes of the rate, video is left at least one part in this many.
 const MOSTLY_VIDEO: u32 = 2;
 /// Where padding's noise begins (see `padding`); any number but zero does.
@@ -269,8 +271,10 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
     let (mut spoken, mut sound) = (0, 0);
     let mut surplus = 0.0; // what a probe offers beyond the rate (see `rate::Verdict`)
     loop {
-        // On either way the video begins anew: what the other carried last may never have arrived.
-        let up = datagrams.as_ref().is_some_and(|datagrams| datagrams.link.is_up());
+        // On either way the video begins anew: what the other carried last may never have arrived. A page in
+        // sight says how much arrived in each ping, a hidden one does not.
+        let in_sight = told.received.lock().unwrap().is_some_and(|(at, _)| at.elapsed() < IN_SIGHT);
+        let up = datagrams.as_ref().is_some_and(|datagrams| datagrams.link.is_up(in_sight));
         let switched = up != by_udp;
         if switched {
             by_udp = up;
