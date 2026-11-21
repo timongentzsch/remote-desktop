@@ -21,6 +21,15 @@ struct encode_request {
     int64_t confirmed;
 };
 
+/* A buffer on the GPU the screen can be copied into, shared between devices as Linux does (a DMA-BUF): its file,
+   which the caller then owns, the DRM format of its pixels, where they begin, the length of a row in bytes, and
+   the modifier that says how they are laid out. */
+struct gpu_buffer {
+    int fd;
+    uint32_t format, offset, pitch;
+    uint64_t modifier;
+};
+
 struct encoder_ops {
     const char *name;
     uint8_t *(*plane)(struct encoder *encoder, int index, int *stride);
@@ -32,6 +41,12 @@ struct encoder_ops {
        target. */
     int (*set_rate)(struct encoder *encoder, int kbps, int buffer_kbits, int quality);
     void (*close)(struct encoder *encoder);
+    /* Where the encoder takes its pictures on the GPU, NULL where it does not: makes, or makes anew for another
+       size, the one buffer for a screen of `width` x `height`, 0 on success; and takes the picture in it as the
+       next to encode, at the encoder's size, 0 on success. Pictures in the planes count again once the planes
+       are asked for. */
+    int (*gpu_buffer)(struct encoder *encoder, int width, int height, struct gpu_buffer *buffer);
+    int (*take_gpu_picture)(struct encoder *encoder);
 };
 
 /* Each implementation's own struct starts with this. */

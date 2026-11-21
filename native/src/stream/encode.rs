@@ -27,6 +27,8 @@ unsafe extern "C" {
     ) -> c_int;
     fn encoder_set_rate(encoder: *mut Raw, kbps: c_int, fps: c_int, quality: c_int, buffer: c_int) -> c_int;
     fn encoder_name(encoder: *mut Raw) -> *const c_char;
+    fn encoder_gpu_buffer(encoder: *mut Raw, width: c_int, height: c_int, buffer: *mut GpuBuffer) -> c_int;
+    fn encoder_take_gpu_picture(encoder: *mut Raw) -> c_int;
     fn encoder_close(encoder: *mut Raw);
 }
 
@@ -121,6 +123,19 @@ impl Codec {
 
 /// The most parameter sets a codec has, as encoder.h says: HEVC's VPS, SPS and PPS.
 const MOST_PARAMETER_SETS: usize = 3;
+
+/// A buffer on the GPU the screen can be copied into, as `struct gpu_buffer` in encoder.h: a DMA-BUF's file,
+/// which its receiver owns, the DRM format of its pixels, where they begin, the length of a row in bytes, and
+/// the modifier that says how they are laid out.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GpuBuffer {
+    pub fd: c_int,
+    pub format: u32,
+    pub offset: u32,
+    pub pitch: u32,
+    pub modifier: u64,
+}
 
 /// One plane of the picture to encode: its bytes and the length of a row in them.
 pub struct Plane<'a> {
@@ -251,6 +266,19 @@ impl Encoder {
         unsafe { encoder_set_rate(self.raw, kbps, fps, quality, buffer) == 0 }
     }
 
+    /// The buffer on the GPU a screen of `width` x `height` can be copied into, where this encoder takes its
+    /// pictures that way (VA-API does).
+    pub fn gpu_buffer(&mut self, width: usize, height: usize) -> Option<GpuBuffer> {
+        let mut buffer = GpuBuffer::default();
+        let made = unsafe { encoder_gpu_buffer(self.raw, width as c_int, height as c_int, &mut buffer) } == 0;
+        made.then_some(buffer)
+    }
+
+    /// Takes the picture in that buffer as the next to encode, instead of the planes.
+    pub fn take_gpu_picture(&mut self) -> bool {
+        unsafe { encoder_take_gpu_picture(self.raw) == 0 }
+    }
+
     /// Encodes the picture in `planes` as frame `id`, which counts up from frame to frame, and as `want` says.
     /// `confirmed` is the latest frame the client is known to have, which tells the encoder what to keep.
     pub fn encode(&mut self, id: u64, want: Want, confirmed: Option<u64>) -> Option<Encoded<'_>> {
@@ -364,33 +392,39 @@ mod tests {
     }
 
     /// For a client that decodes HEVC, a GPU that encodes it does: an IDR, then frames that refer to the one before,
-    /// each a single slice, and a record that lists the three parameter sets.
+    /// and a record that lists the three parameter sets. Full colour detail stays H.264's.
     #[test]
     fn the_gpu_encodes_hevc_for_a_client_that_decodes_it() {
         let _alone = GPU.lock();
-        let setup = Setup { hevc: 1, ..Setup::new(640, 480, 60, 2000, false, 0) };
-        let Some(mut encoder) = Encoder::open_on(true, setup).filter(|encoder| encoder.codec == Codec::Hevc) else {
-            return; // this machine's GPU does not encode HEVC
-        };
-        let record = encoder.configuration();
-        assert_eq!((record[0], record[22]), (1, 3), "an hvcC record with three arrays");
-        draw_detail(&mut encoder);
-        // HEVC's NAL unit type is in the first byte after the length: IDR_W_RADL is 19, TRAIL_R 1.
-        for (frame, expected_type) in [(0, 19), (1, 1), (2, 1)] {
-            let encoded = encoder.encode(frame, Want::Next, None).expect("a frame in gives a frame out");
-            assert_eq!((encoded.unit[4] >> 1) & 0x3F, expected_type, "frame {frame}");
-            assert_eq!(encoded.keyframe, frame == 0);
+        for full_chroma in [false, true] {
+            let setup = Setup { hevc: 1, ..Setup::new(640, 480, 60, 2000, full_chroma, 0) };
+            let Some(mut encoder) = Encoder::open_on(true, setup) else { continue };
+            if full_chroma || encoder.codec != Codec::Hevc {
+                assert!(encoder.codec == Codec::H264 || !encoder.full_chroma, "no HEVC with full colour detail");
+                continue; // or this machine's GPU does not encode HEVC
+            }
+            let record = encoder.configuration();
+            assert_eq!((record[0], record[22]), (1, 3), "an hvcC record with three arrays");
+            draw_detail(&mut encoder);
+            // HEVC's NAL unit type is in the first byte after the length: IDR_W_RADL is 19, IDR_N_LP 20, TRAIL_R 1.
+            for frame in 0..3 {
+                let encoded = encoder.encode(frame, Want::Next, None).expect("a frame in gives a frame out");
+                let kind = (encoded.unit[4] >> 1) & 0x3F;
+                assert!(if frame == 0 { kind == 19 || kind == 20 } else { kind == 1 }, "frame {frame}: {kind}");
+                assert_eq!(encoded.keyframe, frame == 0);
+            }
         }
     }
 
-    /// Where the GPU encodes HEVC, a client that lost frames is given one that goes on from the latest it has,
+    /// Where VA-API encodes HEVC, a client that lost frames is given one that goes on from the latest it has,
     /// as small as any other, as long as the encoder kept that one; a keyframe otherwise.
     #[test]
     fn hevc_recovers_from_a_frame_the_client_has() {
         let _alone = GPU.lock();
         let setup = Setup { hevc: 1, ..Setup::new(640, 480, 60, 2000, false, 0) };
-        let Some(mut encoder) = Encoder::open_on(true, setup).filter(|encoder| encoder.codec == Codec::Hevc) else {
-            return; // this machine's GPU does not encode HEVC
+        let vaapi = |encoder: &Encoder| encoder.codec == Codec::Hevc && encoder.name == "vaapi";
+        let Some(mut encoder) = Encoder::open_on(true, setup).filter(vaapi) else {
+            return; // this machine's GPU does not encode HEVC through VA-API
         };
         draw_detail(&mut encoder);
         let mut encode = |id, want, confirmed| {
@@ -412,21 +446,24 @@ mod tests {
         assert_eq!((keyframe, recovered, nal_type), (true, false, 19), "an IDR");
     }
 
-    /// x264, and NVIDIA's encoder where there is one, recover the same way, from any of the last frames, and
-    /// with a keyframe from one they no longer keep.
+    /// x264, and NVIDIA's encoder where there is one, in H.264 and in HEVC, recover the same way, from any of the
+    /// last frames, and with a keyframe from one they no longer keep.
     #[test]
-    fn h264_recovers_from_a_frame_the_client_has() {
+    fn the_last_frames_are_kept_to_recover_from() {
         let _alone = GPU.lock();
         let setup = Setup::new(640, 480, 60, 2000, false, 0);
         let x264 = Encoder::open_on(false, setup).expect("x264 opens");
-        let nvenc = Encoder::open_on(true, setup).filter(|encoder| encoder.name == "nvenc");
-        for encoder in [Some(x264), nvenc].into_iter().flatten() {
-            recovers(encoder);
+        recovers(x264);
+        for hevc in [0, 1] {
+            let nvenc = |encoder: &Encoder| encoder.name == "nvenc" && (encoder.codec == Codec::Hevc) == (hevc == 1);
+            if let Some(encoder) = Encoder::open_on(true, Setup { hevc, ..setup }).filter(nvenc) {
+                recovers(encoder);
+            }
         }
     }
 
     fn recovers(mut encoder: Encoder) {
-        let name = encoder.name;
+        let name = format!("{} {}", encoder.name, encoder.codec.name());
         draw_detail(&mut encoder);
         let mut encode = |id, want, confirmed| {
             encoder.planes()[0].bytes[id as usize * 100] ^= 0xFF; // a little changes from frame to frame

@@ -67,7 +67,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Capture {
         };
         match event {
             frame::Event::Buffer { format, width, height, stride } => {
-                match state.provide_buffer(queue, (width as usize, height as usize, stride as usize), format) {
+                match state.provide_buffer(queue, (width as usize, height as usize, stride as usize), format, &[]) {
                     Ok(()) if frame.version() < ANNOUNCES_SEVERAL => copy(state),
                     Ok(()) => {}
                     Err(reason) => state.fail(reason),

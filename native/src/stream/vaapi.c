@@ -61,6 +61,8 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
 
 static struct {
     VADisplay (*vaGetDisplayDRM)(int fd);
+    /* Since libva 2.1; without it the pictures are copied into the input (see vaapi_gpu_buffer). */
+    __typeof__(vaExportSurfaceHandle) *vaExportSurfaceHandle;
 #define F(name) __typeof__(name) *name;
     FUNCTIONS(F)
 #undef F
@@ -110,6 +112,7 @@ static void load(void)
         return;
     FUNCTIONS(F)
 #undef F
+    va.vaExportSurfaceHandle = dlsym(library, "vaExportSurfaceHandle");
     for (int node = RENDER_FIRST; node < RENDER_FIRST + RENDER_NODES; node++) {
         char path[32];
         snprintf(path, sizeof path, "/dev/dri/renderD%d", node);
@@ -346,7 +349,7 @@ static int vaapi_encode(struct encoder *base, const struct encode_request *reque
     encoder->allowance = encoder->allowance + share < buffer ? encoder->allowance + share : buffer;
     int current = free_surface(encoder), qp = choose_qp(encoder);
     pthread_mutex_lock(&calls);
-    if (upload(encoder) == 0)
+    if (encoder->on_gpu || upload(encoder) == 0)
         size = encode_at(encoder, idr, current, qp);
     /* A frame that took more than twice what the cap allows now, which the last frame's size could not
        foresee, is encoded once more, as much coarser as it needs to fit. */
@@ -376,6 +379,7 @@ static int vaapi_encode(struct encoder *base, const struct encode_request *reque
 static uint8_t *vaapi_plane(struct encoder *base, int index, int *stride)
 {
     struct vaapi *encoder = (struct vaapi *)base;
+    encoder->on_gpu = 0;
     *stride = index == 0 ? encoder->width : encoder->width / 2;
     return encoder->planes[index];
 }
@@ -427,10 +431,92 @@ static void take_alignment(struct vaapi *encoder)
     free(attributes);
 }
 
+/* Makes the screen's surface, BGRX at the screen's size, and the video processor, if there are none yet or the
+   size changed, and hands the surface out as a DMA-BUF. */
+static int vaapi_gpu_buffer(struct encoder *base, int width, int height, struct gpu_buffer *buffer)
+{
+    struct vaapi *encoder = (struct vaapi *)base;
+    VASurfaceAttrib bgrx = {
+        .type = VASurfaceAttribPixelFormat,
+        .flags = VA_SURFACE_ATTRIB_SETTABLE,
+        .value = { .type = VAGenericValueTypeInteger, .value.i = VA_FOURCC_BGRX },
+    };
+    VADRMPRIMESurfaceDescriptor shared;
+    if (!va.vaExportSurfaceHandle)
+        return -1;
+    pthread_mutex_lock(&calls);
+    int ready = encoder->processor != VA_INVALID_ID
+        || (va.vaCreateConfig(display, VAProfileNone, VAEntrypointVideoProc, NULL, 0, &encoder->processor_config) == VA_STATUS_SUCCESS
+            && va.vaCreateContext(display, encoder->processor_config, encoder->width, encoder->height, VA_PROGRESSIVE, NULL, 0, &encoder->processor) == VA_STATUS_SUCCESS);
+    if (ready && encoder->screen != VA_INVALID_SURFACE && (encoder->screen_width != width || encoder->screen_height != height)) {
+        va.vaDestroySurfaces(display, &encoder->screen, 1);
+        encoder->screen = VA_INVALID_SURFACE;
+    }
+    if (ready && encoder->screen == VA_INVALID_SURFACE) {
+        ready = va.vaCreateSurfaces(display, VA_RT_FORMAT_RGB32, width, height, &encoder->screen, 1, &bgrx, 1) == VA_STATUS_SUCCESS;
+        encoder->screen_width = width;
+        encoder->screen_height = height;
+    }
+    unsigned flags = VA_EXPORT_SURFACE_WRITE_ONLY | VA_EXPORT_SURFACE_COMPOSED_LAYERS;
+    ready = ready && va.vaExportSurfaceHandle(display, encoder->screen, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, flags, &shared) == VA_STATUS_SUCCESS;
+    pthread_mutex_unlock(&calls);
+    if (!ready)
+        return -1;
+    /* The screen is one plane in one object: anything else is not what was made. */
+    if (shared.num_objects != 1 || shared.num_layers != 1 || shared.layers[0].num_planes != 1) {
+        for (unsigned at = 0; at < shared.num_objects; at++)
+            close(shared.objects[at].fd);
+        return -1;
+    }
+    *buffer = (struct gpu_buffer){
+        .fd = shared.objects[0].fd,
+        .format = shared.layers[0].drm_format,
+        .offset = shared.layers[0].offset[0],
+        .pitch = shared.layers[0].pitch[0],
+        .modifier = shared.objects[0].drm_format_modifier,
+    };
+    return 0;
+}
+
+/* Turns the screen's surface into the input, made the picture's size: BT.709 at full range, as the planes are
+   (see convert.rs). */
+static int vaapi_take_gpu_picture(struct encoder *base)
+{
+    struct vaapi *encoder = (struct vaapi *)base;
+    VARectangle picture = { 0, 0, (uint16_t)encoder->width, (uint16_t)encoder->height };
+    VAProcPipelineParameterBuffer pipeline = {
+        .surface = encoder->screen,
+        .surface_color_standard = VAProcColorStandardBT709,
+        .output_region = &picture,
+        .output_color_standard = VAProcColorStandardBT709,
+        .input_color_properties.color_range = VA_SOURCE_RANGE_FULL,
+        .output_color_properties.color_range = VA_SOURCE_RANGE_FULL,
+    };
+    VABufferID buffer;
+    pthread_mutex_lock(&calls);
+    int done = encoder->screen != VA_INVALID_SURFACE
+        && va.vaCreateBuffer(display, encoder->processor, VAProcPipelineParameterBufferType, sizeof pipeline, 1, &pipeline, &buffer) == VA_STATUS_SUCCESS;
+    if (done) {
+        done = va.vaBeginPicture(display, encoder->processor, encoder->surfaces[INPUT]) == VA_STATUS_SUCCESS;
+        done = done && va.vaRenderPicture(display, encoder->processor, &buffer, 1) == VA_STATUS_SUCCESS;
+        done = va.vaEndPicture(display, encoder->processor) == VA_STATUS_SUCCESS && done;
+        va.vaDestroyBuffer(display, buffer);
+    }
+    pthread_mutex_unlock(&calls);
+    encoder->on_gpu = done;
+    return done ? 0 : -1;
+}
+
 static void vaapi_close(struct encoder *base)
 {
     struct vaapi *encoder = (struct vaapi *)base;
     pthread_mutex_lock(&calls);
+    if (encoder->processor != VA_INVALID_ID)
+        va.vaDestroyContext(display, encoder->processor);
+    if (encoder->processor_config != VA_INVALID_ID)
+        va.vaDestroyConfig(display, encoder->processor_config);
+    if (encoder->screen != VA_INVALID_SURFACE)
+        va.vaDestroySurfaces(display, &encoder->screen, 1);
     if (encoder->coded != VA_INVALID_ID)
         va.vaDestroyBuffer(display, encoder->coded);
     if (encoder->context != VA_INVALID_ID)
@@ -460,6 +546,8 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
     encoder->base.fps = setup->fps; /* set again by encoder_open; the parameter sets need it before */
     encoder->codec = kind;
     encoder->config = encoder->context = encoder->coded = VA_INVALID_ID;
+    encoder->processor_config = encoder->processor = VA_INVALID_ID;
+    encoder->screen = VA_INVALID_SURFACE;
     for (int at = 0; at < SURFACES; at++)
         encoder->surfaces[at] = VA_INVALID_SURFACE;
     encoder->width = setup->width;
@@ -509,6 +597,8 @@ failed:
     return NULL;
 }
 
-static const struct encoder_ops vaapi_ops = { "vaapi", vaapi_plane, vaapi_headers, vaapi_encode, vaapi_set_rate, vaapi_close };
+static const struct encoder_ops vaapi_ops = {
+    "vaapi", vaapi_plane, vaapi_headers, vaapi_encode, vaapi_set_rate, vaapi_close, vaapi_gpu_buffer, vaapi_take_gpu_picture,
+};
 
 #endif

@@ -148,4 +148,7 @@ static void software_close(struct encoder *base)
     free(encoder);
 }
 
-static const struct encoder_ops software_ops = { "x264", software_plane, software_headers, software_encode, software_set_rate, software_close };
+/* Pictures come in its planes only. */
+static const struct encoder_ops software_ops = {
+    "x264", software_plane, software_headers, software_encode, software_set_rate, software_close, NULL, NULL,
+};

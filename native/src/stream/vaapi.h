@@ -4,6 +4,8 @@
 #define VAAPI_H
 
 #include <va/va.h>
+#include <va/va_drmcommon.h>
+#include <va/va_vpp.h>
 #include "encoder.h"
 #include "nal.h"
 
@@ -17,8 +19,10 @@
 #define INITIAL_QP 26
 /* No IDR comes unasked: the driver is given one as long a period as it takes. */
 #define NO_PERIOD 0x7FFFFFFF
-/* The driver's speed against quality, 1 the best and 7 the fastest. */
-#define SPEED 4
+/* The driver's speed against quality, 1 the best and 7 the fastest. On Intel's Coffee Lake, HEVC at
+   3456x1994 with code scrolling by: 7 took 9.4 ms a frame where 4 took 26.5, for the same picture (51.6 dB)
+   in 12% more bits; at 4 such a screen got no more than 38 frames a second. */
+#define SPEED 7
 
 struct vaapi;
 
@@ -83,6 +87,13 @@ struct vaapi {
     int reference_count;
     /* The picture as the caller fills it, 4:2:0 in three planes; it is copied into the input surface. */
     uint8_t *planes[3];
+    /* The screen as the capture copies it on the GPU, at its own size, and the video processor that makes the
+       input of it; none until a buffer on the GPU is asked for. While the pictures come that way (`on_gpu`),
+       the planes are not copied. */
+    VASurfaceID screen;
+    int screen_width, screen_height, on_gpu;
+    VAConfigID processor_config;
+    VAContextID processor;
     struct nal_units unit;
     /* The parameter sets as NAL units after start codes, as the driver writes them into the stream. */
     uint8_t headers[MOST_PARAMETER_SETS][BITS_ROOM * 2];
