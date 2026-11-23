@@ -1,50 +1,36 @@
 # Remote desktop
 
 Your running Linux desktop, Mac or Windows PC in a browser tab. One file on the host, nothing on the other
-device, any desktop.
+device.
 
-- **Nothing to install where you sit.** Open the address in Chrome, or install the page as an app from
-  there. There is no client program.
-- **One file on the host, for the session you are already using.** The same binary serves GNOME, KDE,
-  Hyprland, Sway and X11 desktops, and sets itself up with one command. It is built for x86_64 and aarch64,
-  for Macs with Apple Silicon, and for Windows on x86_64.
-- **Complete without configuration.** The screen as H.264, or as HEVC where both ends can, the sound as Opus,
-  the clipboard, keyboard and pointer, all encrypted. The GPU's hardware encoder is used where there is one:
-  NVIDIA's (driver 470 or newer, one viewer at a time), or Intel's and AMD's through VA-API (with their
-  VA-API driver, such as intel-media-driver), which also encodes HEVC for a browser that decodes it; the
-  built-in x264 everywhere else.
+<p>
+  <img src="docs/gnome.jpg" alt="A GNOME desktop in Chrome" width="74%">
+  <img src="docs/windows-phone.jpg" alt="A Windows desktop on a phone, zoomed in above the trackpad" width="22%">
+</p>
+
+- **Nothing to install where you sit.** Open the address in Chrome, or install the page as an app.
+- **One binary, one command.** GNOME, KDE, Hyprland, Sway and X11 on x86_64 and aarch64, Macs with Apple
+  Silicon, and Windows.
+- **Complete without configuration.** H.264, or HEVC where both ends can, sound as Opus, the clipboard,
+  keyboard and pointer, all encrypted. The GPU's encoder where there is one, x264 everywhere else.
 - **Nobody in between.** The browser talks to your machine directly: no account, no relay, no vendor's
   server.
-- **Made to feel local.** A still screen costs nothing and is sharpened while it stands still, a busy one is
-  encoded in a few milliseconds, the pointer is drawn by the client, and the bitrate follows the connection.
-  On a weak connection the picture is made smaller before it is made blurry, and full colour detail is kept
-  while both ends have the time for it. Video, sound and the pointer's
-  moves travel over UDP, so that a lost packet costs no wait: with one in twenty lost, frames still arrived
-  on time and sound played on.
-- **On a phone too.** The lower part of its screen is a trackpad: the pointer stays in the middle of the
-  picture and the desktop moves under it, two fingers scroll and zoom, and a bar adds the keys a phone's
-  keyboard lacks. What that keyboard writes is typed on the host as text, whatever the keyboard layout there
-  (GNOME's and KDE's Wayland sessions, and X programs under a Wayland compositor, take it as the keys of
-  the desktop's own keyboard, which has not every character).
-- **Yours to weigh.** One control says what gives way when the connection is not enough, response or
-  quality, and takes effect at once. Frame rate, delay and bitrate can be pinned to a corner of the picture.
+- **Made to feel local.** A still screen costs nothing and sharpens, a busy one is encoded in milliseconds,
+  the pointer is drawn by the client, and the bitrate follows the connection. Video, sound and pointer moves
+  travel over UDP, so a lost packet costs no wait.
+- **On a phone too.** The lower part of the screen is a trackpad, two fingers scroll and zoom, and a bar adds
+  the keys a phone's keyboard lacks.
+- **Yours to weigh.** One control says what gives way on a weak connection, response or quality.
 
 ## What it is not
 
-- **Not a way around routers.** The other device has to be able to reach the machine: on the same network,
-  over a VPN such as Tailscale, or through a port you open. There is no relay service.
-- **Not a game streamer.** It is made for desktop work and into a browser. There are no gamepads and no
-  HDR. Keys and clicks travel over TCP, and so does everything else where UDP does not get through, which
-  shows on a link that loses packets.
-- **Not a session of its own.** It shows what the machine's own screen shows: the login screen, then the
-  desktop of whoever logs in there. It starts no separate sessions for remote users. On Hyprland and on a Mac
-  the size "Client" gives that desktop a screen of the client window's size instead, for as long as the client
-  is connected, and switches the machine's own screens off meanwhile (on a Mac, they mirror it); elsewhere it
-  shows the machine's screen.
-  The size Auto, the first, shrinks the machine's screen before it is encoded only while the link holds the
-  video back.
-- **Not file transfer or device sharing.** Text goes through the clipboard; files, drives, printers and USB
-  devices are not passed on.
+- **Not a way around routers.** The other device has to reach the machine: on the same network, over a VPN
+  such as Tailscale, or through a port you open.
+- **Not a game streamer.** It is made for desktop work: no gamepads, no HDR.
+- **Not a session of its own.** It shows what the machine's own screen shows, login screen included. On
+  Hyprland and on a Mac, the size Client gives the desktop a screen of the browser window's size while
+  connected.
+- **Not file transfer.** Text goes through the clipboard; files, drives, printers and USB devices do not.
 
 ## What it runs on
 
@@ -55,6 +41,11 @@ Any Linux distribution, with any desktop, on Wayland or X11. The exceptions:
 - Wayland compositors other than GNOME, KDE, Hyprland and those built on wlroots, such as Sway. (It needs
   the `ext-image-copy-capture-v1` or the `wlr-screencopy` protocol.)
 - Without PipeWire or PulseAudio there is no sound.
+
+The GPU encodes with NVIDIA's driver 470 or newer (one viewer at a time), or on Intel and AMD with their VA-API
+driver, such as intel-media-driver, which also encodes HEVC. What a phone's keyboard writes is typed as text,
+whatever the host's keyboard layout; GNOME's and KDE's Wayland sessions, and X programs under a Wayland
+compositor, take it as keys of the desktop's own keyboard, which has not every character.
 
 macOS 12.3 or newer on Apple Silicon; sound needs macOS 13. Its size Client makes a virtual display, through
 an interface of macOS's that is not public, which display tools use as well.
