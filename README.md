@@ -1,13 +1,13 @@
 # Remote desktop
 
-Your running Linux desktop, or Mac, in a browser tab. One file on the host, nothing on the other device, any
-desktop.
+Your running Linux desktop, Mac or Windows PC in a browser tab. One file on the host, nothing on the other
+device, any desktop.
 
 - **Nothing to install where you sit.** Open the address in Chrome, or install the page as an app from
   there. There is no client program.
 - **One file on the host, for the session you are already using.** The same binary serves GNOME, KDE,
   Hyprland, Sway and X11 desktops, and sets itself up with one command. It is built for x86_64 and aarch64,
-  and for Macs with Apple Silicon.
+  for Macs with Apple Silicon, and for Windows on x86_64.
 - **Complete without configuration.** The screen as H.264, or as HEVC where both ends can, the sound as Opus,
   the clipboard, keyboard and pointer, all encrypted. The GPU's hardware encoder is used where there is one:
   NVIDIA's (driver 470 or newer, one viewer at a time), or Intel's and AMD's through VA-API (with their
@@ -56,8 +56,13 @@ Any Linux distribution, with any desktop, on Wayland or X11. The exceptions:
   the `ext-image-copy-capture-v1` or the `wlr-screencopy` protocol.)
 - Without PipeWire or PulseAudio there is no sound.
 
-macOS 12.3 or newer on Apple Silicon, without sound or the clipboard yet. Its size Client makes a virtual
-display, through an interface of macOS's that is not public, which display tools use as well.
+macOS 12.3 or newer on Apple Silicon; sound needs macOS 13. Its size Client makes a virtual display, through
+an interface of macOS's that is not public, which display tools use as well.
+
+Windows 11 on x86_64, encoding with x264 (Windows 10 has the same interfaces, but has not been tried).
+NVIDIA's encoder is built in but has not been tried there yet, and Intel's and AMD's are not used. Not yet on
+Windows: the login screen and the screens Windows asks for an administrator's consent on, input into programs
+that run as administrator, and the size Client.
 
 The client needs WebCodecs, and Keyboard Lock to send system shortcuts such as Alt+Tab to the remote side,
 which works in full screen. Video over UDP needs WebTransport; without it, or where the network lets no UDP
@@ -99,6 +104,17 @@ a LaunchAgent from login on, logging to `~/Library/Logs/remote-desktop.log`; the
 are kept in `~/Library/Application Support/remote-desktop/`. macOS then asks to allow the host under System
 Settings, Privacy & Security, in both Screen & System Audio Recording and Accessibility; `install` waits until
 it is allowed. macOS asks again after each new version of the binary.
+
+On Windows, download `remote-desktop-x86_64-windows.exe` from the latest release and run it with `install` in
+a terminal (the options are the same):
+
+    https://github.com/timongentzsch/remote-desktop/releases/latest/download/remote-desktop-x86_64-windows.exe
+
+    .\remote-desktop-x86_64-windows.exe install
+
+It copies itself to `%LOCALAPPDATA%\Programs\remote-desktop\`, starts from the user's logon on (the Run key
+in the registry), and asks once for an administrator to let it through the firewall; the password, the
+certificate and its log are kept in `%LOCALAPPDATA%\remote-desktop\`.
 
 While the machine shows its login screen, the system service shows it too, under the same address and
 password. When you log in there it leaves the port to the desktop's own host, and the page, which takes up a
@@ -176,6 +192,10 @@ builds them and publishes them when a version tag is pushed.
 
     cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.28 --target aarch64-unknown-linux-gnu.2.28
 
+The Windows binary is built on Linux too, with mingw-w64 and the target `x86_64-pc-windows-gnu`:
+
+    cargo build --release --target x86_64-pc-windows-gnu
+
 ## Layout
 
     install.sh                 the one-line install: fetches the binary, runs `remote-desktop install`
@@ -197,6 +217,7 @@ builds them and publishes them when a version tag is pushed.
         linux/                 Wayland and X11 capture, PipeWire and PulseAudio, uinput, the clipboard,
                                the login screen, install with systemd, ufw and firewalld, the virtual screen
         macos/                 ScreenCaptureKit, CGEvent input, the virtual display, install as a LaunchAgent
+        windows/               Desktop Duplication, SendInput, WASAPI, the clipboard, install from the Run key
     tests/                     the regression on every kind of desktop, and tools for measuring
 
 To extend it: another operating system is a module in `platform/` that provides the names `platform/mod.rs`
