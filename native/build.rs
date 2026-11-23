@@ -68,6 +68,7 @@ fn libva_version() -> PathBuf {
 fn x264_system() -> &'static str {
     match env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("macos") => "apple-darwin",
+        Ok("windows") => "w64-mingw32",
         _ => "linux",
     }
 }
@@ -103,7 +104,12 @@ fn main() {
             .arg("libx264.a"));
     }
 
-    cc::Build::new()
+    let mut encoders = cc::Build::new();
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        // NVIDIA's loader casts what GetProcAddress gives to each function's type, as it has to.
+        encoders.flag("-Wno-cast-function-type");
+    }
+    encoders
         .files(ENCODERS)
         .include(&source)
         .include(&build)

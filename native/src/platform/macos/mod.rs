@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-pub use super::unix::{fd, hostname, write_private};
+pub use super::unix::{fd, hostname, without_echo, write_private};
 use crate::screen::Screen;
 
 /// Where the password and the certificate are kept: the user's Application Support.
@@ -83,6 +83,9 @@ fn display(wanted: Option<&str>) -> Result<u32, String> {
 
 /// Nothing is left changed in the desktop by a host here.
 pub fn restore_leftovers() {}
+
+/// launchd keeps what the host says (see install.rs).
+pub fn serve_quietly() {}
 
 pub mod displays {
     /// A sleeping display wakes for the capture by itself.

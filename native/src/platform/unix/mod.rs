@@ -1,5 +1,5 @@
 //! What Linux and macOS do alike, as Unix systems: waiting on file descriptors, files only their owner reads,
-//! and the machine's name.
+//! the machine's name, and typing without echo.
 
 pub mod fd;
 
@@ -14,6 +14,22 @@ pub fn write_private(path: &Path, contents: &[u8]) -> Result<(), String> {
         .and_then(|()| fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path))
         .and_then(|mut file| file.write_all(contents))
         .map_err(|error| format!("cannot write {}: {error}", path.display()))
+}
+
+/// Runs `action` with terminal echo off, if standard input is a terminal.
+pub fn without_echo<T>(action: impl FnOnce() -> T) -> T {
+    let mut terminal = unsafe { std::mem::zeroed::<libc::termios>() };
+    let is_terminal = unsafe { libc::tcgetattr(0, &mut terminal) } == 0;
+    if is_terminal {
+        let mut silent = terminal;
+        silent.c_lflag &= !libc::ECHO;
+        unsafe { libc::tcsetattr(0, libc::TCSANOW, &silent) };
+    }
+    let result = action();
+    if is_terminal {
+        unsafe { libc::tcsetattr(0, libc::TCSANOW, &terminal) };
+    }
+    result
 }
 
 /// The machine's name, or nothing where it has none.

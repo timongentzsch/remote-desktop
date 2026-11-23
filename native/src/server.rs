@@ -68,6 +68,7 @@ impl Host {
 
 /// The host of a desktop session: serves it for as long as the session lasts.
 pub fn run(address: &str) -> ! {
+    platform::serve_quietly();
     platform::restore_leftovers();
     let host = Host::open();
     thread::spawn({
