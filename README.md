@@ -16,7 +16,7 @@ device.
 - **Nobody in between.** The browser talks to your machine directly: no account, no relay, no vendor's
   server.
 - **Made to feel local.** A still screen costs nothing and sharpens, a busy one is encoded in milliseconds,
-  the pointer is drawn by the client, and the bitrate follows the connection. Video, sound and pointer moves
+  the client draws a separate pointer when available, and the bitrate follows the connection. Video, sound and pointer moves
   travel over UDP, so a lost packet costs no wait.
 - **On a phone too.** The lower part of the screen is a trackpad, two fingers scroll and zoom, and a bar adds
   the keys a phone's keyboard lacks.
@@ -29,7 +29,7 @@ device.
 - **Not a game streamer.** It is made for desktop work: no gamepads, no HDR.
 - **Not a session of its own.** It shows what the machine's own screen shows, login screen included. On
   Hyprland and on a Mac, the size Client gives the desktop a screen of the browser window's size while
-  connected.
+  connected. On Windows it temporarily changes the selected display's resolution and scaling.
 - **Not file transfer.** Text goes through the clipboard; files, drives, printers and USB devices do not.
 
 ## What it runs on
@@ -50,10 +50,17 @@ compositor, take it as keys of the desktop's own keyboard, which has not every c
 macOS 12.3 or newer on Apple Silicon; sound needs macOS 13. Its size Client makes a virtual display, through
 an interface of macOS's that is not public, which display tools use as well.
 
-Windows 11 on x86_64, encoding with x264 (Windows 10 has the same interfaces, but has not been tried).
+Windows 11 on x86_64, encoding with x264. Local pointer mode draws the Windows cursor in the browser.
+When the driver embeds the cursor in the picture, the host uses Windows Graphics Capture to leave it out.
+If cursor-free capture is unavailable, the pointer travels with the video. Desktop Duplication supports
+one viewer per display in a host process. Windows 10 has not been tested.
 NVIDIA's encoder is built in but has not been tried there yet, and Intel's and AMD's are not used. Not yet on
-Windows: the login screen and the screens Windows asks for an administrator's consent on, input into programs
-that run as administrator, and the size Client.
+Windows: the login screen and the screens Windows asks for an administrator's consent on, and input into
+programs that run as administrator. Size Client follows the browser window, including moves between monitors
+with different pixel densities. It chooses the closest supported resolution and Windows display scale.
+For example, a 1280×720 browser viewport at 150% requests a 1920×1080 desktop with Windows UI at 150%.
+The picture statistics show the applied scale and any difference from the request. On disconnect the host
+restores the original settings, preserving manual changes made during the session.
 
 The client needs WebCodecs, and Keyboard Lock to send system shortcuts such as Alt+Tab to the remote side,
 which works in full screen. Video over UDP needs WebTransport; without it, or where the network lets no UDP
@@ -80,15 +87,15 @@ options given:
 
 - copies the binary to `/usr/local/bin/remote-desktop`,
 - lets the user at the machine create input devices (a udev rule for `/dev/uinput`),
-- opens port 8765 if ufw or firewalld is active: TCP, and UDP for the video; with `--tailscale` on Tailscale's
-  interface only,
+- opens TCP and UDP port 443 in ufw or firewalld when active, limited to the Tailscale interface with `--tailscale`,
 - creates a certificate, kept with the password in `~/.config/remote-desktop/`,
 - starts the host with the desktop session: as a systemd user service, or through the desktop's autostart
   where there is no systemd,
 - with systemd, adds a system service that shows the login screen while nobody is logged in,
 
 and prints the address to open. `remote-desktop uninstall` undoes all of it except the password and the
-certificate.
+certificate. On Linux systems that reserve low ports, the installer uses `setcap` (libcap) to grant the
+installed binary `CAP_NET_BIND_SERVICE`. The desktop service runs as the logged-in user.
 
 On a Mac, the same line copies the binary to `/usr/local/bin/remote-desktop` (asking for sudo) and runs it as
 a LaunchAgent from login on, logging to `~/Library/Logs/remote-desktop.log`; the password and the certificate
@@ -120,6 +127,11 @@ let the display manager log the user in automatically and lock the session at on
     remote-desktop certificate [--tailscale] make a new certificate, or switch where it comes from
     remote-desktop --listen 127.0.0.1:8765   run by hand on another address
 
+The default address is `https://<host>`. If another service uses port 443, run the host on a free port with
+`--listen` and include that port in the browser URL. When upgrading from port 8765, run the new binary's
+`install` command to move the service to 443. Update bookmarks and tailnet access rules. On Linux, review
+any old firewall rules for 8765 and remove those that were used only for this host.
+
 ## Certificates
 
 Browsers only decode video and capture the keyboard on secure pages, so the host always serves HTTPS.
@@ -133,7 +145,7 @@ It is valid for 820 days and names the machine's hostname and address as they we
 
 **Tailscale.** On a tailnet with HTTPS certificates enabled, `install --tailscale` takes the certificate from
 Tailscale instead. Browsers trust it as it is, the host is reachable from the tailnet at
-`https://<machine>.<tailnet>.ts.net:8765`, and the certificate renews itself. A self-hosted Headscale issues
+`https://<machine>.<tailnet>.ts.net`, and the certificate renews itself. A self-hosted Headscale issues
 these certificates from version 0.30 on, with `dns.certificates` and a DNS challenge provider configured.
 
 With this certificate the host answers devices on the tailnet only: connections from Tailscale's addresses
@@ -158,7 +170,7 @@ Whoever logs in controls the desktop session, so treat the address and password 
   Tailscale or another VPN.
 - The client keeps the password in the browser's local storage after a successful login. Anyone with access
   to that browser profile can read it.
-- With `password --none`, anyone who can reach port 8765 controls the desktop. Other web sites cannot do so
+- With `password --none`, anyone who can reach port 443 controls the desktop. Other web sites cannot do so
   through a visitor's browser: the host only accepts connections from its own page.
 - The udev rule lets every program of the user at the machine create input devices, not only this one.
 - The service for the login screen answers before anyone has logged in, behind the same password. It is root

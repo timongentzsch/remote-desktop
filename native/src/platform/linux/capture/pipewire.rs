@@ -11,7 +11,8 @@ use crate::stream::Stream;
 /// Feeds the pictures of PipeWire node `node` to the stream until the stream is no longer wanted or the
 /// desktop, named for the error message, ends the cast.
 pub fn run(node: u32, mut stream: Stream, desktop: &str) -> Result<(), String> {
-    let mut screen = Screen::open(node, stream.settings.fps).ok_or("could not receive the screen from PipeWire")?;
+    let open = |fps| Screen::open(node, fps).ok_or("could not receive the screen from PipeWire");
+    let mut screen = open(stream.settings.fps)?;
     while stream.wanted() {
         match screen.next(stream.patience()) {
             Ok(Some(picture)) => stream.picture(picture.pixels, picture.stride, picture.width, picture.height),
@@ -21,7 +22,11 @@ pub fn run(node: u32, mut stream: Stream, desktop: &str) -> Result<(), String> {
         if let Some(shape) = screen.pointer() {
             stream.pointer(shape);
         }
-        stream.refine();
+        if stream.refine() {
+            // Reconnect to the existing cast for one native picture even when there is no damage.
+            drop(screen);
+            screen = open(stream.settings.fps)?;
+        }
     }
     stream.ended.take().unwrap_or(Ok(()))
 }

@@ -1,5 +1,6 @@
 native/target/
 .DS_Store
 tests/remote-desktop
+tests/__pycache__/
 tests/*.mkv
 tests/*.jpg

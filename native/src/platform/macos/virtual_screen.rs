@@ -132,8 +132,12 @@ fn end(mut helper: Child, id: u32) {
 }
 
 impl VirtualScreen {
+    pub fn name(&self) -> &str {
+        NAME
+    }
+
     /// Makes the display for `window` at `fps` frames a second.
-    pub fn create(window: Window, fps: u32) -> Result<Self, String> {
+    pub fn create(window: Window, fps: u32, _screen: Option<&str>) -> Result<Self, String> {
         let taken = || IN_USE.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok();
         if !wait_for(HANDOVER, taken) {
             return Err("another client has the virtual screen".into());

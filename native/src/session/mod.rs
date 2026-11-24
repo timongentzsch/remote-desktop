@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::audio::Sound;
 use crate::capture::{Output, Shared};
 use crate::outbox::{Next, Outbox};
-use crate::platform::virtual_screen::{self, VirtualScreen};
+use crate::platform::virtual_screen::VirtualScreen;
 use crate::platform::{self, clipboard};
 use crate::quic::Link;
 use crate::rate::{self, Controller, Reading};
@@ -73,22 +73,27 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     // A client that asked to match its device is shown a screen of its window's size, where one can be made;
     // it lasts as long as the session.
     let mut settings = login.settings;
-    let made = login.device.and_then(|window| {
-        VirtualScreen::create(window, settings.fps)
+    let mut made = login.device.and_then(|window| {
+        VirtualScreen::create(window, settings.fps, settings.screen.as_deref())
             .map_err(|error| warn!("showing the machine's own screen: {error}"))
             .ok()
     });
-    if made.is_some() {
-        settings.screen = Some(virtual_screen::NAME.to_owned());
+    if let Some(display) = &made {
+        settings.screen = Some(display.name().to_owned());
     }
     // A client that draws the pointer itself must not get the desktop's in the picture as well; it shows
     // again when the session ends, before the screens made for it go.
     let _pointer = (!settings.cursor).then(platform::hide_pointer).flatten();
     // The client is told which screens there are and which it is shown, and its pointer is placed on that one.
-    let screens = screen::list();
-    let shown = screen::choose(&screens, settings.screen.as_deref()).cloned();
+    let selected = settings.screen.clone();
     let outbox = Arc::new(Outbox::default());
-    if let Some(shown) = &shown {
+    #[cfg(windows)]
+    if let Some(screen) = &made {
+        tell_scale(&outbox, screen);
+    }
+    if let Ok(screens) = host.screens.refresh()
+        && let Some(shown) = screen::choose(&screens, selected.as_deref())
+    {
         let names: Vec<&str> = screens.iter().map(|screen| screen.name.as_str()).collect();
         outbox.push_control(text(&json!(["screens", names, shown.name])));
     }
@@ -102,7 +107,12 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     if let Some(message) = way_by_udp() {
         outbox.push_control(message);
     }
-    let shared = Arc::new(Shared { patience: login.patience.into(), ..Shared::default() });
+    let shared = Arc::new(Shared {
+        patience: login.patience.into(),
+        #[cfg(windows)]
+        screens: host.screens.clone(),
+        ..Shared::default()
+    });
     let told = Arc::new(FromClient {
         ceiling: login.ceiling.into(),
         patience: login.patience.into(),
@@ -119,12 +129,22 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
             move || send(&outbox, &connection, &shared, &told, link.as_deref())
         }),
         thread::spawn({
-            let (outbox, shared) = (outbox.clone(), shared.clone());
+            let (outbox, shared, host) = (outbox.clone(), shared.clone(), host.clone());
             move || {
                 let sink = Box::new({
                     let outbox = outbox.clone();
                     move |output: Output| match output {
-                        Output::Video(piece, frame) => outbox.push_video(piece.to_vec(), frame),
+                        Output::ScreenSize(width, height) => {
+                            drop(host.screens.refresh());
+                            outbox.push_control(text(&json!(["size", width, height])));
+                            true
+                        }
+                        Output::Video(piece, frame) => outbox.push_video(piece, frame),
+                        #[cfg(windows)]
+                        Output::PointerVisible(visible) => {
+                            outbox.push_control(text(&json!(["pointer", visible])));
+                            true
+                        }
                         // A message of its own kind: the shape's size and the place of its tip, then its pixels.
                         Output::Pointer(shape) => {
                             let numbers = [shape.width, shape.height, shape.hot.0, shape.hot.1];
@@ -168,10 +188,13 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     // The pointer's moves come over the connection and, where there is a link, over that as well. Each has its
     // count, and one that is not newer than the last made is left out: whichever way is quicker counts.
     let moved = Arc::new({
-        let (host, screens, shown, last) = (host.clone(), screens.clone(), shown.clone(), AtomicU32::new(0));
+        let (host, last) = (host.clone(), AtomicU32::new(0));
         move |count: u32, x: i32, y: i32| {
+            // Keep the sequence check and injection together across the TCP and UDP receivers.
+            let screens = host.screens.current.lock().unwrap();
             if count == 0 || last.fetch_max(count, Ordering::Relaxed) < count {
-                let (x, y) = shown.as_ref().map_or((x, y), |screen| screen::place(screen, &screens, x, y));
+                let shown = screen::choose(&screens, selected.as_deref());
+                let (x, y) = shown.map_or((x, y), |screen| screen::place(screen, &screens, x, y));
                 host.input.move_to(x, y);
             }
         }
@@ -208,13 +231,15 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
                 told.patience.store(patience, Ordering::Relaxed);
                 shared.patience.store(patience, Ordering::Relaxed);
             }
-            // The client's window changed size: so does the screen made for it. The pointer needs nothing new, as
-            // that screen is then the only one.
+            // A resize can change the bounds of the whole desktop for every connected pointer.
             Some("window") => {
-                if let (Some(made), Some(window)) = (&made, parts.get(1).and_then(login::window))
-                    && let Err(error) = made.resize(window)
-                {
-                    warn!("the screen keeps its size: {error}");
+                if let (Some(made), Some(window)) = (&mut made, parts.get(1).and_then(login::window)) {
+                    match made.resize(window) {
+                        Ok(()) => drop(host.screens.refresh()),
+                        Err(error) => warn!("the screen keeps its size: {error}"),
+                    }
+                    #[cfg(windows)]
+                    tell_scale(&outbox, made);
                 }
             }
             // The page asks again how to reach the UDP side when it could not: the certificate there is renewed
@@ -253,6 +278,10 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     }
     for code in held {
         host.input.key(code, false);
+    }
+    if made.is_some() {
+        drop((_pointer, made));
+        drop(host.screens.refresh());
     }
 }
 
@@ -376,7 +405,6 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
         let video = kbps.saturating_sub(sound).max(kbps / MOSTLY_VIDEO);
         shared.kbps.store((video as f64 * share) as u32, Ordering::Relaxed);
         shared.climbing.store(verdict.climbing, Ordering::Relaxed);
-        shared.held_back.store(verdict.held_back, Ordering::Relaxed);
         if let Some(udp) = &mut udp {
             match udp.needs(now, reading.round_trip.unwrap_or_default()) {
                 Some(Need::Keyframe) => shared.fresh.store(true, Ordering::Relaxed),
@@ -423,6 +451,11 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
     }
     outbox.close();
     connection.close(); // makes the session's read loop finish
+}
+
+#[cfg(windows)]
+fn tell_scale(outbox: &Outbox, screen: &VirtualScreen) {
+    outbox.push_control(text(&json!(["scale", screen.scale_percent()])));
 }
 
 /// A text message to the client: a JSON array whose first element names it.

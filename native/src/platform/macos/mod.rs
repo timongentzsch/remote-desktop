@@ -14,10 +14,6 @@ pub fn data_directory() -> PathBuf {
     home.join("Library/Application Support").join(crate::NAME)
 }
 
-pub fn password_path() -> PathBuf {
-    data_directory().join("password")
-}
-
 pub mod audio;
 pub mod capture;
 pub mod clipboard;
@@ -81,66 +77,12 @@ fn display(wanted: Option<&str>) -> Result<u32, String> {
     Ok(chosen.name.parse().unwrap_or_default())
 }
 
-/// Nothing is left changed in the desktop by a host here.
-pub fn restore_leftovers() {}
-
 /// launchd keeps what the host says (see install.rs).
 pub fn serve_quietly() {}
-
-pub mod displays {
-    /// A sleeping display wakes for the capture by itself.
-    pub fn wake_displays(_input: &super::input::Input) {}
-}
-
-pub mod pointer {
-    /// The capture leaves the pointer out as asked: nothing is hidden.
-    pub struct HiddenPointer(());
-
-    pub fn hide() -> Option<HiddenPointer> {
-        None
-    }
-}
 
 pub mod greeter {
     /// macOS lets no program show its login window.
     pub fn run(_address: &str) -> ! {
         crate::fail("there is no login screen to show on macOS")
     }
-}
-
-pub mod tcp {
-    use std::net::TcpStream;
-    use std::os::fd::AsRawFd;
-    use std::time::Duration;
-
-    use crate::tls::Control;
-
-    /// As <netinet/tcp.h> has it, which the libc crate does not carry for macOS.
-    const TCP_NOTSENT_LOWAT: libc::c_int = 0x201;
-
-    /// Lets the kernel hold no more than `bytes` unsent for the connection, as macOS has it too.
-    pub fn limit_unsent(socket: &TcpStream, bytes: i32) {
-        unsafe {
-            libc::setsockopt(
-                socket.as_raw_fd(),
-                libc::IPPROTO_TCP,
-                TCP_NOTSENT_LOWAT,
-                (&raw const bytes).cast(),
-                size_of::<libc::c_int>() as u32,
-            )
-        };
-    }
-
-    pub struct Path {
-        pub round_trip: Duration,
-        pub retransmitted: u32,
-    }
-
-    /// Not read yet (TCP_CONNECTION_INFO has it): the connection keeps the congestion control it has.
-    pub fn path(_socket: &TcpStream) -> Option<Path> {
-        None
-    }
-
-    /// macOS has one congestion control for every connection.
-    pub fn set_control(_socket: &TcpStream, _control: Control) {}
 }

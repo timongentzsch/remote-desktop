@@ -12,6 +12,7 @@ use crate::{PORT, certificate, fail};
 /// `remote-desktop install`: asks for a password unless there is one, makes the certificate unless there is one,
 /// and leaves the host running as a service.
 pub fn install(tailscale: bool, no_password: bool) {
+    service::check_port();
     if no_password {
         clear_password();
     } else if !password_path().exists() {
@@ -67,11 +68,11 @@ fn use_tailscale() {
 /// Tells the user where to connect and, for a self-signed certificate, how to make their browser trust it.
 fn show_certificate() {
     if let Some(name) = certificate::tailscale_name() {
-        println!("\nOpen https://{name}:{PORT} in Chrome from any device on your tailnet.");
+        println!("\nOpen https://{name} in Chrome from any device on your tailnet.");
         return;
     }
     let names = certificate::names();
-    println!("\nOpen https://{}:{PORT} in Chrome. It also answers to: {}", names[0], names[1..].join(", "));
+    println!("\nOpen https://{} in Chrome. It also answers to: {}", names[0], names[1..].join(", "));
     println!("The certificate is self-signed, so each client has to trust it once. On a Mac:");
     println!("    scp <this machine>:{} remote-desktop.pem", certificate::path().display());
     println!(
@@ -104,6 +105,21 @@ pub fn remove_password() {
 /// An empty password: no password is asked for.
 fn clear_password() {
     write_private(&password_path(), b"").unwrap_or_else(|error| fail(&error));
+}
+
+/// An existing managed listener can give the port back during an upgrade. Only ask the OS who
+/// owns it when binding the same IPv4 wildcard address as the host actually fails.
+#[cfg(any(target_os = "macos", windows))]
+pub fn check_tcp_port(port: u16, installed_owns_it: impl FnOnce() -> bool) -> Result<(), String> {
+    if let Err(error) = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
+        && !installed_owns_it()
+    {
+        return Err(format!(
+            "cannot install on TCP port {port}: {error}. Free the port or run {0} --listen ADDRESS.",
+            crate::NAME
+        ));
+    }
+    Ok(())
 }
 
 /// Runs a command that has to succeed, or else ends with what went wrong.

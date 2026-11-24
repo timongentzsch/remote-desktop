@@ -392,9 +392,8 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// Takes the UDP port of `address` and serves it on a thread of its own; `tailnet_only` as in `server::Host`.
-    pub fn open(address: &str, tailnet_only: bool) -> io::Result<Self> {
-        let socket = UdpSocket::bind(address)?;
+    /// Serves the bound UDP socket on a thread of its own; `tailnet_only` as in `server::Host`.
+    pub fn open(socket: UdpSocket, tailnet_only: bool) -> io::Result<Self> {
         socket.set_nonblocking(true)?;
         let port = socket.local_addr()?.port();
         let started = Instant::now();

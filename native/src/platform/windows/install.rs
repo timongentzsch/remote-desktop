@@ -3,11 +3,11 @@
 //! for the rest). Nothing of it needs an administrator but the rule.
 
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::install::{run, run_quietly};
-use crate::{NAME, fail};
+use crate::install::{check_tcp_port, run, run_quietly};
+use crate::{NAME, PORT, fail};
 
 pub const BINARY: &str = r"%LOCALAPPDATA%\Programs\remote-desktop\remote-desktop.exe";
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -28,11 +28,24 @@ pub fn restart_command() -> String {
     format!("{NAME} install")
 }
 
+/// The installed program may already be serving. A separate copy with the same name is a different host.
+pub fn check_port() {
+    check_tcp_port(PORT, || listens_on(&binary(), PORT)).unwrap_or_else(|error| fail(&error));
+}
+
+fn listens_on(program: &Path, port: u16) -> bool {
+    managed_command(program,
+        "$listeners = @(Get-NetTCPConnection -LocalAddress 0.0.0.0 -LocalPort $env:RD_INSTALL_PORT -State Listen -ErrorAction Stop); \
+         if (!$listeners.Count) { exit 1 }; foreach ($listener in $listeners) { \
+         if ((Get-Process -Id $listener.OwningProcess -ErrorAction Stop).Path -ne $env:RD_INSTALL_PROGRAM) { exit 1 } }")
+        .env("RD_INSTALL_PORT", port.to_string()).output().is_ok_and(|out| out.status.success())
+}
+
 /// Copies this binary into place, starts it at every logon from now on, opens the firewall for it and starts it.
 pub fn start(tailnet_only: bool) {
     let this = std::env::current_exe().unwrap_or_else(|error| fail(&format!("cannot locate this program: {error}")));
     let binary = binary();
-    end_running();
+    end_running(&binary);
     if this != binary {
         std::fs::create_dir_all(binary.parent().unwrap())
             .and_then(|()| std::fs::copy(&this, &binary))
@@ -52,7 +65,7 @@ pub fn start(tailnet_only: bool) {
 
 /// Undoes `start`.
 pub fn stop() {
-    end_running();
+    end_running(&binary());
     run_quietly("reg", &["delete", RUN_KEY, "/v", NAME, "/f"]);
     as_administrator(&format!("netsh advfirewall firewall delete rule name={NAME}"));
     let _ = std::fs::remove_file(binary());
@@ -66,10 +79,25 @@ pub fn follow_certificate(tailnet_only: bool) {
 /// Tailscale on Windows lets its user have certificates.
 pub fn allow_tailscale() {}
 
-/// Ends a host that runs, other than this program.
-fn end_running() {
-    let others = format!("PID ne {}", std::process::id());
-    run_quietly("taskkill", &["/F", "/FI", &others, "/IM", &format!("{NAME}.exe")]);
+/// Path values travel as environment data so quoting and special characters in user names are preserved.
+fn managed_command(program: &Path, script: &str) -> Command {
+    let mut command = Command::new("powershell");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]).env("RD_INSTALL_PROGRAM", program);
+    command
+}
+
+/// Wait for hosts running this user's installed executable to release it before replacing the file.
+fn end_running(program: &Path) {
+    let status = managed_command(program,
+        "$ErrorActionPreference = 'Stop'; \
+         foreach ($p in (Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($env:RD_INSTALL_PROGRAM)) -ErrorAction SilentlyContinue)) { \
+         if ($p.Id -ne $env:RD_INSTALL_PID -and $p.Path -eq $env:RD_INSTALL_PROGRAM) { \
+         try { $p.Kill() } catch { if (!$p.HasExited) { throw } }; \
+         if (!$p.WaitForExit(5000)) { throw 'Timed out stopping the installed host' } } }; exit 0")
+        .env("RD_INSTALL_PID", std::process::id().to_string()).status();
+    if !status.is_ok_and(|status| status.success()) {
+        fail("cannot stop the installed host");
+    }
 }
 
 /// Lets others reach the program, over TCP and UDP alike: the one rule for it, made anew.
@@ -92,4 +120,50 @@ fn as_administrator(commands: &str) -> bool {
         "$p = Start-Process cmd -ArgumentList '/c {quoted}' -Verb RunAs -Wait -WindowStyle Hidden -PassThru; exit $p.ExitCode"
     );
     run_quietly("powershell", &["-NoProfile", "-NonInteractive", "-Command", &elevated])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::process::Stdio;
+
+    #[test]
+    fn only_the_installed_path_can_replace_a_wildcard_listener() {
+        let listener = TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let program = std::env::current_exe().unwrap();
+        assert!(check_tcp_port(port, || listens_on(&program, port)).is_ok());
+        let other = program.with_file_name("other-host.exe");
+        assert!(check_tcp_port(port, || listens_on(&other, port)).is_err());
+    }
+
+    #[test]
+    fn stopping_the_installed_copy_leaves_a_same_named_program_running() {
+        let root = std::env::temp_dir().join(format!("rd-install-test-{}", std::process::id()));
+        let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\cmd.exe");
+        let start = |folder: &str| {
+            let path = root.join(folder).join("rd-install-path-test.exe");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::copy(&shell, &path).unwrap();
+            let child = Command::new(&path)
+                .args(["/D", "/Q"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            (path, child)
+        };
+        end_running(&root.join("rd-install-absent.exe"));
+        let (installed, mut host) = start("installed");
+        let (_, mut other) = start("other");
+        end_running(&installed);
+        let stopped = host.try_wait().unwrap().is_some();
+        let spared = other.try_wait().unwrap().is_none();
+        host.wait().unwrap();
+        other.wait().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(stopped && spared);
+    }
 }

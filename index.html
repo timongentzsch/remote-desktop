@@ -137,7 +137,7 @@
   .pad button[aria-pressed="true"] { background: var(--text); color: var(--ground); }
   .touch .overlay { bottom: calc(var(--below, 0px) + var(--pad, 0px) - var(--control) - var(--inset)); padding: 0 var(--inset); align-items: flex-end; }
   .touch .panel { max-height: calc(100vh - var(--below, 0px) - var(--pad, 0px) - var(--edge)); overflow-y: auto; }
-  .touch.connected .point { display: block; }
+  .touch.connected:not(.remote-cursor) .point { display: block; }
   .point { position: fixed; left: var(--point-x, 50%); top: var(--point-y, 50%); width: calc(var(--point-size, 12px) * 2 / 3); height: var(--point-size, 12px); background: 0 0 / 100% 100% no-repeat url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 21"><path d="M.5.9v17l4.500-4 3.500 6.600 3-1.600-3.500-6.400h5.500z" fill="white" stroke="black"/></svg>'); pointer-events: none; }
   .touch.connected.keys .keybar { display: flex; }
   .keybar { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); border-top: 1px solid var(--text); background: var(--ground); overflow-x: auto; scrollbar-width: none; }
@@ -198,7 +198,7 @@
       <div class="now"><output id="now-fps">–</output><output id="now-delay">–</output><output id="now-bitrate">–</output></div>
       <small id="now-picture">–</small>
     </div>
-    <div class="delay" title="Where the measured delay goes. Capturing and displaying are not included.">
+    <div class="delay" title="Estimated video delay from encoding, sending, half the control connection’s round trip, and decoding. Capture and display time are excluded.">
       <div class="bar" role="img" aria-label="Delay split into encoding, sending, network and decoding">
         <i class="encode"></i><i class="send"></i><i class="network"></i><i class="decode"></i>
       </div>
@@ -241,7 +241,7 @@
         </select>
       </label>
       <label class="setting">Size
-        <select name="size" title="Auto shows the host's screen as it is, smaller while the connection is weak. Host shows the host's screen as it is. Client gives the remote desktop a screen of this window's size and switches the host's own screens off while connected, where the desktop allows (Hyprland).">
+        <select name="size" title="Auto lowers resolution during coarse motion and restores detail when the screen is still. Host keeps the desktop's resolution. Client matches this window on macOS and Hyprland. On Windows it selects the closest supported resolution and display scale.">
           <option value="auto">Auto</option>
           <option value="host">Host</option>
           <option value="client">Client</option>
@@ -255,7 +255,7 @@
         </select>
       </label>
       <label class="setting">Pointer
-        <select name="cursor" title="Local: drawn here, instant, in the remote pointer's shape where the desktop tells it. Remote: always the true shape, but part of the video.">
+        <select name="cursor" title="Local draws the pointer here when the host can leave it out of the video. Remote shows it in the video.">
           <option value="no">Local</option>
           <option value="yes">Remote</option>
         </select>
@@ -349,16 +349,19 @@ function hevcCodec(record) {
 
 // Decodes the stream and draws it. `failed` is called if the decoder gives up, saying whether on HEVC.
 function videoPlayer(failed) {
-  let pending = new Uint8Array(0), frames = 0, decodeTime = 0, codec = AVC;
+  let pending = null, frames = 0, decodeTime = 0, codec = AVC;
   const submitted = [];  // when each frame still inside the decoder was handed to it
   const decoder = new VideoDecoder({
     output(frame) {
       decodeTime += performance.now() - submitted.shift();
       frames++;
       if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        if (at) {
+          at.x *= frame.displayWidth / canvas.width;
+          at.y *= frame.displayHeight / canvas.height;
+        }
         canvas.width = frame.displayWidth;
         canvas.height = frame.displayHeight;
-        at = null;
         place();  // where it is shown and its pointer's size follow the picture's
       }
       context.drawImage(frame, 0, 0);
@@ -370,11 +373,15 @@ function videoPlayer(failed) {
     // Takes the next piece of the stream, however the network cut it up. The stream is FLV: a 13-byte header
     // that begins with "F", then tags of [type, size:3, time:3+1, stream:3, data, back-pointer:4]. Video tag
     // data is [frame type | codec, packet type, composition time:3, payload].
-    feed(chunk) {
-      const stream = new Uint8Array(pending.length + chunk.byteLength);
-      stream.set(pending);
-      stream.set(new Uint8Array(chunk), pending.length);
+    feed(stream) {
+      if (pending) {
+        const joined = new Uint8Array(pending.length + stream.length);
+        joined.set(pending);
+        joined.set(stream, pending.length);
+        stream = joined;
+      }
       let at = stream[0] === FLV_SIGNATURE ? FLV_HEADER : 0;
+      if (at > stream.length) { pending = stream; return; }  // partial FLV header
       for (;;) {
         const size = stream[at + 1] << 16 | stream[at + 2] << 8 | stream[at + 3];
         if (stream.length < at + TAG_HEAD + size + TAG_TAIL) break;  // also while the tag head is incomplete
@@ -390,13 +397,13 @@ function videoPlayer(failed) {
           submitted.push(performance.now());
           decoder.decode(new EncodedVideoChunk({
             type: data[0] >> 4 === 1 ? 'key' : 'delta',
-            timestamp: (stream[at + 4] << 16 | stream[at + 5] << 8 | stream[at + 6]) * 1000,
+            timestamp: (stream[at + 7] * 0x1000000 + (stream[at + 4] << 16 | stream[at + 5] << 8 | stream[at + 6])) * 1000,
             data: data.subarray(5),
           }));
         }
-        at += 11 + size + 4;
+        at += TAG_HEAD + size + TAG_TAIL;
       }
-      pending = stream.slice(at);
+      pending = at === stream.length ? null : stream.slice(at);
     },
     // How many frames were drawn since the last call, and how long decoding one took on average, in ms.
     measure() {
@@ -704,8 +711,19 @@ function showStatistics(frames, parts, received, allowed, heldBack, way) {
   $('now-fps').textContent = $('pin-fps').textContent = `${frames} fps`;
   $('now-delay').textContent = $('pin-delay').textContent = `${delay} ms`;
   $('now-bitrate').textContent = $('pin-bitrate').textContent = `${megabits(received)} Mbit/s`;
+  const [width, height, ratio] = clientWindow ?? [];
+  const requested = clientWindow &&
+    (Math.abs(sourceSize.width - width * ratio) > 1 || Math.abs(sourceSize.height - height * ratio) > 1)
+    ? ` (browser requested ${Math.round(width * ratio)} × ${Math.round(height * ratio)})` : '';
+  const percent = Math.round(ratio * 100);
+  let scale = '';
+  if (windowsScale === null) scale = ', Windows scale unavailable';
+  if (Number.isFinite(windowsScale)) {
+    scale = `, Windows scale ${windowsScale}%`;
+    if (windowsScale !== percent) scale += ` (${percent}% requested)`;
+  }
   $('now-picture').textContent =
-    `${canvas.width} × ${canvas.height}, ${colourDetail} colour detail, ${way}, up to ${megabits(allowed)} Mbit/s`;
+    `${canvas.width} × ${canvas.height}${requested}${scale}, ${colourDetail} colour detail, ${way}, up to ${megabits(allowed)} Mbit/s`;
   $('notice').textContent = `This connection carries about ${megabits(allowed)} Mbit/s. Moving pictures are softened so the session stays responsive.`;
   $('pill-text').textContent = slow ? `Slow link / ${megabits(allowed)} Mbit/s` : `${frames} fps / ${delay} ms / ${way}`;
   for (const [name, value] of Object.entries(parts)) {
@@ -737,8 +755,6 @@ addEventListener('focus', () => connected() && offerClipboard());
 const RETRY = 30000, RECONNECT = 1000;  // ms to keep trying after a session ended unasked for, and between tries
 let retryUntil = 0, leaving = false;
 
-const TICK = 250;  // ms between looks at the stream
-const TICKS_PER_REPORT = 1000 / TICK;  // the host reports once a second, and what arrived is averaged over that
 const PING = 100;  // ms between pings
 const STATUS = 50;  // ms between words to the host on how video over UDP fares
 
@@ -746,9 +762,11 @@ const STATUS = 50;  // ms between words to the host on how video over UDP fares
 // height and place of its tip, then rows of red, green, blue and alpha. It is drawn as large as the picture's
 // pixels are shown here. Browsers take no pointer larger than BIGGEST CSS pixels; the arrow stands in then.
 const BIGGEST = 128;
-let shape = null;
+let shape = null, sourceSize = canvas;  // older hosts only report the encoded size
+const pictureScale = (width, height, source = canvas) => Math.min(width / source.width, height / source.height);
 function showPointer() {
-  const scale = canvas.getBoundingClientRect().width / canvas.width, sharpness = devicePixelRatio;
+  const { width, height } = canvas.getBoundingClientRect();
+  const scale = pictureScale(width, height, sourceSize), sharpness = devicePixelRatio;
   const fits = shape && (TOUCH || Math.max(shape.width, shape.height) * scale <= BIGGEST);
   if (!fits) return TOUCH ? $('point').removeAttribute('style') : canvas.style.removeProperty('--pointer');
   const drawn = new OffscreenCanvas(shape.width, shape.height), sized = document.createElement('canvas');
@@ -771,12 +789,12 @@ function showPointer() {
 // where it is near its edges and the pointer leaves the middle instead, so that nothing beside it is seen.
 const ARROW = 24, SMALLEST_ARROW = 8;  // a desktop pointer's height in its pixels, and the least here
 let at = null, zoom = 1;
-function place() {
+function place(resizePointer = true) {
   if (TOUCH) {
     const seen = visualViewport, root = document.documentElement.style;
     root.setProperty('--below', `${Math.max(innerHeight - seen.height - seen.offsetTop, 0)}px`);
     const under = $('pad').offsetHeight + $('keybar').offsetHeight, height = Math.max(seen.height - under, 1);
-    const scale = Math.min(innerWidth / canvas.width, height / canvas.height) * zoom;
+    const scale = pictureScale(innerWidth, height) * zoom;
     at ??= { x: canvas.width / 2, y: canvas.height / 2 };  // until it is moved: the middle
     // Where the picture begins along one side of the window, of which `room` is seen from `start` on.
     const begin = (start, room, at, size) =>
@@ -789,10 +807,11 @@ function place() {
     root.setProperty('--point-y', `${y + at.y * scale}px`);
     // The arrow that stands in for a pointer whose shape the host does not tell is as large as a desktop's
     // would be in the picture, within what a finger's eye can make out.
-    root.setProperty('--point-size', `${Math.min(Math.max(ARROW * scale, SMALLEST_ARROW), ARROW)}px`);
+    const nativeScale = pictureScale(innerWidth, height, sourceSize) * zoom;
+    root.setProperty('--point-size', `${Math.min(Math.max(ARROW * nativeScale, SMALLEST_ARROW), ARROW)}px`);
     $('fit').hidden = zoom === 1;
   }
-  showPointer();
+  if (resizePointer) showPointer();
 }
 addEventListener('resize', place);
 visualViewport.addEventListener('resize', place);
@@ -802,15 +821,24 @@ visualViewport.addEventListener('scroll', place);
 // many device pixels each has. It is told at login, and again once a resize has settled.
 const WINDOW_SETTLE = 300;
 const windowSize = () => [innerWidth, innerHeight, devicePixelRatio];
-let resizing;
-addEventListener('resize', () => {
+let resizing, clientWindow, windowsScale;
+function resizeWindow() {
+  if (!clientWindow) return;
   clearTimeout(resizing);
-  if (settings.size.value === 'client') resizing = setTimeout(() => send('window', windowSize()), WINDOW_SETTLE);
-});
+  resizing = setTimeout(() => {
+    const next = windowSize();
+    if (next.some((value, i) => value !== clientWindow[i])) send('window', clientWindow = next);
+  }, WINDOW_SETTLE);
+}
+addEventListener('resize', resizeWindow);
 
 // Opens a session with the current settings, replacing any existing one.
 function connect() {
   stop?.();
+  at = null;
+  sourceSize = canvas;
+  clientWindow = null;
+  windowsScale = undefined;
   leaving = false;
   document.body.classList.toggle('remote-cursor', settings.cursor.value === 'yes');
   const ws = socket = new WebSocket('/ws');
@@ -819,7 +847,7 @@ function connect() {
     ws.close();
   }), sound = soundPlayer();
   let live = false;  // whether the stream has begun, which is what shows that the login was accepted
-  let bytes = 0, received = 0, roundTrip = 0, ticks = 0;  // `received` counts all that arrived
+  let bytes = 0, received = 0, roundTrip = 0;  // `received` counts all that arrived
   let host = { encode: 0, send: 0, kbps: 0, heldBack: false };  // what the host reports once a second
   // Video comes over the WebSocket until the host is reached over UDP, and from then on as datagrams. When it
   // changes its way it begins anew, with a piece that says how to decode: `awaited` while that is still to
@@ -851,31 +879,41 @@ function connect() {
     }
     video.feed(piece);
   }
-  const recent = [];  // bytes of video received during each of the last four checks
 
   // The host sends each ping back ahead of any waiting video, so the time it took is close to the network's
   // round trip. A ping also tells the host the last round trip and how much has arrived, which it sets the
   // bitrate by; a hidden page is served late and says neither.
+  let pixelRatio = devicePixelRatio;
   const ping = setInterval(() => {
-    send('ping', performance.now(), ...(document.hidden ? [0, 0] : [Math.round(roundTrip), received]));
-  }, PING);
-  const report = setInterval(() => {
-    recent.push(bytes);
-    bytes = 0;
-    if (recent.length > TICKS_PER_REPORT) recent.shift();
-    const received = recent.reduce((sum, count) => sum + count) * 8 / (TICK * recent.length);  // kbit/s
-    if (++ticks % TICKS_PER_REPORT === 0 && live && host.kbps) {  // once the host has reported
-      const { frames, decode } = video.measure();
-      if (frames) send('decode', Math.round(decode * 1000));  // µs: the host weighs colour detail by it too
-      showStatistics(frames, { encode: host.encode, send: host.send, network: roundTrip / 2, decode }, received, host.kbps, host.heldBack, byUdp ? 'UDP' : 'TCP');
+    // Moving to another monitor can change pixel density without a window resize event.
+    if (pixelRatio !== devicePixelRatio) {
+      pixelRatio = devicePixelRatio;
+      showPointer();
+      resizeWindow();
     }
-  }, TICK);
+    if (live) send('ping', performance.now(), ...(document.hidden ? [0, 0] : [Math.round(roundTrip), received]));
+  }, PING);
+  let reported = performance.now();
+  const report = setInterval(() => {
+    const now = performance.now(), elapsed = now - reported;
+    const kbps = bytes * 8 / elapsed;
+    reported = now;
+    bytes = 0;
+    const { frames, decode } = video.measure();
+    if (!live || !host.kbps) return;
+    if (frames) send('decode', Math.round(decode * 1000));  // µs: the host weighs colour detail by it too
+    showStatistics(Math.round(frames * 1000 / elapsed), { encode: host.encode, send: host.send, network: roundTrip / 2, decode }, kbps, host.kbps, host.heldBack, byUdp ? 'UDP' : 'TCP');
+  }, 1000);
 
   // What the host says in text messages, which are [kind, ...values], and what it sends besides video.
   const told = {
+    size(width, height) { sourceSize = { width, height }; place(); },
+    scale(percent) { windowsScale = percent; },
     ping(sent) { roundTrip = performance.now() - sent; },
     stats(encode, send, kbps, heldBack) { host = { encode, send, kbps, heldBack }; },
     clipboard(text) { navigator.clipboard.writeText(clipboard = text).catch(() => {}); },
+    // Windows may include the pointer in the video even when a local pointer was requested.
+    pointer(visible) { document.body.classList.toggle('remote-cursor', !visible); },
     // The host's screens and the one it shows. The choice is only offered where there is one to make.
     screens(names, shown) {
       settings.screen.replaceChildren(...names.map(name => new Option(name)));
@@ -906,11 +944,14 @@ function connect() {
   };
   ws.binaryType = 'arraybuffer';
   ws.onopen = async () => {
+    const hevc = await decodesHevc;
+    if (ws.readyState !== WebSocket.OPEN) return;
     const hello = {
-      password: login.password.value, window: windowSize(), hevc: await decodesHevc,
+      password: login.password.value, window: windowSize(), hevc,
       ...Object.fromEntries(new FormData(settings)),
     };
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(hello));
+    if (hello.size === 'client') clientWindow = hello.window;
+    ws.send(JSON.stringify(hello));
   };
   ws.onmessage = event => {
     received += event.data.byteLength ?? event.data.length;
@@ -919,15 +960,16 @@ function connect() {
       if (Object.hasOwn(told, kind)) told[kind](...values);
       return;
     }
-    const kind = new Uint8Array(event.data, 0, 1)[0];
+    const piece = new Uint8Array(event.data), kind = piece[0];
     if (Object.hasOwn(carried, kind)) return carried[kind](event.data);
-    if (byUdp || awaited && !begins(new Uint8Array(event.data))) return;
+    if (byUdp || awaited && !begins(piece)) return;
     awaited = false;
-    bytes += event.data.byteLength;
-    show(event.data);
+    bytes += piece.byteLength;
+    show(piece);
   };
   // Closing can take a while on a congested link, so a replaced session is silenced at once rather than in onclose.
   const end = stop = () => {
+    clearTimeout(resizing);
     clearInterval(ping);
     clearInterval(report);
     clearInterval(status);
@@ -941,8 +983,8 @@ function connect() {
     sound?.close();
   };
   ws.onclose = () => {
+    if (ws !== socket) return;  // connect() already ended this session
     end();
-    if (ws !== socket) return;  // replaced by a newer session
     held.clear();
     if (live && !leaving) retryUntil = performance.now() + RETRY;
     if (!leaving && performance.now() < retryUntil) {
@@ -1003,7 +1045,7 @@ function moveTo(x, y) {
 // Raw updates are delivered as they happen; ordinary move events wait for the next animation frame.
 canvas.addEventListener('onpointerrawupdate' in canvas ? 'pointerrawupdate' : 'pointermove', event => {
   // The picture is letterboxed inside the canvas element; map to its visible area, normalised to 0..65535.
-  const scale = Math.min(canvas.clientWidth / canvas.width, canvas.clientHeight / canvas.height);
+  const scale = pictureScale(canvas.clientWidth, canvas.clientHeight);
   const normalise = (position, client, size) =>
     Math.round(Math.min(1, Math.max(0, (position - (client - size * scale) / 2) / (size * scale))) * POINTER_RANGE);
   const [x, y] = [normalise(event.clientX, canvas.clientWidth, canvas.width), normalise(event.clientY, canvas.clientHeight, canvas.height)];
@@ -1063,7 +1105,7 @@ pad.addEventListener('pointermove', event => {
       y: Math.min(Math.max(at.y + (now.y - was.y) * step, 0), canvas.height - 1),
     };
     moveTo(Math.round(at.x / canvas.width * POINTER_RANGE), Math.round(at.y / canvas.height * POINTER_RANGE));
-    place();
+    place(false);  // Only the position changed. Reuse the pointer image at its current scale.
   } else if (fingers.size === 2) {
     const two = apart(), from = touch.two, spread = two.distance / from.distance;
     touch.does ??= Math.abs(spread - 1) > PINCH ? 'zoom' : Math.hypot(two.x - from.x, two.y - from.y) > SLOP ? 'scroll' : null;

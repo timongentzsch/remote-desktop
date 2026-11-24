@@ -36,7 +36,14 @@ pub fn offered(protocols: &[String]) -> bool {
 }
 
 /// Captures the chosen output until the stream is no longer wanted or the compositor ends the capture.
-pub fn run(stream: Stream) -> Result<(), String> {
+pub fn run(mut stream: Stream) -> Result<(), String> {
+    while stream.wanted() {
+        stream = capture(stream)?;
+    }
+    stream.ended.take().unwrap_or(Ok(()))
+}
+
+fn capture(stream: Stream) -> Result<Stream, String> {
     let (_connection, globals, mut events) = compositor::connect::<Capture>()?;
     let queue = events.handle();
     let shm: WlShm = bind(&globals, &queue)?;
@@ -70,9 +77,11 @@ pub fn run(stream: Stream) -> Result<(), String> {
     while capture.stream.wanted() {
         let patience = capture.stream.patience();
         compositor::turn(&mut events, &mut capture, None, patience)?;
-        capture.stream.refine();
+        if capture.stream.refine() {
+            break; // each new capture session supplies the first frame without waiting for damage
+        }
     }
-    capture.stream.ended.take().unwrap_or(Ok(()))
+    Ok(capture.stream)
 }
 
 enum Protocol {

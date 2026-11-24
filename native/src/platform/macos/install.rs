@@ -3,10 +3,11 @@
 
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::input;
-use crate::install::{run, run_quietly, write};
+use crate::install::{check_tcp_port, run, run_quietly, write};
 use crate::{NAME, PORT, fail};
 
 pub const BINARY: &str = "/usr/local/bin/remote-desktop";
@@ -59,6 +60,28 @@ pub fn restart_command() -> String {
     format!("launchctl kickstart -k {}", service())
 }
 
+/// Only the active LaunchAgent that this installer replaces may already hold the listening port.
+pub fn check_port() {
+    check_tcp_port(PORT, || {
+        let Ok(agent) = Command::new("/bin/launchctl").args(["print", &service()]).output() else { return false };
+        let pid = String::from_utf8_lossy(&agent.stdout)
+            .lines()
+            .find_map(|line| line.strip_prefix("\tpid = ")?.parse::<u32>().ok());
+        agent.status.success() && pid.is_some_and(|pid| listens_on(pid, PORT))
+    })
+    .unwrap_or_else(|error| fail(&error));
+}
+
+fn listens_on(pid: u32, port: u16) -> bool {
+    let output = Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-a", "-p", &pid.to_string(), &format!("-i4TCP:{port}"), "-sTCP:LISTEN", "-Fn"])
+        .output();
+    let wildcard = format!("n*:{port}");
+    output.is_ok_and(|result| {
+        result.status.success() && String::from_utf8_lossy(&result.stdout).lines().any(|line| line == wildcard)
+    })
+}
+
 /// Copies this binary into place (through sudo) and starts the host as the user's LaunchAgent.
 pub fn start(_tailnet_only: bool) {
     let this = std::env::current_exe().unwrap_or_else(|error| fail(&format!("cannot locate this program: {error}")));
@@ -73,7 +96,23 @@ pub fn start(_tailnet_only: bool) {
 
 /// Waits for the host to answer, which it does once macOS lets it record the screen and control the Mac.
 fn wait_until_serving() {
-    let serving = || TcpStream::connect(("127.0.0.1", PORT)).is_ok();
+    let serving = || {
+        if TcpStream::connect(("127.0.0.1", PORT)).is_err() {
+            return false;
+        }
+        let url = format!("https://127.0.0.1:{PORT}/manifest.json");
+        let response = Command::new("/usr/bin/curl")
+            .args(["--disable", "--noproxy", "*", "--silent", "--insecure", "--max-time", "3", &url])
+            .output();
+        if !response.is_ok_and(|reply| {
+            reply.status.success() && reply.stdout == include_bytes!("../../../../manifest.json")[..]
+        }) {
+            fail(&format!(
+                "port {PORT} is answering but did not serve the remote desktop client. Check for another HTTPS service."
+            ));
+        }
+        true
+    };
     let since = Instant::now();
     std::thread::sleep(STARTING);
     if !serving() {
@@ -101,3 +140,19 @@ pub fn follow_certificate(_tailnet_only: bool) {}
 
 /// Tailscale on a Mac lets its user have certificates.
 pub fn allow_tailscale() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn only_the_managed_process_can_replace_a_wildcard_listener() {
+        let listener = TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(check_tcp_port(port, || listens_on(std::process::id(), port)).is_ok());
+        assert!(check_tcp_port(port, || listens_on(1, port)).is_err());
+        drop(listener);
+        assert!(check_tcp_port(port, || panic!("free ports do not need an ownership lookup")).is_ok());
+    }
+}

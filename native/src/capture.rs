@@ -30,6 +30,9 @@ pub const HEIGHTS: [usize; 4] = [1080, 720, 540, 360];
 /// What a session and its capture exchange while the capture runs.
 #[derive(Default)]
 pub struct Shared {
+    /// Share Windows' existing capture topology poll with input on every screen.
+    #[cfg(windows)]
+    pub screens: std::sync::Arc<crate::screen::Layout>,
     /// Set by the session to end the capture.
     pub stop: AtomicBool,
     /// Set by the session when its client needs a frame it can decode without any before it,
@@ -40,10 +43,8 @@ pub struct Shared {
     pub confirmed: AtomicU64,
     /// The bitrate in kbit/s the session now allows; 0 until it sets one.
     pub kbps: AtomicU32,
-    /// Set while that bitrate is still on its way up to what the link carries or the client wants,
+    /// Set while that bitrate is still on its way up to what the link carries or the client wants.
     pub climbing: AtomicBool,
-    /// and while the link, not the client's choice, keeps it lower.
-    pub held_back: AtomicBool,
     /// For how long the client would rather have video fall behind than see the picture made coarser, in
     /// milliseconds.
     pub patience: AtomicU32,
@@ -90,10 +91,15 @@ pub struct Frame {
 
 /// What a capture hands to its session.
 pub enum Output<'a> {
+    /// The source display's pixel size before any stream downscaling.
+    ScreenSize(usize, usize),
     /// The next piece of the video stream, and the frame it carries, if it carries one.
-    Video(&'a [u8], Option<Frame>),
+    Video(Vec<u8>, Option<Frame>),
     /// The pointer's shape, where the client draws the pointer and the desktop tells its shape.
     Pointer(&'a Shape),
+    /// Whether the client should show its own pointer. Desktop Duplication can include it in the picture.
+    #[cfg(windows)]
+    PointerVisible(bool),
 }
 
 /// Receives what the capture puts out; returns false once nobody is listening any more.

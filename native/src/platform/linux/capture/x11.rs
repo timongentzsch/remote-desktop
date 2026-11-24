@@ -105,7 +105,8 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
             pointer = Some(now);
         }
         let due = captured + stream.frame_interval();
-        if stale && Instant::now() >= due {
+        let started = Instant::now();
+        if stale && started >= due {
             x.damage_subtract(damage, x11rb::NONE, x11rb::NONE)?;
             let copied =
                 x.shm_get_image(root, left, top, width, height, !0, ImageFormat::Z_PIXMAP.into(), segment, 0)?.reply();
@@ -121,9 +122,10 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
                 paint(pointer, (left, top), memory.bytes(), width as usize, height as usize);
             }
             stream.picture(memory.bytes(), width as usize * 4, width as usize, height as usize);
-            (stale, captured) = (false, Instant::now());
+            // Capture and encoding are part of this frame's interval.
+            (stale, captured) = (false, started);
         }
-        stream.refine();
+        stale |= stream.refine();
 
         let mut wait = stream.patience();
         if stale {

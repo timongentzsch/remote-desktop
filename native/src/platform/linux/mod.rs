@@ -13,13 +13,12 @@ mod hyprland;
 pub mod input;
 pub mod install;
 pub mod pointer;
-pub mod tcp;
 mod typing;
 pub mod virtual_screen;
 mod xserver;
 
 pub use super::unix::{fd, hostname, without_echo, write_private};
-pub use install::{data_directory, password_path};
+pub use install::data_directory;
 
 use crate::screen::Screen;
 

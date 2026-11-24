@@ -99,17 +99,18 @@ const FIRST_EFFORT: u32 = 1;
 /// `FULL_CHROMA_COST`th of the budget and fine as they are, after a `Rest`.
 const FULL_CHROMA_COST: u32 = 2;
 
-/// Where the client leaves the picture's size to the host, a link that holds the bitrate down while most new
+/// Where the client leaves the picture's size to the host, a settled bitrate cap at which most new
 /// frames come out poor (see encoder.h) makes the picture a step smaller (see `capture::HEIGHTS`): fewer pixels,
 /// each given more of the bits. Merely coarse frames at the screen's own size show text better than fine ones
-/// of a smaller picture. It grows a step again after a `Rest`, when most new frames are as fine as they should
-/// be, which leaves the larger picture well short of poor, or when a still picture has been refined and so has
-/// bits to spare.
+/// of a smaller picture. After a `Rest`, motion that encodes well can gain a step. A still picture
+/// that has finished refining can go straight back to native detail.
 ///
 /// The rest before something given up is tried again, which doubles each time it has to be given up anew up to
 /// the limit, so that a link it does not suit is not put through a keyframe again and again.
 const REST: Duration = Duration::from_secs(30);
 const REST_LIMIT: Duration = Duration::from_secs(600);
+/// How long a reduced desktop must stay still before restoring the screen's native text detail.
+const RESTORE_NATIVE_AFTER: Duration = Duration::from_secs(2);
 
 /// A rest before trying again what had to be given up (see `REST`).
 struct Rest {
@@ -133,8 +134,8 @@ impl Rest {
     }
 }
 
-/// The picture's height limit to go on with, of `screen_height`: a step smaller when the picture is `poor`
-/// for the link's holding the video back, a step larger when it is `fine` as it is and the rest is over.
+/// The next height for a moving picture. Step down when most frames are poor at a settled bitrate,
+/// and up after a rest when they are fine.
 fn next_height(height: Option<usize>, screen_height: usize, poor: bool, fine: bool, rested: bool) -> Option<usize> {
     let steps = HEIGHTS.into_iter().filter(|&step| step < screen_height);
     let now = height.unwrap_or(screen_height);
@@ -205,17 +206,16 @@ pub struct Stream {
     /// What shrinks the screen to the picture, and the shrunk copy, when the picture is smaller than the
     /// screen (see `Settings::height`).
     shrinker: Option<Shrinker>,
-    /// Set when the picture's size was changed while the encoder stays open for a still picture: the next
-    /// picture opens another.
-    resize: bool,
+    /// A change of size, colour or effort takes effect on the next source picture.
+    reopen: bool,
     scaled: Vec<u8>,
     encoder: Option<Encoder>,
     /// How much work the software encoder puts into a frame and the most it may (see `EFFORT_FRAMES`).
     effort: u32,
     most_effort: u32,
     weighed: Weighed,
-    /// When the last new frame was weighed (see `weigh_effort`).
-    last_weighed: Option<Instant>,
+    /// When capture supplied the last source picture. Refinement and recovery frames do not reset this clock.
+    last_picture: Option<Instant>,
     /// With colour detail left to the stream: when full colour may be tried again, and the rest after the
     /// next time it has to be given up.
     chroma_rest: Rest,
@@ -253,13 +253,13 @@ impl Stream {
             sink,
             screen: (0, 0),
             shrinker: None,
-            resize: false,
+            reopen: false,
             scaled: Vec::new(),
             encoder: None,
             effort: FIRST_EFFORT,
             most_effort: EFFORTS - 1,
             weighed: Weighed::default(),
-            last_weighed: None,
+            last_picture: None,
             chroma_rest: Rest::new(now),
             size_rest: Rest::new(now),
             full_chroma_unavailable: false,
@@ -287,6 +287,12 @@ impl Stream {
         Duration::from_secs(1) / self.settings.fps
     }
 
+    #[cfg(windows)]
+    pub fn same_display(&self, screen: &crate::screen::Screen) -> Result<bool, String> {
+        let current = self.shared.screens.refresh()?;
+        Ok(crate::screen::choose(&current, self.settings.screen.as_deref()) == Some(screen))
+    }
+
     /// How long the capture may wait for the screen to change before it calls `refine` and looks at `wanted`
     /// again: a still screen sends nothing, so not long, and no longer than until the next refinement is due.
     pub fn patience(&self) -> Duration {
@@ -302,7 +308,7 @@ impl Stream {
     /// green, red and a fourth byte that is ignored.
     pub fn picture(&mut self, pixels: &[u8], stride: usize, width: usize, height: usize) {
         let started = Instant::now();
-        if (self.encoder.is_none() || self.screen != (width, height) || self.resize)
+        if (self.encoder.is_none() || self.screen != (width, height) || self.reopen)
             && let Err(reason) = self.open(width, height)
         {
             self.ended = Some(Err(reason));
@@ -316,19 +322,14 @@ impl Stream {
         }
         let full_chroma = encoder.full_chroma;
         convert::bgrx_to_yuv(source, stride, encoder.width, encoder.height, encoder.planes(), full_chroma);
-        self.refine_anew();
-        if let Some((took, coarse, poor)) = self.encode(started, Frame::New)
-            && !self.shared.climbing.load(Ordering::Relaxed)
-        {
-            self.weigh_effort(took, coarse, poor);
-        }
+        self.encode_picture(started);
     }
 
     /// A buffer on the GPU for a screen of `width` x `height` to be copied into, where the encoder takes its
     /// pictures that way, and which encoder it belongs to (see `gpu_picture`). None where it does not: the
     /// capture then hands over pictures in memory (`picture`).
     pub fn gpu_buffer(&mut self, width: usize, height: usize) -> Option<(GpuBuffer, u64)> {
-        if (self.encoder.is_none() || self.screen != (width, height) || self.resize)
+        if (self.encoder.is_none() || self.screen != (width, height) || self.reopen)
             && let Err(reason) = self.open(width, height)
         {
             self.ended = Some(Err(reason));
@@ -343,23 +344,27 @@ impl Stream {
     /// then asks for a new buffer.
     pub fn gpu_picture(&mut self, opened: u64) -> bool {
         let started = Instant::now();
-        if opened != self.opened || self.resize || !self.encoder.as_mut().is_some_and(Encoder::take_gpu_picture) {
+        if opened != self.opened || self.reopen || !self.encoder.as_mut().is_some_and(Encoder::take_gpu_picture) {
             return false;
         }
+        self.encode_picture(started);
+        true
+    }
+
+    fn encode_picture(&mut self, started: Instant) {
+        let gap = self.last_picture.replace(started).map(|previous| started - previous);
         self.refine_anew();
         if let Some((took, coarse, poor)) = self.encode(started, Frame::New)
             && !self.shared.climbing.load(Ordering::Relaxed)
         {
-            self.weigh_effort(took, coarse, poor);
+            self.weigh_effort(gap, took, coarse, poor);
         }
-        true
     }
 
     /// Counts a new frame and, every `EFFORT_FRAMES` of them, reconsiders the colour detail where it is the
     /// stream's to choose, and else the software encoder's effort.
-    fn weigh_effort(&mut self, took: Duration, coarse: bool, poor: bool) {
+    fn weigh_effort(&mut self, gap: Option<Duration>, took: Duration, coarse: bool, poor: bool) {
         let now = Instant::now();
-        let gap = self.last_weighed.replace(now).map(|before| now.duration_since(before));
         let steady = Duration::from_secs(1) / STEADY_FPS;
         self.weighed.quick += gap.is_some_and(|gap| gap < steady * 3 / 4) as u32;
         self.weighed.steady += gap.is_some_and(|gap| gap >= steady * 3 / 4 && gap < steady * 5 / 4) as u32;
@@ -388,12 +393,12 @@ impl Stream {
                     self.chroma_rest.begin(now);
                 }
                 self.settings.full_chroma = wanted;
-                self.encoder = None; // the next picture opens another, which begins with a keyframe
+                self.reopen = true;
                 return;
             }
         }
         if self.settings.auto_size {
-            let poor = self.shared.held_back.load(Ordering::Relaxed) && weighed.poor * 2 > weighed.frames;
+            let poor = weighed.poor * 2 > weighed.frames; // measured after the bitrate settled
             let height = self.settings.height;
             let wanted = next_height(height, self.screen.1, poor, !mostly_coarse, self.size_rest.over(now));
             if wanted != height {
@@ -401,7 +406,7 @@ impl Stream {
                     self.size_rest.begin(now);
                 }
                 self.settings.height = wanted;
-                self.encoder = None;
+                self.reopen = true;
                 return;
             }
         }
@@ -410,7 +415,7 @@ impl Stream {
         }
         let (effort, most) = next_effort(self.effort, self.most_effort, average, budget, mostly_coarse);
         if effort != self.effort {
-            self.encoder = None; // the next picture opens another, which begins with a keyframe
+            self.reopen = true;
         }
         (self.effort, self.most_effort) = (effort, most);
     }
@@ -420,23 +425,47 @@ impl Stream {
         (self.refinements_left, self.still) = (REFINE_SECONDS * REFINE_FPS, Still::default());
     }
 
-    /// Encodes the latest picture once more if the screen has stood still long enough and the picture is not
-    /// yet as good as it should be, or if the client needs a frame to begin or go on with.
-    pub fn refine(&mut self) {
-        let waits = self.shared.fresh.load(Ordering::Relaxed) || self.shared.recover.load(Ordering::Relaxed);
-        if waits && self.encoder.is_some() {
-            // A client waits for a frame to begin or go on with: the latest picture again, refined from there.
+    /// Refines the current picture while idle. Returns true once if capture must supply native pixels
+    /// to apply new encoder settings and the desktop has stopped producing frames on its own.
+    pub fn refine(&mut self) -> bool {
+        if self.encoder.is_none() {
+            return false;
+        }
+        let idle = self.encoded.elapsed() >= REFINE_INTERVAL;
+        if idle
+            && self.settings.auto_size
+            && self.settings.height.is_some_and(|height| height < self.screen.1)
+            && self.still.level_frames >= Still::LEVEL_FRAMES
+            && self.last_picture.is_some_and(|source| source.elapsed() >= RESTORE_NATIVE_AFTER)
+        {
+            // A stationary desktop can spend the whole refinement budget on a single native image.
+            self.settings.height = None;
+            self.reopen = true;
+        }
+        if self.reopen && idle {
+            self.encoder = None;
+            self.refinements_left = 0;
+            return true;
+        }
+        if self.shared.fresh.load(Ordering::Relaxed) || self.shared.recover.load(Ordering::Relaxed) {
             self.refine_anew();
             self.encode(Instant::now(), Frame::New);
-        } else if self.refinements_left > 0 && self.encoded.elapsed() >= REFINE_INTERVAL {
+        } else if self.refinements_left > 0 && idle {
             self.refinements_left -= 1;
             self.encode(Instant::now(), Frame::Refined);
         }
+        false
     }
 
     /// Opens the encoder for a screen of this size and sends the stream's header and decoder configuration.
     fn open(&mut self, width: usize, height: usize) -> Result<(), String> {
-        (self.screen, self.resize) = ((width, height), false);
+        // Release the old hardware session before asking for a new one; some encoders admit just one.
+        self.encoder = None;
+        if self.screen != (width, height) {
+            self.screen = (width, height);
+            self.put_out(Output::ScreenSize(width, height));
+        }
+        self.reopen = false;
         let (width, height) = match self.settings.height {
             Some(most) if height > most => (width * most / height, most),
             _ => (width, height),
@@ -467,7 +496,7 @@ impl Stream {
         let colour = if encoder.full_chroma { "4:4:4" } else { "4:2:0" };
         warn!("encoding {width}x{height} {colour} {how}");
         if !self.wrote_header {
-            self.send(flv::HEADER);
+            self.put_out(Output::Video(flv::HEADER.to_vec(), None));
             self.wrote_header = true;
         }
         let configuration = encoder.configuration();
@@ -529,13 +558,6 @@ impl Stream {
         }
         if self.still.finished(unit.len(), Still::share(self.rate.0), held_back) {
             self.refinements_left = 0;
-            // A still picture that is as sharp as it gets has bits to spare for a larger one, which the next
-            // picture then is: the encoder stays open meanwhile, for a client that needs a frame to begin with.
-            let rested = self.size_rest.over(Instant::now());
-            let larger = next_height(self.settings.height, self.screen.1, false, true, rested);
-            if self.settings.auto_size && larger != self.settings.height {
-                (self.settings.height, self.resize) = (larger, true);
-            }
         }
         self.encoded = Instant::now();
         let after = if recovered { confirmed } else { None };
@@ -546,7 +568,7 @@ impl Stream {
     /// Sends one video tag, timed from the stream's start, and the frame it carries, if it carries one.
     fn send_tag(&mut self, packet: Packet, payload: &[u8], frame: Option<capture::Frame>) {
         let tag = flv::tag(packet, self.codec, self.started.elapsed().as_millis() as u32, payload);
-        self.put_out(Output::Video(&tag, frame));
+        self.put_out(Output::Video(tag, frame));
     }
 
     /// Passes the pointer's shape on, unless it is the one passed on last.
@@ -557,8 +579,9 @@ impl Stream {
         }
     }
 
-    fn send(&mut self, bytes: &[u8]) {
-        self.put_out(Output::Video(bytes, None));
+    #[cfg(windows)]
+    pub fn pointer_visible(&mut self, visible: bool) {
+        self.put_out(Output::PointerVisible(visible));
     }
 
     fn put_out(&mut self, output: Output) {
@@ -622,6 +645,65 @@ mod tests {
         assert!(!next_chroma(false, quick, budget, false, false), "not before the rest is over");
         assert!(!next_chroma(false, middling, budget, false, true), "twice the work would not fit");
         assert!(!next_chroma(false, quick, budget, true, true), "coarse frames want the bits elsewhere");
+    }
+
+    #[test]
+    fn fixed_cap_shrinks_poor_motion_and_restores_native_idle_detail_once() {
+        let settings = Settings {
+            kbps: 2000,
+            fps: 60,
+            cursor: false,
+            full_chroma: false,
+            auto_chroma: false,
+            height: None,
+            auto_size: true,
+            screen: None,
+            hevc: false,
+        };
+        let (sizes, observed) = std::sync::mpsc::channel();
+        let mut stream = Stream::new(
+            settings,
+            Arc::new(Shared::default()),
+            Box::new(move |output| {
+                if let Output::ScreenSize(width, height) = output {
+                    sizes.send((width, height)).unwrap();
+                }
+                true
+            }),
+        );
+        let (width, height) = (128, 720);
+        let pixels = vec![90; width * height * 4];
+        let picture = |stream: &mut Stream| stream.picture(&pixels, width * 4, width, height);
+        picture(&mut stream);
+        stream.weighed = Weighed::default();
+        for _ in 0..EFFORT_FRAMES {
+            stream.weigh_effort(Some(stream.frame_interval()), Duration::from_millis(1), true, true);
+        }
+        assert_eq!(stream.settings.height, Some(540), "poor frames at the user's cap");
+        picture(&mut stream);
+        assert_eq!(stream.encoder.as_ref().unwrap().height, 540);
+
+        // Quiet alone is not enough while the encoder is still adding detail.
+        stream.last_picture = Some(Instant::now() - RESTORE_NATIVE_AFTER);
+        stream.encoded = Instant::now() - REFINE_INTERVAL;
+        assert!(!stream.refine());
+        picture(&mut stream);
+        // Let the ordinary still-picture encoder settle without waiting for the motion cooldown.
+        while stream.refinements_left > 0 {
+            stream.encoded = Instant::now() - REFINE_INTERVAL;
+            assert!(!stream.refine());
+        }
+        assert!(stream.still.level_frames >= Still::LEVEL_FRAMES);
+        stream.encoded = Instant::now() - REFINE_INTERVAL;
+        assert!(!stream.refine(), "a short pause keeps the current size");
+        stream.last_picture = Some(Instant::now() - RESTORE_NATIVE_AFTER);
+        assert!(!stream.size_rest.over(Instant::now()));
+        assert!(stream.refine(), "ask capture for native pixels without any desktop changes");
+        assert!(!stream.refine(), "only one request until capture supplies those pixels");
+        picture(&mut stream);
+        assert_eq!(stream.encoder.as_ref().unwrap().height, height);
+        assert_eq!(stream.opened, 3, "one encoder per resolution");
+        assert_eq!(observed.try_iter().collect::<Vec<_>>(), [(width, height)], "the pointer keeps its native scale");
     }
 
     #[test]

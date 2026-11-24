@@ -28,8 +28,12 @@ pub struct VirtualScreen {
 }
 
 impl VirtualScreen {
+    pub fn name(&self) -> &str {
+        NAME
+    }
+
     /// Makes the screen for `window` at `fps` frames a second and switches the machine's own screens off.
-    pub fn create(window: Window, fps: u32) -> Result<Self, String> {
+    pub fn create(window: Window, fps: u32, _screen: Option<&str>) -> Result<Self, String> {
         if !hyprland::running() {
             return Err("this desktop cannot make a screen of the client's size".into());
         }

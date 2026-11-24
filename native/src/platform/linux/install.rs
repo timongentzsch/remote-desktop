@@ -7,7 +7,9 @@ use std::process::Command;
 
 use crate::install::{run, run_quietly, write};
 use crate::platform::linux::firewall;
-use crate::{NAME, fail};
+use crate::{NAME, PORT, fail};
+
+pub use firewall::check_port;
 
 pub const BINARY: &str = "/usr/local/bin/remote-desktop";
 /// The user service that runs the host in the desktop session, and the system service at the login screen.
@@ -99,10 +101,6 @@ pub fn data_directory() -> PathBuf {
     config_directory().join(NAME)
 }
 
-pub fn password_path() -> PathBuf {
-    data_directory().join("password")
-}
-
 /// Whether systemd runs the user's services. Where it does not, the desktop's autostart starts the host.
 fn has_systemd() -> bool {
     Command::new("systemctl").args(["--user", "show-environment"]).output().is_ok_and(|output| output.status.success())
@@ -130,7 +128,16 @@ fn stop_host() {
 /// service of the user's systemd, or without one now and through the desktop's autostart at each login.
 pub fn start(tailnet_only: bool) {
     let this = std::env::current_exe().unwrap_or_else(|error| fail(&format!("cannot locate this program: {error}")));
-    run("sudo", &["install", "-Dm755", &this.to_string_lossy(), BINARY]);
+    if this != std::path::Path::new(BINARY) {
+        run("sudo", &["install", "-Dm755", &this.to_string_lossy(), BINARY]);
+    }
+    let unprivileged = fs::read_to_string("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+        .ok()
+        .and_then(|port| port.trim().parse::<u16>().ok())
+        .unwrap_or(1024);
+    if PORT < unprivileged {
+        run("sudo", &["setcap", "cap_net_bind_service=ep", BINARY]);
+    }
     let rule = format!("printf '%s\\n' '{UDEV_RULE}' > {UDEV_RULE_PATH}");
     run(
         "sudo",
@@ -190,7 +197,7 @@ pub fn stop() {
 /// Who the host answers follows where the certificate comes from, and the firewall with it.
 pub fn follow_certificate(tailnet_only: bool) {
     if std::path::Path::new(BINARY).exists() {
-        firewall::open(tailnet_only);
+        firewall::follow_certificate(tailnet_only);
     }
 }
 

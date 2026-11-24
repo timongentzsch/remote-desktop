@@ -8,10 +8,15 @@ use std::path::PathBuf;
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput};
+use windows::Win32::Graphics::Gdi::{
+    DEVMODEW, DM_PELSHEIGHT, DM_PELSWIDTH, DM_POSITION, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE,
+    EnumDisplaySettingsExW,
+};
 use windows::Win32::System::Console::{
     CONSOLE_MODE, ENABLE_ECHO_INPUT, FreeConsole, GetConsoleMode, GetConsoleProcessList, GetStdHandle,
     STD_ERROR_HANDLE, STD_INPUT_HANDLE, SetConsoleMode, SetStdHandle,
 };
+use windows::core::PCWSTR;
 
 use crate::screen::Screen;
 
@@ -21,6 +26,7 @@ pub mod clipboard;
 pub mod fd;
 pub mod input;
 pub mod install;
+pub mod virtual_screen;
 
 const NOT_YET: &str = "this part of the host is not built for Windows yet";
 
@@ -28,10 +34,6 @@ const NOT_YET: &str = "this part of the host is not built for Windows yet";
 /// (and the system's administrators) can read.
 pub fn data_directory() -> PathBuf {
     std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default().join(crate::NAME)
-}
-
-pub fn password_path() -> PathBuf {
-    data_directory().join("password")
 }
 
 /// Writes a file in the user's own directory, whose access it inherits, creating the directory.
@@ -87,19 +89,36 @@ fn outputs() -> windows::core::Result<Vec<(Screen, IDXGIAdapter1, IDXGIOutput)>>
                 continue;
             }
             let name = String::from_utf16_lossy(&description.DeviceName);
-            let bounds = description.DesktopCoordinates;
+            // DXGI can virtualize DesktopCoordinates at high DPI. The current display mode always
+            // reports physical pixels, including each monitor's offset in the virtual desktop.
+            let device = PCWSTR(description.DeviceName.as_ptr());
+            let (x, y, width, height) = if let Some(mode) = display_mode(device, ENUM_CURRENT_SETTINGS)
+                .filter(|m| m.dmFields.contains(DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT))
+            {
+                let origin = unsafe { mode.Anonymous1.Anonymous2.dmPosition };
+                (origin.x, origin.y, mode.dmPelsWidth as i32, mode.dmPelsHeight as i32)
+            } else {
+                // A driver without display-mode metadata can still provide a usable DXGI output.
+                let rect = description.DesktopCoordinates;
+                (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+            };
             let screen = Screen {
                 // \\.\DISPLAY1 is called DISPLAY1.
                 name: name.trim_end_matches('\0').trim_start_matches(r"\\.\").to_owned(),
-                x: bounds.left,
-                y: bounds.top,
-                width: bounds.right - bounds.left,
-                height: bounds.bottom - bounds.top,
+                x,
+                y,
+                width,
+                height,
             };
             outputs.push((screen, adapter.clone(), output));
         }
     }
     Ok(outputs)
+}
+
+fn display_mode(device: PCWSTR, index: ENUM_DISPLAY_SETTINGS_MODE) -> Option<DEVMODEW> {
+    let mut mode = DEVMODEW { dmSize: size_of::<DEVMODEW>() as u16, ..Default::default() };
+    unsafe { EnumDisplaySettingsExW(device, index, &mut mode, Default::default()) }.as_bool().then_some(mode)
 }
 
 /// The displays, named as Windows names them, where they lie on the desktop in pixels.
@@ -108,67 +127,9 @@ pub fn screens() -> Result<Vec<Screen>, String> {
     Ok(outputs.into_iter().map(|(screen, ..)| screen).collect())
 }
 
-/// Nothing is left changed in the desktop by a host here.
-pub fn restore_leftovers() {}
-
-pub mod displays {
-    /// A sleeping display wakes for the capture by itself.
-    pub fn wake_displays(_input: &super::input::Input) {}
-}
-
-pub mod pointer {
-    /// The capture leaves the pointer out as asked: nothing is hidden.
-    pub struct HiddenPointer(());
-
-    pub fn hide() -> Option<HiddenPointer> {
-        None
-    }
-}
-
-pub mod virtual_screen {
-    use crate::screen::Window;
-
-    pub const NAME: &str = crate::NAME;
-
-    /// Windows makes no screen without a display driver of its own.
-    pub struct VirtualScreen(());
-
-    impl VirtualScreen {
-        pub fn create(_window: Window, _fps: u32) -> Result<Self, String> {
-            Err("Windows cannot make a screen of the client's size".into())
-        }
-
-        pub fn resize(&self, _window: Window) -> Result<(), String> {
-            Ok(())
-        }
-    }
-}
-
 pub mod greeter {
     /// Showing the login screen needs a service of the system's, which is not built yet.
     pub fn run(_address: &str) -> ! {
         crate::fail(super::NOT_YET)
     }
-}
-
-pub mod tcp {
-    use std::net::TcpStream;
-    use std::time::Duration;
-
-    use crate::tls::Control;
-
-    /// Windows has no limit on what the kernel holds unsent for a connection.
-    pub fn limit_unsent(_socket: &TcpStream, _bytes: i32) {}
-
-    pub struct Path {
-        pub round_trip: Duration,
-        pub retransmitted: u32,
-    }
-
-    /// Not read yet: the connection keeps the congestion control it has.
-    pub fn path(_socket: &TcpStream) -> Option<Path> {
-        None
-    }
-
-    pub fn set_control(_socket: &TcpStream, _control: Control) {}
 }

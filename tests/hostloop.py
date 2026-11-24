@@ -1,56 +1,26 @@
 """Times the host's own part of the loop, on the host: from sending a pointer move to the arrival of the next
 piece of video, with the host painting the pointer. No network to speak of and no decoding are in it.
 Arguments: port, how many moves."""
-import base64, json, os, socket, ssl, struct, sys, time
+import json, sys, time
+
+from websocket_client import WebSocket, test_tls
 
 port, moves = int(sys.argv[1]), int(sys.argv[2])
 
-
-def frame(payload):
-    mask = os.urandom(4)
-    return bytes([0x81, 0x80 | len(payload)]) + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-
-
-context = ssl.create_default_context()
-context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
-s = context.wrap_socket(socket.create_connection(("127.0.0.1", port)), server_hostname="localhost")
-s.sendall(b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-          b"Sec-WebSocket-Key: " + base64.b64encode(os.urandom(16)) + b"\r\nSec-WebSocket-Version: 13\r\n\r\n")
-buf = bytearray()
-while b"\r\n\r\n" not in buf:
-    buf += s.recv(4096)
-del buf[:buf.index(b"\r\n\r\n") + 4]
-s.sendall(frame(json.dumps({"password": "", "cursor": "yes", "sound": "off"}).encode()))
+ws = WebSocket("127.0.0.1", port, test_tls(), "localhost")
+ws.send(json.dumps({"password": "", "cursor": "yes", "sound": "off"}))
 
 
 def video_until(deadline):
-    """The arrival time of the next video message, or None once `deadline` has passed. Other messages are skipped."""
-    global buf
-    while True:
-        at = 0
-        while len(buf) - at >= 2:
-            n, off = buf[at + 1] & 127, 2
-            if n == 126:
-                if len(buf) - at < 4: break
-                n, off = struct.unpack_from(">H", buf, at + 2)[0], 4
-            elif n == 127:
-                if len(buf) - at < 10: break
-                n, off = struct.unpack_from(">Q", buf, at + 2)[0], 10
-            if len(buf) - at < off + n: break
-            binary, kind = buf[at] & 15 == 2, buf[at + off]
-            at += off + n
-            if binary and kind not in (0, 7, 8):
-                del buf[:at]
-                return time.time()
-        del buf[:at]
-        left = deadline - time.time()
-        if left <= 0:
-            return None
-        s.settimeout(left)
-        try:
-            buf += s.recv(1 << 20)
-        except (socket.timeout, ssl.SSLWantReadError):
-            return None
+    """The arrival time of the next piece of video; skip sound, padding and pointer shapes."""
+    while (left := deadline - time.time()) > 0:
+        opcode, data = ws.receive(left)
+        if opcode is None:
+            break
+        if opcode == 8:
+            raise SystemExit("the host closed the connection")
+        if opcode == 2 and data and data[0] not in (0, 7, 8):
+            return time.time()
 
 
 while video_until(time.time() + 3.0):  # until the screen has been still for three seconds, refinement included
@@ -60,7 +30,7 @@ for turn in range(moves):
     while video_until(time.time() + 0.05):  # nothing else under way
         pass
     began = time.time()
-    s.sendall(frame(json.dumps(["move", *places[turn % 2]]).encode()))
+    ws.send(json.dumps(["move", *places[turn % 2]]))
     arrived = video_until(began + 1.0)
     delays.append(None if arrived is None else (arrived - began) * 1000)
     time.sleep(0.4)

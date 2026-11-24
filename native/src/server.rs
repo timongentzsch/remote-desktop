@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::{self, ErrorKind, Read};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener, TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use rustls::ServerConfig;
 
 use crate::platform::{self, Input};
+use crate::screen::Layout;
 use crate::tls::Connection;
 use crate::{certificate, fail, quic, session, ws};
 
@@ -42,6 +43,8 @@ const TAILNET_V6: (Ipv6Addr, u32) = (Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0,
 /// What all connections share.
 pub struct Host {
     pub input: Input,
+    /// Current screen layout shared by all viewers for absolute pointer input.
+    pub screens: Arc<Layout>,
     /// Empty when the owner chose to allow access without a password.
     pub password: Vec<u8>,
     /// With a certificate from Tailscale, only devices on the tailnet are answered (see `on_tailnet`).
@@ -62,7 +65,14 @@ impl Host {
         let input = Input::open().unwrap_or_else(|error| fail(&format!("cannot control the desktop: {error}")));
         let tls = certificate::configuration().unwrap_or_else(|error| fail(&error));
         let tailnet_only = certificate::tailscale_name().is_some();
-        Arc::new(Self { input, password, tailnet_only, tls: Mutex::new(tls), udp: OnceLock::new() })
+        Arc::new(Self {
+            input,
+            screens: Arc::default(),
+            password,
+            tailnet_only,
+            tls: Mutex::new(tls),
+            udp: OnceLock::new(),
+        })
     }
 }
 
@@ -101,24 +111,28 @@ pub fn on_tailnet(address: IpAddr) -> bool {
     }
 }
 
-/// Takes the port, waiting a while if another host still has it.
-pub fn listen(address: &str) -> TcpListener {
+/// Bind both transports before the login-screen service drops privileges. UDP is optional.
+pub fn listen(address: &str) -> (TcpListener, io::Result<UdpSocket>) {
     let began = Instant::now();
     loop {
         match TcpListener::bind(address) {
-            Ok(listener) => return listener,
+            Ok(listener) => {
+                let udp = listener.local_addr().and_then(UdpSocket::bind);
+                return (listener, udp);
+            }
             Err(error) if error.kind() == ErrorKind::AddrInUse && began.elapsed() < PORT_PATIENCE => {
                 thread::sleep(PORT_RETRY)
             }
-            Err(error) => fail(&format!("cannot listen on {address}: {error}")),
+            Err(error) => {
+                fail(&format!("cannot listen on {address}: {error}. Use --listen ADDRESS to select another port."))
+            }
         }
     }
 }
 
-/// Answers every connection, each on a thread of its own. First it takes the UDP port of the listener's number
-/// for the host's UDP side; without that one, video stays on TCP.
-pub fn serve(listener: TcpListener, host: Arc<Host>) -> ! {
-    match listener.local_addr().and_then(|address| quic::Endpoint::open(&address.to_string(), host.tailnet_only)) {
+/// Answers TCP connections and starts the UDP endpoint when its port was available.
+pub fn serve((listener, udp): (TcpListener, io::Result<UdpSocket>), host: Arc<Host>) -> ! {
+    match udp.and_then(|socket| quic::Endpoint::open(socket, host.tailnet_only)) {
         Ok(udp) => drop(host.udp.set(udp)),
         Err(error) => warn!("no UDP side, video stays on TCP: {error}"),
     }
@@ -198,6 +212,12 @@ fn empty_response(status: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::on_tailnet;
+
+    #[test]
+    fn udp_follows_the_bound_tcp_address() {
+        let (tcp, udp) = super::listen("127.0.0.1:0");
+        assert_eq!(tcp.local_addr().unwrap(), udp.unwrap().local_addr().unwrap());
+    }
 
     #[test]
     fn tailnet_addresses() {

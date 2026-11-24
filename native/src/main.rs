@@ -7,7 +7,7 @@
 //!     remote-desktop uninstall                  remove what install set up
 //!     remote-desktop password [--none]          set the login password, or allow access without one
 //!     remote-desktop certificate [--tailscale]  make a new certificate, or switch where it comes from
-//!     remote-desktop [--listen ADDRESS]         run the host (default 0.0.0.0:8765)
+//!     remote-desktop [--listen ADDRESS]         run the host (default 0.0.0.0:443)
 //!     remote-desktop login-screen [ADDRESS]     as root: run the host at the login screen whenever there is one
 
 // macOS tells the client no pointer shapes yet, and Windows makes no screen of the client's size, which leaves
@@ -41,7 +41,7 @@ mod ws;
 /// The program's name: that of its binary, its services and the directory its settings are kept in.
 const NAME: &str = "remote-desktop";
 /// The host's port, for TCP and for UDP.
-const PORT: u16 = 8765;
+const PORT: u16 = 443;
 const USAGE: &str = "usage: remote-desktop [install [--tailscale] [--no-password] | uninstall | password [--none] | \
                      certificate [--tailscale] | --listen ADDRESS]";
 

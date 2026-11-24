@@ -11,11 +11,11 @@ screens="^screens\|picture\|asked\|no screen\|pointer\|first frame"
 
 echo "== checks"
 docker run --rm $gpu -v "$PWD/..":/src -v rd-test-target:/src/native/target -v rd-test-cargo:/usr/local/cargo/registry \
-  -w /src/native rd-test-build sh -c '
-    cargo fmt --check >/dev/null 2>&1 && echo formatted || echo "NOT FORMATTED"
-    cargo clippy --release --all-targets -- --deny warnings >/dev/null 2>&1 && echo "clippy clean" || echo "CLIPPY FINDINGS"
-    cargo test --release 2>&1 | grep "test result\|panicked"
-    cargo build --release 2>&1 | grep -E "^(warning|error)" -A8
+  -w /src/native rd-test-build sh -ec '
+    cargo fmt --check
+    cargo clippy --release --all-targets -- --deny warnings
+    cargo test --release --quiet
+    cargo build --release --quiet
     install -o '"$(id -u) -g $(id -g)"' target/release/remote-desktop /src/tests/remote-desktop' || exit 1
 
 echo "== sway: bursts";                 run rd-test-sway ./burst-test.sh 3000 10 "" | grep "$keep"
@@ -30,7 +30,7 @@ echo "== older sway: motion";           run rd-test-oldsway ./motion-test.sh 300
 echo "== older sway: bursts";           run rd-test-oldsway ./burst-test.sh 3000 8 '"cursor":"yes",' | grep "$keep"
 echo "== older sway: clipboard";        run rd-test-oldsway ./clipboard-test.sh sway | grep "$keep"
 echo "== older sway: two screens";      run rd-test-oldsway ./screens-test.sh sway | grep "$screens"
-echo "== install without systemd";      run rd-test-oldsway ./install-test.sh | grep "^installed\|^running\|^page\|^after"
+echo "== install without systemd";      run rd-test-oldsway ./install-test.sh || exit 1
 echo "== GNOME: motion";                run rd-test-gnome ./gnome-test.sh 8 "" motion | grep "$keep"
 echo "== GNOME: clipboard";             run rd-test-gnome ./gnome-clipboard.sh | grep "$keep"
 echo "== GNOME: two screens";           run rd-test-gnome ./screens-test.sh mutter | grep "$screens"

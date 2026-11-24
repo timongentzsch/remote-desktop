@@ -2,6 +2,7 @@
 //! to be at a place on it.
 
 use crate::platform;
+use std::sync::{Mutex, MutexGuard};
 
 /// One screen and where it lies among the others, in the desktop's own units.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +54,23 @@ pub const POINTER_RANGE: i32 = 65535;
 /// The desktop's screens. None where the desktop does not say, which is treated as having the one.
 pub fn list() -> Vec<Screen> {
     platform::screens().unwrap_or_default()
+}
+
+#[derive(Default)]
+pub struct Layout {
+    pub current: Mutex<Vec<Screen>>,
+    refresh: Mutex<()>,
+}
+
+impl Layout {
+    /// Serialize probes across viewers. Pointer input can use the previous snapshot while the OS enumerates.
+    pub fn refresh(&self) -> Result<MutexGuard<'_, Vec<Screen>>, String> {
+        let _probe = self.refresh.lock().unwrap();
+        let screens = platform::screens()?;
+        let mut current = self.current.lock().unwrap();
+        *current = screens;
+        Ok(current)
+    }
 }
 
 /// The screen called `wanted`, or the first where none is wanted or none is called that.

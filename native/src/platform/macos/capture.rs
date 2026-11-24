@@ -2,12 +2,9 @@
 //! chosen display, and none while the screen is still. A display that changes size is captured anew.
 
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
 
 use super::virtual_screen::{self, DISPLAY};
-use crate::capture::{Settings, Shared, Sink};
 use crate::stream::Stream;
 
 const ERROR_SIZE: usize = 256;
@@ -47,27 +44,9 @@ fn pixels(display: u32) -> (usize, usize) {
     (width, height)
 }
 
-/// How long the displays may refuse to be captured: as one just made does at first, and while a virtual display
-/// goes and the Mac's own come back (see virtual_screen.rs).
-const REFUSING: Duration = Duration::from_secs(8);
-
-/// Captures the chosen screen until the stream is no longer wanted.
-pub fn run(settings: Settings, shared: Arc<Shared>, sink: Sink) -> Result<(), String> {
-    let mut stream = Stream::new(settings, shared, sink);
-    let mut refused = None;
-    while stream.wanted() {
-        match capture(&mut stream) {
-            Ok(()) => refused = None,
-            Err(error) if refused.get_or_insert_with(Instant::now).elapsed() > REFUSING => return Err(error),
-            Err(_) => std::thread::sleep(stream.frame_interval()),
-        }
-    }
-    stream.ended.take().unwrap_or(Ok(()))
-}
-
 /// Captures the chosen display at its size, until another is chosen, its size changes, or the stream is no longer
 /// wanted.
-fn capture(stream: &mut Stream) -> Result<(), String> {
+pub fn run(stream: &mut Stream) -> Result<(), String> {
     let display = super::display(stream.settings.screen.as_deref())?;
     let size = pixels(display);
     // A display being made has no number or no size yet.
@@ -102,7 +81,9 @@ fn capture(stream: &mut Stream) -> Result<(), String> {
                 break;
             }
         }
-        stream.refine();
+        if stream.refine() {
+            break; // a new ScreenCaptureKit stream delivers the current desktop even when it is still
+        }
     }
     unsafe { capture_stop(capture) };
     ended
