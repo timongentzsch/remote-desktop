@@ -145,7 +145,11 @@
   .pad { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); height: calc((100% - var(--below, 0px)) * .42); box-sizing: border-box; padding: var(--inset); align-items: flex-start; gap: 8px; border-top: 1px solid var(--text); background: rgb(255 255 255 / .25); }
   .keys .pad { bottom: calc(var(--below, 0px) + var(--key) + 1px); }
   .pad button { height: var(--control); min-width: var(--control); padding: 0 var(--inset); display: flex; align-items: center; justify-content: center; border: 1px solid var(--text); background: var(--ground); }
-  .pad button[aria-pressed="true"] { background: var(--text); color: var(--ground); }
+  /* A mouse's two buttons along the trackpad's bottom edge, each half its width. */
+  .buttons { position: absolute; left: 0; right: 0; bottom: 0; display: flex; border-top: 1px solid var(--text); }
+  .pad .buttons button { flex: 1 1 0; height: var(--field); border: 0; background: none; }
+  .pad .buttons button + button { border-left: 1px solid var(--text); }
+  .pad button[aria-pressed="true"], .pad .buttons button.down { background: var(--text); color: var(--ground); }
   .touch .overlay { bottom: calc(var(--below, 0px) + var(--pad, 0px) - var(--control) - var(--inset)); padding: 0 var(--inset); align-items: flex-end; }
   .touch .panel { max-height: calc(100vh - var(--below, 0px) - var(--pad, 0px) - var(--edge)); overflow-y: auto; }
   .touch.connected:not(.remote-cursor) .point { display: block; }
@@ -168,6 +172,10 @@
     <svg aria-hidden="true" width="18" height="12" viewBox="0 0 18 12" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="17" height="11"/><path d="M3 3.500h2M6.500 3.500h2M10 3.500h2M13.500 3.500H15M3 6h1.500M6 6h2M9.500 6h2M13 6h2M5 8.500h8"/></svg>
   </button>
   <button type="button" id="fit" hidden>Fit</button>
+  <div class="buttons">
+    <button type="button" data-button="0">Left</button>
+    <button type="button" data-button="2">Right</button>
+  </div>
 </div>
 <div class="keybar" id="keybar">
   <button type="button" value="1">Esc</button>
@@ -1104,28 +1112,19 @@ canvas.addEventListener('wheel', event => {
 // On a phone the window has two parts, and a gesture belongs to the part its first finger lands on.
 // The picture is for looking: two fingers on it, moved apart or together, zoom it, here only. Nothing done on
 // it reaches the host.
-// The trackpad is the host's, and works as a laptop's does. One finger moves the pointer, and so the picture
-// under it; a tap is a click, and a drag begun right after a tap holds the button. Two fingers that land
-// together scroll, tapped they click the right button, and moved apart or together they pinch; three tapped
-// click the middle button. A second finger that joins one already resting there is the hand that holds a
-// laptop's button down with one finger and moves with another: the button is held while both are down.
+// The trackpad is the host's. One finger moves the pointer, and so the picture under it, and a tap is a click.
+// Two fingers scroll, and moved apart or together they pinch. Along its bottom edge are a mouse's two buttons,
+// each down for as long as a finger is on it: with one held, another finger drags.
 // The browser has no part in any of it: its own zooming, panning and marking of text are off while connected
 // (see `.touch.connected` in the styles), so every finger arrives here.
 const TAP = 250, SLOP = 8;       // ms a tap lasts at most, and the pixels a finger may stray in it
-const TOGETHER = 200;            // ms within which two fingers land as a pair
 const SPEED = 1.6, MOST_ZOOM = 16, PINCH = .12, SCROLL = 5;
 const PINCH_SCROLL = 1000;       // wheel units (120 a notch) for fingers parting e-fold: 6 notches for twice as far
 const pad = $('pad'), fingers = new Map();
-let touch = null, lastTap = 0;   // the gesture under way, from the first finger down to the last up
+let touch = null;                // the gesture under way, from the first finger down to the last up
 const apart = () => {
   const [a, b] = [...fingers.values()];
   return { distance: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-};
-const click = button => { key(button, true); key(button, false); };
-// The gesture is over: a button it held is let go.
-const endTouch = () => {
-  if (touch?.held) key(BUTTONS[0], false);
-  touch = null;
 };
 function fingerDown(event) {
   if (!connected() || event.target.closest('button, .panel, .keybar')) return;  // the page's own controls
@@ -1135,26 +1134,19 @@ function fingerDown(event) {
   // gesture of its own, is dropped.
   if (event.isPrimary) {
     fingers.clear();
-    endTouch();
+    touch = null;
   }
   fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-  if (fingers.size === 1) {
-    const onPad = pad.contains(event.target);
-    touch = { onPad, since: event.timeStamp, strayed: 0, most: 1, holds: onPad && event.timeStamp - lastTap < TAP * 1.5, held: false };
-  } else if (touch) {
-    const joins = touch.onPad && fingers.size === 2 && event.timeStamp - touch.since > TOGETHER;
-    Object.assign(touch, { most: fingers.size, two: apart(), does: joins ? 'drag' : null });
-    if (joins && !touch.held) key(BUTTONS[0], touch.held = true);
-  }
+  if (fingers.size === 1) touch = { onPad: pad.contains(event.target), since: event.timeStamp, strayed: 0, most: 1 };
+  else if (touch) Object.assign(touch, { most: fingers.size, two: apart(), does: null });
 }
 function fingerMove(event) {
   const was = fingers.get(event.pointerId), now = { x: event.clientX, y: event.clientY };
   if (!was || !touch) return;
   fingers.set(event.pointerId, now);
-  if (touch.onPad && (touch.most === 1 || touch.does === 'drag')) {
+  if (touch.onPad && touch.most === 1) {
     touch.strayed += Math.hypot(now.x - was.x, now.y - was.y);
     if (touch.strayed < SLOP) return;
-    if (touch.holds && !touch.held) key(BUTTONS[0], touch.held = true);
     const step = SPEED / (canvas.getBoundingClientRect().width / canvas.width);
     at = {
       x: Math.min(Math.max(at.x + (now.x - was.x) * step, 0), canvas.width - 1),
@@ -1184,22 +1176,15 @@ function fingerMove(event) {
 function fingerUp(event) {
   if (!fingers.delete(event.pointerId) || !touch) return;
   if (fingers.size === 2) touch.two = apart();  // the two that remain of more begin anew
-  if (touch.does === 'drag' && fingers.size < 2) {
-    // The button is let go, and the finger that stays moves the pointer on without clicking.
-    key(BUTTONS[0], false);
-    Object.assign(touch, { does: null, most: 1, held: false, holds: false, strayed: SLOP });
-  }
   if (fingers.size) return;
-  const short = event.type === 'pointerup' && event.timeStamp - touch.since < TAP * touch.most;
-  if (touch.onPad && !touch.held && short) {
-    if (touch.most === 3) click(BUTTONS[1]);
-    else if (touch.most === 2 && !touch.does) click(BUTTONS[2]);
-    else if (touch.most === 1 && touch.strayed < SLOP) {
-      click(BUTTONS[0]);
-      lastTap = event.timeStamp;
-    }
+  // A tap: one finger, down and up at once in one place. With the button held already it changes nothing.
+  const tapped = touch.onPad && touch.most === 1 && touch.strayed < SLOP
+    && event.type === 'pointerup' && event.timeStamp - touch.since < TAP;
+  if (tapped && !held.has(BUTTONS[0])) {
+    key(BUTTONS[0], true);
+    key(BUTTONS[0], false);
   }
-  endTouch();
+  touch = null;
 }
 if (TOUCH) {
   // A finger's events go to what it first touched, and from there up to the window.
@@ -1209,6 +1194,28 @@ if (TOUCH) {
   addEventListener('pointercancel', fingerUp);
   // Safari zooms the page at a pinch whatever a page's styles say, unless its own event for one is refused.
   addEventListener('gesturestart', event => connected() && event.preventDefault());
+}
+// The trackpad's buttons. Each is one finger's at a time, and a first finger takes it over from one whose end
+// never came.
+for (const button of pad.querySelectorAll('[data-button]')) {
+  const code = BUTTONS[button.dataset.button];
+  let finger = null;
+  const press = down => {
+    button.classList.toggle('down', down);
+    if (held.has(code) !== down) key(code, down);
+  };
+  button.onpointerdown = event => {
+    event.preventDefault();  // the phone's keyboard stays up
+    if (finger !== null && !event.isPrimary) return;
+    finger = event.pointerId;
+    button.setPointerCapture(finger);
+    press(true);
+  };
+  button.onpointerup = button.onpointercancel = event => {
+    if (event.pointerId !== finger) return;
+    finger = null;
+    press(false);
+  };
 }
 pad.oncontextmenu = event => event.preventDefault();
 $('fit').onclick = () => {

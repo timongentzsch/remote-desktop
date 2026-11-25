@@ -39,30 +39,44 @@ await withPage(process.argv[2], async ({ command, evaluate }) => {
   r = await gesture(pinch(padY, 62, 30)); say('trackpad, pinch in: scrolls down', r, r.scrolled[1] < -300);
   r = await gesture(drag2(padY, 60)); say('trackpad, two fingers dragged: scrolls, no Ctrl', r, r.scrolled[1] !== 0 && !r.keys.length && r.zoom === zoomed);
   r = await gesture(drag1(padY, 100)); say('trackpad, one finger dragged: moves the pointer', r, r.kinds.join() === 'move');
-  r = await gesture([[[150, padY]]]); say('trackpad, tap: a click', r, r.keys.join() === '272:1,272:0' || r.keys.length === 2);
-  r = await gesture([[[150, padY], [240, padY]]]); say('trackpad, two-finger tap: the right button', r, r.keys.length === 2 && r.keys[0] !== '29:1');
-  r = await gesture([[[120, padY], [195, padY], [270, padY]]]); say('trackpad, three-finger tap: the middle button', r, r.keys.join() === '274:1,274:0');
-  // One finger rests, a second joins it and moves: the button is held while both are down.
-  await sleep(600);
+  r = await gesture([[[150, padY]]]); say('trackpad, tap: a click', r, r.keys.join() === '272:1,272:0');
+  r = await gesture([[[150, padY], [240, padY]]]); say('trackpad, two-finger tap: nothing', r, !r.kinds.length);
+  // A second finger that joins one already resting, and both moved: a scroll all the same.
   await evaluate(`sent.length = 0; true`);
-  await touch('touchStart', [[100, padY]]);
-  await sleep(300);
-  await touch('touchStart', [[100, padY], [200, padY]]);
-  for (let x = 200; x <= 300; x += 10) await touch('touchMove', [[100, padY], [x, padY]]);
-  r = JSON.parse(await evaluate(`JSON.stringify(sent.map(m => JSON.parse(m)).map(m => m[0] === 'key' ? m.slice(1).join(':') : m[0]))`));
-  say('trackpad, a finger joins a resting one and moves: the button is held and the pointer moves', [...new Set(r)], r[0] === '272:1' && r.includes('move') && !r.includes('272:0') && !r.includes('scroll'));
-  await touch('touchEnd', [[100, padY, 0]]);
-  r = JSON.parse(await evaluate(`JSON.stringify([fingers.size, held.has(272)])`));
-  say('trackpad, the resting finger lifted: the button is let go', r, r.join() === '1,false');
-  await evaluate(`sent.length = 0; true`);
-  for (let x = 300; x <= 360; x += 10) await touch('touchMove', [[x, padY, 1]]);
+  await touch('touchStart', [[150, padY]]);
+  await sleep(400);
+  await touch('touchStart', [[150, padY], [240, padY]]);
+  for (let y = padY; y <= padY + 60; y += 6) await touch('touchMove', [[150, y], [240, y]]);
   await touch('touchEnd', []);
   await sleep(120);
   r = JSON.parse(await evaluate(`JSON.stringify([...new Set(sent.map(m => JSON.parse(m)[0]))])`));
-  say('trackpad, the finger that stayed moves the pointer on, and no click at its end', r, r.join() === 'move');
+  say('trackpad, a finger joins a resting one and both move: scrolls, no button', r, r.join() === 'scroll');
+  // The buttons along the trackpad's bottom edge: down while a finger is on them.
+  const [left, right] = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('[data-button]')].map(b => (r => [r.left + r.width / 2, r.top + r.height / 2])(b.getBoundingClientRect())))`));
+  const keys = async () => JSON.parse(await evaluate(`JSON.stringify(sent.map(m => JSON.parse(m)).map(m => m[0] === 'key' ? m.slice(1).join(':') : m[0]))`));
+  await evaluate(`sent.length = 0; true`);
+  await touch('touchStart', [[...left, 0]]);
+  r = await keys(); say('Left button, finger down: the button is down', r, r.join() === '272:1');
+  await touch('touchStart', [[...left, 0], [200, padY, 1]]);
+  for (let x = 200; x <= 300; x += 10) await touch('touchMove', [[...left, 0], [x, padY, 1]]);
+  await touch('touchEnd', [[300, padY, 1]]);
+  await sleep(120);
+  r = [...new Set(await keys())]; say('Left button held, another finger moved and lifted: the pointer moves, the button stays down', r, r.join() === '272:1,move');
+  await touch('touchStart', [[...left, 0], [200, padY, 1]]);
+  await touch('touchEnd', [[200, padY, 1]]);
+  await sleep(120);
+  r = [...new Set(await keys())]; say('Left button held, a tap on the trackpad: no click of its own', r, r.join() === '272:1,move');
+  await touch('touchEnd', []);
+  await sleep(120);
+  r = await keys(); say('Left button, finger up: the button is let go', r.slice(-1), r.at(-1) === '272:0' && r.filter(k => k === '272:0').length === 1);
+  await evaluate(`sent.length = 0; true`);
+  await touch('touchStart', [[...right, 0]]);
+  await touch('touchEnd', []);
+  await sleep(120);
+  r = await keys(); say('Right button, pressed and let go: a right click', r, r.join() === '273:1,273:0');
   await sleep(600);
   // A finger whose end never came must not spoil the next gesture.
-  await sleep(600);  // or the drag would follow a tap closely enough to hold the button
+  await sleep(300);
   await evaluate(`fingers.set(99, { x: 5, y: 5 }); true`);
   r = await gesture(drag1(padY, 100)); say('trackpad, after a lost finger: still one finger moving the pointer', r, r.kinds.join() === 'move');
   // Three fingers, one lifted: the two that remain do not jump the zoom.
