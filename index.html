@@ -5,6 +5,9 @@
 <meta name="theme-color" content="#000000">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <title>Remote Desktop</title>
 <style>
   /* White on black, square, one typeface: JetBrains Mono, which the host serves along with the page. */
@@ -132,6 +135,8 @@
   .pad, .keybar, .point, .typing { display: none; }
   .touch canvas { position: fixed; left: 0; top: 0; width: auto; height: auto; transform-origin: 0 0; pointer-events: none; }
   .touch.connected .pad { display: flex; }
+  /* The browser's own zoom would enlarge the page, trackpad and all: fingers zoom the picture alone. */
+  .touch.connected { touch-action: none; }
   .pad { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); height: calc((100% - var(--below, 0px)) * .42); box-sizing: border-box; padding: var(--inset); align-items: flex-start; gap: 8px; border-top: 1px solid var(--text); background: rgb(255 255 255 / .25); touch-action: none; user-select: none; -webkit-user-select: none; }
   .keys .pad { bottom: calc(var(--below, 0px) + var(--key) + 1px); }
   .pad button { height: var(--control); min-width: var(--control); padding: 0 var(--inset); display: flex; align-items: center; justify-content: center; border: 1px solid var(--text); background: var(--ground); }
@@ -734,7 +739,9 @@ function showStatistics(frames, parts, received, allowed, heldBack, way) {
   $('now-picture').textContent =
     `${canvas.width} × ${canvas.height}${requested}${scale}, ${colourDetail} colour detail, ${way}, up to ${megabits(allowed)} Mbit/s`;
   $('notice').textContent = `This connection carries about ${megabits(allowed)} Mbit/s. Moving pictures are softened so the session stays responsive.`;
-  $('pill-text').textContent = slow ? `Slow link / ${megabits(allowed)} Mbit/s` : `${frames} fps / ${delay} ms / ${megabits(received)} Mbit/s / ${way}`;
+  // A phone's pill is short enough to leave the trackpad's buttons beside it free.
+  const numbers = [`${frames} fps`, `${delay} ms`, ...(TOUCH ? [] : [`${megabits(received)} Mbit/s`]), way];
+  $('pill-text').textContent = slow ? `Slow link / ${megabits(allowed)} Mbit/s` : numbers.join(' / ');
   for (const [name, value] of Object.entries(parts)) {
     settings.querySelector(`.bar .${name}`).style.setProperty('--weight', Math.max(value, 0.5));
     settings.querySelector(`output.${name}`).textContent = value.toFixed(value < 10 ? 1 : 0);
@@ -1089,7 +1096,8 @@ canvas.addEventListener('wheel', event => {
 
 // The trackpad works as a laptop's does. One finger moves the pointer, and so the picture under it; a tap is a
 // click, and a drag begun right after a tap holds the button. Two fingers scroll, or tapped click the right
-// button; moved apart or together they zoom the picture, here only.
+// button; moved apart or together they zoom the picture, here only. Two fingers do the same on the picture
+// itself, where one finger does nothing: it is not a touch screen's.
 const TAP = 250, SLOP = 8;       // ms a tap lasts at most, and the pixels a finger may stray in it
 const SPEED = 1.6, MOST_ZOOM = 16, PINCH = .12, SCROLL = 5;
 const pad = $('pad'), fingers = new Map();
@@ -1099,23 +1107,29 @@ const apart = () => {
   return { distance: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 };
 const click = button => { key(button, true); key(button, false); };
-pad.addEventListener('pointerdown', event => {
+const down = event => {
   if (event.target.closest('button')) return;
   event.preventDefault();  // the phone's keyboard stays up, and no mouse is made up from the touch
   showPanel(false);
   pad.setPointerCapture(event.pointerId);
   fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
   if (fingers.size === 1) {
-    touch = { since: event.timeStamp, strayed: 0, most: 1, holds: event.timeStamp - lastTap < TAP * 1.5, held: false };
+    const onPad = event.currentTarget === pad;
+    touch = { since: event.timeStamp, strayed: 0, most: 1, holds: onPad && event.timeStamp - lastTap < TAP * 1.5, held: false, onPad };
   } else if (touch) Object.assign(touch, { most: fingers.size, two: apart(), does: null });
-});
+};
+pad.addEventListener('pointerdown', down);
+// The picture lets fingers through to the page behind it.
+if (TOUCH) document.body.addEventListener('pointerdown', event => event.target === document.body && connected() && down(event));
+// Safari zooms the page at a pinch whatever a page's styles say, unless its own event for one is refused.
+addEventListener('gesturestart', event => TOUCH && connected() && event.preventDefault());
 pad.addEventListener('pointermove', event => {
   const was = fingers.get(event.pointerId), now = { x: event.clientX, y: event.clientY };
   if (!was || !touch) return;
   fingers.set(event.pointerId, now);
   if (touch.most === 1) {
     touch.strayed += Math.hypot(now.x - was.x, now.y - was.y);
-    if (touch.strayed < SLOP) return;
+    if (touch.strayed < SLOP || !touch.onPad) return;
     if (touch.holds && !touch.held) key(BUTTONS[0], touch.held = true);
     const step = SPEED / (canvas.getBoundingClientRect().width / canvas.width);
     at = {
@@ -1141,7 +1155,7 @@ const lift = event => {
   const short = event.timeStamp - touch.since < TAP * touch.most && event.type === 'pointerup';
   if (touch.held) key(BUTTONS[0], false);
   else if (touch.most === 2 && !touch.does && short) click(BUTTONS[2]);
-  else if (touch.most === 1 && touch.strayed < SLOP && short) {
+  else if (touch.most === 1 && touch.onPad && touch.strayed < SLOP && short) {
     click(BUTTONS[0]);
     lastTap = event.timeStamp;
   }

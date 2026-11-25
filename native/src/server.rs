@@ -15,10 +15,12 @@ use crate::tls::Connection;
 use crate::{certificate, fail, quic, session, update, ws};
 
 /// The client, compiled into the binary: path, content type, body.
-const PAGES: [(&str, &str, &[u8]); 5] = [
+const PAGES: [(&str, &str, &[u8]); 6] = [
     ("/", "text/html", include_bytes!("../../index.html")),
     ("/manifest.json", "application/manifest+json", include_bytes!("../../manifest.json")),
     ("/icon.svg", "image/svg+xml", include_bytes!("../../icon.svg")),
+    // What a phone's home screen shows, which takes no SVG.
+    ("/icon.png", "image/png", include_bytes!("../../icon.png")),
     ("/JetBrainsMono-Regular.woff2", FONT, include_bytes!("../../fonts/JetBrainsMono-Regular.woff2")),
     ("/JetBrainsMono-Medium.woff2", FONT, include_bytes!("../../fonts/JetBrainsMono-Medium.woff2")),
 ];
