@@ -1,182 +1,142 @@
 # Remote desktop
 
-Your running Linux desktop, Mac or Windows PC in a browser tab. One file on the host, nothing on the other
-device.
+Your running Linux desktop, Mac or Windows PC in a browser tab. One binary on the host, nothing on the client.
 
 <img src="docs/desktop-and-phone.jpg" alt="A GNOME desktop in a browser window, at its Tailscale address, and a Windows desktop on a phone, zoomed in above the trackpad" width="100%">
 
-- **Nothing to install where you sit.** Open the address in Chrome, or install the page as an app.
-- **One binary, one command.** GNOME, KDE, Hyprland, Sway and X11 on x86_64 and aarch64, Macs with Apple
-  Silicon, and Windows.
-- **Complete without configuration.** H.264, or HEVC where both ends can, sound as Opus, the clipboard,
-  keyboard and pointer, all encrypted. The GPU's encoder where there is one, x264 everywhere else.
-- **Nobody in between.** The browser talks to your machine directly: no account, no relay, no vendor's
-  server.
-- **Made to feel local.** A still screen costs nothing and sharpens, a busy one is encoded in milliseconds,
-  the pointer is drawn by the client, and the bitrate follows the connection. Video, sound and pointer moves
-  travel over UDP, so a lost packet costs no wait.
-- **On a phone too.** The lower part of the screen is a trackpad, two fingers scroll and zoom, and a bar adds
-  the keys a phone's keyboard lacks.
-- **Yours to weigh.** One control says what gives way on a weak connection, response or quality.
+- **Client:** a page the host serves. Chrome, installable as an app; on a phone a trackpad, pinch zoom and a
+  bar of the keys its keyboard lacks.
+- **Video:** H.264, or HEVC where both ends can, as WebTransport datagrams (QUIC) with spare packets against
+  loss, over the WebSocket where UDP is blocked. NVENC or VA-API where the GPU encodes, x264 elsewhere.
+- **Adaptive:** the bitrate follows the measured link. A still screen sends nothing and sharpens to full
+  quality; motion that a low bitrate makes coarse is scaled down, and back when still. One control says what
+  gives way, response or quality.
+- **Complete:** sound (Opus), clipboard text, keyboard with system shortcuts, a pointer drawn by the client,
+  choice of screen, the login screen. No configuration.
+- **Direct:** browser to host over TLS. No account, no relay, no vendor's server.
 
 ## What it is not
 
-- **Not a way around routers.** The other device has to reach the machine: over Tailscale, which is the
-  way it is made for, on the same network, or through a port you open.
-- **Not a game streamer.** It is made for desktop work: no gamepads, no HDR.
-- **Not a session of its own.** It shows what the machine's own screen shows, login screen included. On
-  Hyprland and on a Mac, the size Client gives the desktop a screen of the browser window's size while
-  connected. On Windows it temporarily changes the selected display's resolution and scaling.
-- **Not file transfer.** Text goes through the clipboard; files, drives, printers and USB devices do not.
+- **Not a way around routers.** The client has to reach the host: over Tailscale, which it is made for, on
+  the same network, or through a port you open.
+- **Not a game streamer.** No gamepads, no HDR.
+- **Not a session of its own.** It shows the machine's own screen, login screen included. The size Client
+  gives it a screen of the browser window's size while connected: a virtual one on Hyprland and macOS, the
+  display's own mode and scale on Windows, restored afterwards.
+- **Not file transfer.** Clipboard text only.
 
 ## What it runs on
 
-Any Linux distribution, with any desktop, on Wayland or X11. The exceptions:
+**Linux**, x86_64 and aarch64: any distribution, any desktop, Wayland or X11. The exceptions:
 
-- Distributions without glibc 2.28 or newer, such as Alpine with musl, and NixOS and Guix, which run no
-  binaries built for other distributions as they are.
+- No glibc 2.28 or newer (Alpine), or no foreign binaries as they are (NixOS, Guix).
 - Wayland compositors other than GNOME, KDE, Hyprland and those built on wlroots, such as Sway, labwc and
-  Wayfire. (It needs the `ext-image-copy-capture-v1` or the `wlr-screencopy` protocol.)
-- Without PipeWire or PulseAudio there is no sound.
+  Wayfire: it needs `ext-image-copy-capture-v1` or `wlr-screencopy`.
+- No sound without PipeWire or PulseAudio.
 
-The GPU encodes with NVIDIA's driver 470 or newer (one viewer at a time), or on Intel and AMD with their VA-API
-driver, such as intel-media-driver, which also encodes HEVC. What a phone's keyboard writes is typed as text,
-whatever the host's keyboard layout; GNOME's and KDE's Wayland sessions, and X programs under a Wayland
-compositor, take it as keys of the desktop's own keyboard, which has not every character.
+The GPU encodes with NVIDIA's driver 470 or newer (one viewer at a time), or through VA-API on Intel and AMD,
+H.264 and HEVC. Text from a phone's keyboard is typed as text whatever the host's layout; GNOME's and KDE's
+Wayland sessions, and X programs under Wayland, take it as keys of the desktop's keyboard, which has not
+every character.
 
-macOS 12.3 or newer on Apple Silicon; sound needs macOS 13. Its size Client makes a virtual display, through
-an interface of macOS's that is not public, which display tools use as well.
+**macOS** 12.3 or newer on Apple Silicon, with x264; sound needs macOS 13. The size Client uses a virtual
+display interface that is not public.
 
-Windows 10 and 11 on x86_64, encoding with x264, one viewer per display. NVIDIA's encoder is built in but has
-not been tried there yet, and Intel's and AMD's are not used. Its size Client gives the display the resolution
-and scale nearest the browser window's that it offers, and its own back on disconnect. Where a driver puts the
-pointer into the picture and Windows cannot leave it out, the pointer comes with the video. Not yet on
-Windows: the login screen and the screens Windows asks for an administrator's consent on, and input into
-programs that run as administrator.
+**Windows** 10 and 11 on x86_64, with x264 (NVENC is built in, untried), one viewer per display. Where a
+driver draws the pointer into the picture and Windows cannot leave it out, the pointer comes with the video.
+Not yet: the login screen, consent prompts, and input into programs that run as administrator.
 
-The client needs WebCodecs, and Keyboard Lock to send system shortcuts such as Alt+Tab to the remote side,
-which works in full screen. Video over UDP needs WebTransport; without it, or where the network lets no UDP
-through, the video takes the same connection as everything else. It is developed and tested with Chrome.
+**Client:** Chrome. It needs WebCodecs; Keyboard Lock, in full screen, for shortcuts such as Alt+Tab; and
+WebTransport for video over UDP.
 
 ## Install
 
-In a terminal of the desktop session you want to control, on a machine that is on a tailnet. This is the
-preferred way: browsers trust the certificate as it is, the machine is reached from wherever the tailnet
-reaches, and nobody else is answered.
+With Tailscale, the preferred way: a certificate browsers trust, reachable wherever the tailnet reaches,
+nobody else answered. In a terminal of the desktop session to control:
 
     curl -fsSL https://github.com/timongentzsch/remote-desktop/releases/latest/download/install.sh | sh -s -- --tailscale
 
-Without Tailscale, for the local network or a port you open, with a certificate each client has to trust
-once:
+Without it, with a certificate each client has to trust once:
 
     curl -fsSL https://github.com/timongentzsch/remote-desktop/releases/latest/download/install.sh | sh
 
-The script downloads the binary for this machine's architecture and runs `remote-desktop install` with the
-options given:
+On Windows, in a terminal, with the same options:
 
-- `--tailscale` takes the certificate from Tailscale (see [Certificates](#certificates)) and answers devices on
-  the tailnet only,
-- `--no-password` lets in whoever reaches the host without a password: with `--tailscale`, whoever the
-  tailnet's access rules let reach the machine,
-- `--port=8765` serves on that port where another service has HTTPS's own, 443; the address then ends in
-  `:8765`. Installing again keeps the port.
-
-`install` asks for a login password, unless told `--no-password`, and for sudo, then
-
-- copies the binary to `/usr/local/bin/remote-desktop`,
-- lets the user at the machine create input devices (a udev rule for `/dev/uinput`),
-- opens its port in ufw or firewalld when active, for TCP and UDP, with `--tailscale` on Tailscale's interface
-  only,
-- creates a certificate, kept with the password in `~/.config/remote-desktop/`,
-- starts the host with the desktop session: as a systemd user service, or through the desktop's autostart
-  where there is no systemd,
-- with systemd, adds a system service that shows the login screen while nobody is logged in,
-
-and prints the address to open. `remote-desktop uninstall` undoes all of it except the password and the
-certificate. On Linux systems that reserve low ports, the installer uses `setcap` (libcap) to grant the
-installed binary `CAP_NET_BIND_SERVICE`, with which it ignores `LD_LIBRARY_PATH`; a port from 1024 on needs
-none of that. The desktop service runs as the logged-in user.
-
-On a Mac, the same line copies the binary to `/usr/local/bin/remote-desktop` (asking for sudo) and runs it as
-a LaunchAgent from login on, logging to `~/Library/Logs/remote-desktop.log`; the password and the certificate
-are kept in `~/Library/Application Support/remote-desktop/`. macOS then asks to allow the host under System
-Settings, Privacy & Security, in both Screen & System Audio Recording and Accessibility; `install` waits until
-it is allowed. macOS asks again after each new version of the binary.
-
-On Windows, download `remote-desktop-x86_64-windows.exe` from the latest release and run it with `install` in
-a terminal (the options are the same):
-
-    https://github.com/timongentzsch/remote-desktop/releases/latest/download/remote-desktop-x86_64-windows.exe
-
+    curl.exe -LO https://github.com/timongentzsch/remote-desktop/releases/latest/download/remote-desktop-x86_64-windows.exe
     .\remote-desktop-x86_64-windows.exe install
 
-It copies itself to `%LOCALAPPDATA%\Programs\remote-desktop\`, starts from the user's logon on (the Run key
-in the registry), and asks once for an administrator to let it through the firewall; the password, the
-certificate and its log are kept in `%LOCALAPPDATA%\remote-desktop\`.
+The script says which system it found and what the install will ask for, downloads the binary and runs
+`remote-desktop install`:
 
-While the machine shows its login screen, the system service shows it too, under the same address and
-password. When you log in there it leaves the port to the desktop's own host, and the page, which takes up a
-session that ended unasked for half a minute, connects to that one. The login screen was seen working with
-SDDM. A login at a text console has no picture to show, and without systemd there is no such service: there,
-let the display manager log the user in automatically and lock the session at once.
+| Option | |
+|---|---|
+| `--tailscale` | Certificate from Tailscale; only devices on the tailnet are answered (see [Certificates](#certificates)). |
+| `--no-password` | No login password. With `--tailscale`, access is what the tailnet's rules allow. |
+| `--port=N` | Another port than 443, where that is taken. Kept by later installs; the address ends in `:N`. |
 
-    remote-desktop install [--tailscale] [--no-password] [--port=PORT]
-                                             what install.sh runs, for a binary downloaded by hand
-    remote-desktop password                  change the login password
-    remote-desktop password --none           allow access without a password
-    remote-desktop certificate [--tailscale] make a new certificate, or switch where it comes from
-    remote-desktop --listen 127.0.0.1:8765   run by hand on another address
+What it sets up:
 
-Versions before 0.10 served on port 8765. Installing this one moves the host to `https://<host>` and takes
-the old port's firewall rules away; bookmarks and a tailnet's access rules need the new address.
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Binary | `/usr/local/bin/remote-desktop` (sudo) | `/usr/local/bin/remote-desktop` (sudo) | `%LOCALAPPDATA%\Programs\remote-desktop\` |
+| Started by | systemd user service, or the desktop's autostart | LaunchAgent | Run key, at logon |
+| Password, certificate | `~/.config/remote-desktop/` | `~/Library/Application Support/remote-desktop/` | `%LOCALAPPDATA%\remote-desktop\` |
+| Log | journal | `~/Library/Logs/remote-desktop.log` | with the password |
+| Besides | udev rule for `/dev/uinput`; port in ufw or firewalld, TCP and UDP; system service for the login screen | asks for Screen & System Audio Recording and Accessibility, again after each new version | firewall rule, with an administrator's consent |
+
+`remote-desktop uninstall` removes all of it but the password and the certificate. Where Linux reserves low
+ports, the binary gets `CAP_NET_BIND_SERVICE` through `setcap`, and with it ignores `LD_LIBRARY_PATH`; a port
+from 1024 on needs neither.
+
+The login screen is shown by the system service under the same address and password. At login it leaves the
+port to the user's host, and the page reconnects by itself. Seen working with SDDM. It needs systemd and a
+graphical login: without, let the display manager log the user in and lock the session at once.
+
+    remote-desktop install [--tailscale] [--no-password] [--port=N]
+    remote-desktop uninstall
+    remote-desktop password [--none]           set the login password, or allow access without one
+    remote-desktop certificate [--tailscale]   make a new certificate, or switch where it comes from
+    remote-desktop --listen 127.0.0.1:8765     run by hand on another address
+
+Versions before 0.10 served on port 8765. Installing moves the host to 443 and removes the old firewall
+rules; bookmarks and a tailnet's access rules need the new address.
 
 ## Certificates
 
-Browsers only decode video and capture the keyboard on secure pages, so the host always serves HTTPS.
+The host always serves HTTPS: browsers decode video and capture the keyboard on secure pages only.
 
-**Tailscale (preferred).** On a tailnet with HTTPS certificates enabled, `install --tailscale` takes the
-certificate from Tailscale. Browsers trust it as it is, the host is reachable from the tailnet at
-`https://<machine>.<tailnet>.ts.net`, and the certificate renews itself. A self-hosted Headscale issues
-these certificates from version 0.30 on, with `dns.certificates` and a DNS challenge provider configured.
+**Tailscale (preferred).** `install --tailscale`, on a tailnet with HTTPS certificates enabled. Browsers trust
+the certificate, it renews itself, and the address is `https://<machine>.<tailnet>.ts.net`. Headscale issues
+such certificates from 0.30 on, with `dns.certificates` and a DNS challenge provider. The host then answers
+Tailscale's addresses only (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and the machine itself. Tailscale drops
+those addresses on every other interface, and what a subnet router forwards does not count. Who may connect
+is up to the tailnet's access rules.
 
-With this certificate the host answers devices on the tailnet only: connections from Tailscale's addresses
-(`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and from the machine itself. Tailscale drops those addresses arriving
-over any other interface, so nobody on the local network can pose as one, and a subnet router's forwarding
-from the tailnet into the local network does not count. Who on the tailnet may reach the machine is up to the
-tailnet's access rules.
-
-**Self-signed.** What `install` makes where it is not told `--tailscale`. Works on any network. Each client
-has to trust the certificate once; on a Mac:
+**Self-signed.** What `install` makes otherwise: valid for 820 days, for the hostname and addresses the
+machine had. Each client trusts it once; on a Mac:
 
     scp user@host:.config/remote-desktop/certificate.pem remote-desktop.pem
     security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db remote-desktop.pem
 
-It is valid for 820 days and names the machine's hostname and address as they were when it was made.
-
-Reaching the host from another network is left to Tailscale or another VPN altogether; this program has no
-relay or router traversal of its own. Where Tailscale cannot connect two devices directly it relays them
-through one of its servers, which is slow and shows as delay here: `tailscale ping <machine>` says which of
-the two it is.
+There is no relay and no router traversal. Where Tailscale relays two devices instead of connecting them
+directly, that shows as delay: `tailscale ping <machine>` says which it is.
 
 ## Security
 
-Whoever logs in controls the desktop session, so treat the address and password like an SSH login.
+Whoever logs in controls the desktop session: treat the address and password like an SSH login.
 
-- Everything goes over TLS, the video over UDP included (as QUIC). The UDP port answers anyone who can reach
-  it, but carries nothing without a token that only a logged-in session's page is given.
-- After a wrong password no login is accepted for a second, whichever connection it came from. Use a long
-  password where the port is reachable from networks you do not trust, or better, reach the host through
-  Tailscale or another VPN.
-- The client keeps the password in the browser's local storage after a successful login. Anyone with access
-  to that browser profile can read it.
-- With `password --none`, anyone who can reach the host's port controls the desktop. Other web sites cannot do
-  so through a visitor's browser: the host only accepts connections from its own page.
-- The udev rule lets every program of the user at the machine create input devices, not only this one.
-- The service for the login screen answers before anyone has logged in, behind the same password. It is root
-  only until it has read the password and the certificate, and serves as the display manager's own user.
+- TLS throughout, QUIC for the video. The UDP port carries nothing without a token that only a logged-in
+  session's page has.
+- After a wrong password no login is accepted for a second, on any connection. Use a long password where
+  untrusted networks reach the port, or Tailscale.
+- The page keeps the password in the browser's local storage after a successful login.
+- With `password --none`, whoever reaches the port controls the desktop. Other web sites cannot do so through
+  a visitor's browser: the host accepts connections from its own page only.
+- The udev rule lets every program of the user at the machine create input devices.
+- The login-screen service answers before anyone has logged in, behind the same password. It is root until it
+  has read the password and the certificate, then the display manager's user.
   `sudo systemctl disable --now remote-desktop-login` switches it off.
-- The host listens on all network interfaces unless started with `--listen`. With a certificate from Tailscale
-  it answers devices on the tailnet only (see [Certificates](#certificates)).
+- The host listens on all interfaces unless started with `--listen`.
 
 ## Build
 
