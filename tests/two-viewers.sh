@@ -10,11 +10,11 @@ export WAYLAND_DISPLAY=wayland-1
 sleep 2
 export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
 viewer() { python3 wsclient.py '{"password":""}' $1 /tmp/$2.flv | grep -o "first video after [0-9.None]* s, [0-9]* ws messages" | sed "s/^/$2: /"; }
-viewer 6 first &
+viewer 7 first &
 first=$!
 sleep 1.5
 viewer 3 second
-viewer 1 third-while-first-still-watches
+viewer 2 third-while-first-still-watches
 wait $first
 viewer 1 fourth-after-all-left
 cat /tmp/host.log

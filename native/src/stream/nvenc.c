@@ -176,23 +176,28 @@ static void destroy(struct nvenc *encoder)
    encoders is destroyed while another is still in use. So this process has one encoder at a time. A second
    one is asked for when a client reconnects before its old session has wound down, and then the wait is
    short. If the encoder stays taken, because someone else is watching, the newcomer gets none and the caller
-   encodes with x264. */
+   encodes with x264. Who was refused a moment ago does not wait again: the caller tries twice, the second
+   time with less colour detail. */
 static pthread_mutex_t turn = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t released = PTHREAD_COND_INITIALIZER;
 static int taken;
+static time_t refused;
 #define TURN_WAIT_SECONDS 1
 
 static int take_turn(void)
 {
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += TURN_WAIT_SECONDS;
     pthread_mutex_lock(&turn);
-    while (taken && pthread_cond_timedwait(&released, &turn, &deadline) == 0)
+    int patient = deadline.tv_sec - refused >= TURN_WAIT_SECONDS;
+    deadline.tv_sec += TURN_WAIT_SECONDS;
+    while (taken && patient && pthread_cond_timedwait(&released, &turn, &deadline) == 0)
         ;
     int mine = !taken;
     if (mine)
         taken = 1;
+    else
+        refused = time(NULL);
     pthread_mutex_unlock(&turn);
     return mine;
 }
