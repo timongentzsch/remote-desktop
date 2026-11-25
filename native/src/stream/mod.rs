@@ -206,8 +206,12 @@ pub struct Stream {
     /// What shrinks the screen to the picture, and the shrunk copy, when the picture is smaller than the
     /// screen (see `Settings::height`).
     shrinker: Option<Shrinker>,
-    /// A change of size, colour or effort takes effect on the next source picture.
+    /// A change of size, colour or effort takes effect on the next source picture, which a still screen's
+    /// capture is `asked` for once.
     reopen: bool,
+    asked: bool,
+    /// The height that poor motion had come down to before a still picture went back to the screen's own.
+    settled: Option<usize>,
     scaled: Vec<u8>,
     encoder: Option<Encoder>,
     /// How much work the software encoder puts into a frame and the most it may (see `EFFORT_FRAMES`).
@@ -254,6 +258,8 @@ impl Stream {
             screen: (0, 0),
             shrinker: None,
             reopen: false,
+            asked: false,
+            settled: None,
             scaled: Vec::new(),
             encoder: None,
             effort: FIRST_EFFORT,
@@ -400,9 +406,13 @@ impl Stream {
         if self.settings.auto_size {
             let poor = weighed.poor * 2 > weighed.frames; // measured after the bitrate settled
             let height = self.settings.height;
-            let wanted = next_height(height, self.screen.1, poor, !mostly_coarse, self.size_rest.over(now));
+            // Motion that is poor again after a still picture goes straight back to the size it had: one
+            // keyframe, not one for every step, and no longer rest, as nothing new was given up.
+            let back = self.settled.take_if(|_| poor);
+            let wanted =
+                back.or_else(|| next_height(height, self.screen.1, poor, !mostly_coarse, self.size_rest.over(now)));
             if wanted != height {
-                if wanted.unwrap_or(usize::MAX) < height.unwrap_or(usize::MAX) {
+                if back.is_none() && wanted.unwrap_or(usize::MAX) < height.unwrap_or(usize::MAX) {
                     self.size_rest.begin(now);
                 }
                 self.settings.height = wanted;
@@ -426,7 +436,8 @@ impl Stream {
     }
 
     /// Refines the current picture while idle. Returns true once if capture must supply native pixels
-    /// to apply new encoder settings and the desktop has stopped producing frames on its own.
+    /// to apply new encoder settings and the desktop has stopped producing frames on its own. Until it
+    /// does, the encoder that is open goes on serving a client that needs a frame.
     pub fn refine(&mut self) -> bool {
         if self.encoder.is_none() {
             return false;
@@ -439,12 +450,11 @@ impl Stream {
             && self.last_picture.is_some_and(|source| source.elapsed() >= RESTORE_NATIVE_AFTER)
         {
             // A stationary desktop can spend the whole refinement budget on a single native image.
-            self.settings.height = None;
+            self.settled = self.settings.height.take();
             self.reopen = true;
         }
-        if self.reopen && idle {
-            self.encoder = None;
-            self.refinements_left = 0;
+        if self.reopen && idle && !self.asked {
+            self.asked = true;
             return true;
         }
         if self.shared.fresh.load(Ordering::Relaxed) || self.shared.recover.load(Ordering::Relaxed) {
@@ -465,7 +475,7 @@ impl Stream {
             self.screen = (width, height);
             self.put_out(Output::ScreenSize(width, height));
         }
-        self.reopen = false;
+        (self.reopen, self.asked) = (false, false);
         let (width, height) = match self.settings.height {
             Some(most) if height > most => (width * most / height, most),
             _ => (width, height),
@@ -663,6 +673,12 @@ mod tests {
         let (sizes, observed) = std::sync::mpsc::channel();
         let mut stream = Stream::new(
             settings,
+        let poor_motion = |stream: &mut Stream| {
+            stream.weighed = Weighed::default();
+            for _ in 0..EFFORT_FRAMES {
+                stream.weigh_effort(Some(stream.frame_interval()), Duration::from_millis(1), true, true);
+            }
+        };
             Arc::new(Shared::default()),
             Box::new(move |output| {
                 if let Output::ScreenSize(width, height) = output {
@@ -675,13 +691,12 @@ mod tests {
         let pixels = vec![90; width * height * 4];
         let picture = |stream: &mut Stream| stream.picture(&pixels, width * 4, width, height);
         picture(&mut stream);
-        stream.weighed = Weighed::default();
-        for _ in 0..EFFORT_FRAMES {
-            stream.weigh_effort(Some(stream.frame_interval()), Duration::from_millis(1), true, true);
-        }
+        poor_motion(&mut stream);
         assert_eq!(stream.settings.height, Some(540), "poor frames at the user's cap");
         picture(&mut stream);
-        assert_eq!(stream.encoder.as_ref().unwrap().height, 540);
+        poor_motion(&mut stream);
+        picture(&mut stream);
+        assert_eq!(stream.encoder.as_ref().unwrap().height, 360, "a step at a time");
 
         // Quiet alone is not enough while the encoder is still adding detail.
         stream.last_picture = Some(Instant::now() - RESTORE_NATIVE_AFTER);
@@ -693,6 +708,11 @@ mod tests {
             stream.encoded = Instant::now() - REFINE_INTERVAL;
             assert!(!stream.refine());
         }
+
+        let rest = stream.size_rest.until;
+        poor_motion(&mut stream);
+        assert_eq!(stream.settings.height, Some(360), "poor motion again: straight back to the size it had");
+        assert_eq!(stream.size_rest.until, rest, "which is no reason for a longer rest");
         assert!(stream.still.level_frames >= Still::LEVEL_FRAMES);
         stream.encoded = Instant::now() - REFINE_INTERVAL;
         assert!(!stream.refine(), "a short pause keeps the current size");
@@ -702,7 +722,7 @@ mod tests {
         assert!(!stream.refine(), "only one request until capture supplies those pixels");
         picture(&mut stream);
         assert_eq!(stream.encoder.as_ref().unwrap().height, height);
-        assert_eq!(stream.opened, 3, "one encoder per resolution");
+        assert_eq!(stream.opened, 4, "one encoder per resolution");
         assert_eq!(observed.try_iter().collect::<Vec<_>>(), [(width, height)], "the pointer keeps its native scale");
     }
 

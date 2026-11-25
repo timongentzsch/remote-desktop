@@ -22,10 +22,11 @@ pub fn run(node: u32, mut stream: Stream, desktop: &str) -> Result<(), String> {
         if let Some(shape) = screen.pointer() {
             stream.pointer(shape);
         }
-        if stream.refine() {
-            // Reconnect to the existing cast for one native picture even when there is no damage.
-            drop(screen);
-            screen = open(stream.settings.fps)?;
+        // Reconnect to the existing cast for one native picture even when there is no damage.
+        if stream.refine()
+            && let Ok(again) = open(stream.settings.fps)
+        {
+            screen = again;
         }
     }
     stream.ended.take().unwrap_or(Ok(()))
