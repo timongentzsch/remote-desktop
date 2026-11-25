@@ -1194,6 +1194,12 @@ if (TOUCH) {
   addEventListener('pointercancel', fingerUp);
   // Safari zooms the page at a pinch whatever a page's styles say, unless its own event for one is refused.
   addEventListener('gesturestart', event => connected() && event.preventDefault());
+  // And it takes a finger held still for the start of marking text, and shows its magnifying glass, unless the
+  // touch itself is refused. The events above come all the same; what is left out are the controls that need
+  // the browser's own tap and scrolling.
+  addEventListener('touchstart', event => {
+    if (connected() && !event.target.closest('button:not([data-button]), .panel, .keybar')) event.preventDefault();
+  }, { passive: false });
 }
 // The trackpad's buttons. Each is one finger's at a time, and a first finger takes it over from one whose end
 // never came.

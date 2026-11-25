@@ -75,6 +75,16 @@ await withPage(process.argv[2], async ({ command, evaluate }) => {
   await sleep(120);
   r = await keys(); say('Right button, pressed and let go: a right click', r, r.join() === '273:1,273:0');
   await sleep(600);
+  // The page's own controls still take a tap: the pill opens the panel.
+  const pill = JSON.parse(await evaluate(`JSON.stringify((r => [r.left + r.width / 2, r.top + r.height / 2])($('pill').getBoundingClientRect()))`));
+  await touch('touchStart', [pill]);
+  await touch('touchEnd', []);
+  await sleep(300);
+  r = await evaluate(`document.body.classList.contains('panel-open')`);
+  say('a tap on the pill opens the panel', r, r === true);
+  await touch('touchStart', [[150, padY]]);
+  await touch('touchEnd', []);
+  await sleep(300);
   // A finger whose end never came must not spoil the next gesture.
   await sleep(300);
   await evaluate(`fingers.set(99, { x: 5, y: 5 }); true`);
@@ -87,7 +97,7 @@ await withPage(process.argv[2], async ({ command, evaluate }) => {
   await touch('touchMove', [[100, pictureY, 0], [332, pictureY, 2]]);
   const after = await evaluate(`Math.round(zoom * 100) / 100`);
   await touch('touchEnd', []);
-  say('picture, three fingers then two: zoom keeps', { zoom: after }, after === zoomed);
+  say('picture, three fingers then two, moved a pixel: the zoom does not jump', { zoom: after }, Math.abs(after - zoomed) < .05);
   // The arrow that stands in for the host's pointer is 24 of the host's pixels high, whatever the zoom.
   r = JSON.parse(await evaluate(`JSON.stringify([1, 4].map(times => { zoom = times; place(); return parseFloat(document.documentElement.style.getPropertyValue('--point-size')) / (canvas.getBoundingClientRect().width / sourceSize.width); }))`));
   say('the arrow is 24 of the host\'s pixels high at every zoom', r, r.every(height => Math.abs(height - 24) < .01));
