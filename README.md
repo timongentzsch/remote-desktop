@@ -4,8 +4,8 @@ Your running Linux desktop, Mac or Windows PC in a browser tab. One binary on th
 
 <img src="docs/desktop-and-phone.jpg" alt="A GNOME desktop in a browser window, at its Tailscale address, and a Windows desktop on a phone, zoomed in above the trackpad" width="100%">
 
-- **Client:** a page the host serves. Chrome, installable as an app; on a phone a trackpad, pinch zoom and a
-  bar of the keys its keyboard lacks.
+- **Client:** a page the host serves. Chrome, installable as an app; on a phone a trackpad with a mouse's two
+  buttons, pinch zoom and a bar of the keys its keyboard lacks.
 - **Video:** H.264, or HEVC where both ends can, as WebTransport datagrams (QUIC) with spare packets against
   loss, over the WebSocket where UDP is blocked. NVENC or VA-API where the GPU encodes, x264 elsewhere.
 - **Adaptive:** the bitrate follows the measured link. A still screen sends nothing and sharpens to full

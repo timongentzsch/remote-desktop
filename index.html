@@ -1094,7 +1094,9 @@ canvas.onmousedown = event => {
 };
 addEventListener('mouseup', event => held.has(BUTTONS[event.button]) && key(BUTTONS[event.button], false));
 canvas.oncontextmenu = event => event.preventDefault();
-// A pinch, as a laptop's trackpad gives it to programs: scrolling with Ctrl held.
+// A pinch, as a laptop's trackpad gives it to programs: scrolling with Ctrl held. The browser says one of this
+// machine's trackpad in steps so small that they are sent WHEEL_PINCH times as large.
+const WHEEL_PINCH = 10;
 const pinchScroll = (x, y) => {
   send('key', CONTROL, 1);
   send('scroll', x, y);
@@ -1103,7 +1105,7 @@ const pinchScroll = (x, y) => {
 canvas.addEventListener('wheel', event => {
   event.preventDefault();
   // This machine's trackpad says a pinch as a wheel event with ctrlKey set although Ctrl is not held.
-  if (event.ctrlKey && !held.has(CONTROL)) pinchScroll(Math.round(event.deltaX * 10), Math.round(-event.deltaY * 10));
+  if (event.ctrlKey && !held.has(CONTROL)) pinchScroll(Math.round(event.deltaX * WHEEL_PINCH), Math.round(-event.deltaY * WHEEL_PINCH));
   else send('scroll', Math.round(event.deltaX), Math.round(-event.deltaY));
 }, { passive: false });
 
@@ -1120,6 +1122,9 @@ canvas.addEventListener('wheel', event => {
 const TAP = 250, SLOP = 8;       // ms a tap lasts at most, and the pixels a finger may stray in it
 const SPEED = 1.6, MOST_ZOOM = 16, PINCH = .12, SCROLL = 5;
 const PINCH_SCROLL = 1000;       // wheel units (120 a notch) for fingers parting e-fold: 6 notches for twice as far
+// The page's own controls, which no gesture begins on; of them the buttons that are a mouse's, down while a
+// finger is on them; and those whose touches stay the browser's (see the end of this part).
+const CONTROLS = 'button, .panel, .keybar', MOUSE_BUTTONS = '[data-button]', BROWSERS = '.panel, .keybar, #keys';
 const pad = $('pad'), fingers = new Map();
 let touch = null;                // the gesture under way, from the first finger down to the last up
 const apart = () => {
@@ -1127,7 +1132,7 @@ const apart = () => {
   return { distance: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 };
 function fingerDown(event) {
-  if (!connected() || event.target.closest('button, .panel, .keybar')) return;  // the page's own controls
+  if (!connected() || event.target.closest(CONTROLS)) return;
   event.preventDefault();  // the phone's keyboard stays up, and no mouse is made up from the touch
   showPanel(false);
   // The first finger of a touch. What is left of one whose end never came, as when the phone took it for a
@@ -1199,19 +1204,18 @@ if (TOUCH) {
   // for: on the panel and the key bar, which scroll, and on the button that brings up the phone's keyboard,
   // which only a tap of the browser's own does. A refused touch makes no click, so the other buttons of the
   // page are clicked here, by a finger that lifts where it came down.
-  const BROWSERS = '.panel, .keybar, #keys';
   addEventListener('touchstart', event => {
     if (connected() && !event.target.closest(BROWSERS)) event.preventDefault();
   }, { passive: false });
   addEventListener('touchend', event => {
-    const button = connected() && !event.target.closest(BROWSERS) && event.target.closest('button:not([data-button])');
+    const button = connected() && !event.target.closest(BROWSERS) && event.target.closest(`button:not(${MOUSE_BUTTONS})`);
     const { clientX, clientY } = event.changedTouches[0];
     if (button && button.contains(document.elementFromPoint(clientX, clientY))) button.click();
   });
 }
 // The trackpad's buttons. Each is one finger's at a time, and a first finger takes it over from one whose end
 // never came.
-for (const button of pad.querySelectorAll('[data-button]')) {
+for (const button of pad.querySelectorAll(MOUSE_BUTTONS)) {
   const code = BUTTONS[button.dataset.button];
   let finger = null;
   const press = down => {

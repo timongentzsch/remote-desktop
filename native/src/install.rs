@@ -7,7 +7,13 @@ use std::process::{Command, Stdio};
 
 use crate::platform::install::{self as service, BINARY};
 use crate::platform::{password_path, without_echo, write_private};
-use crate::{PORT, certificate, fail, port, port_path, update};
+use crate::{PORT, certificate, fail, port, port_path, server, update};
+
+/// How long this machine may take to say whether something listens on a port of its own.
+#[cfg(any(target_os = "macos", windows))]
+const PORT_PATIENCE: std::time::Duration = std::time::Duration::from_millis(500);
+/// Seconds a host on this machine may take to answer with its manifest, as curl is told them.
+const MANIFEST_PATIENCE: &str = "3";
 
 /// `remote-desktop install`: asks for a password unless there is one, makes the certificate unless there is one,
 /// and leaves the host running as a service, on `chosen` where a port is given and else on the one it had.
@@ -129,9 +135,7 @@ fn clear_password() {
 #[cfg(any(target_os = "macos", windows))]
 pub fn check_tcp_port(port: u16, installed_owns_it: impl FnOnce() -> bool) -> Result<(), String> {
     let here = (std::net::Ipv4Addr::LOCALHOST, port).into();
-    if std::net::TcpStream::connect_timeout(&here, std::time::Duration::from_millis(500)).is_ok()
-        && !installed_owns_it()
-    {
+    if std::net::TcpStream::connect_timeout(&here, PORT_PATIENCE).is_ok() && !installed_owns_it() {
         return Err(format!(
             "cannot install on TCP port {port}: another program has it. Free the port or install on another with \
              --port=PORT."
@@ -145,22 +149,23 @@ pub fn curl() -> Command {
     let mut curl = Command::new("curl");
     curl.args(["--disable", "--silent"]);
     #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(&mut curl, 0x0800_0000); // CREATE_NO_WINDOW
+    std::os::windows::process::CommandExt::creation_flags(&mut curl, service::CREATE_NO_WINDOW);
     curl
 }
 
 /// The client's manifest as what listens on `port` of this machine serves it, whatever the certificate. None
 /// if nothing answers there or it has no such file.
 pub fn served_manifest(port: u16) -> Option<Vec<u8>> {
-    let url = format!("https://127.0.0.1:{port}/manifest.json");
-    let reply = curl().args(["--noproxy", "*", "--insecure", "--fail", "--max-time", "3", &url]).output().ok()?;
+    let url = format!("https://127.0.0.1:{port}{}", server::MANIFEST_PATH);
+    let patience = ["--max-time", MANIFEST_PATIENCE];
+    let reply = curl().args(["--noproxy", "*", "--insecure", "--fail"]).args(patience).arg(url).output().ok()?;
     reply.status.success().then_some(reply.stdout)
 }
 
 /// Whether this version of the host answers on `port` of this machine, and not another program.
 #[cfg(target_os = "macos")]
 pub fn serves(port: u16) -> bool {
-    served_manifest(port).is_some_and(|manifest| manifest == include_bytes!("../../manifest.json"))
+    served_manifest(port).is_some_and(|manifest| manifest == server::MANIFEST)
 }
 
 /// Runs a command that has to succeed, or else ends with what went wrong.

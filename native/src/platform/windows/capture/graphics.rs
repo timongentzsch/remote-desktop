@@ -18,6 +18,11 @@ use windows::core::{Interface, factory};
 
 use super::{CHECK_DISPLAYS, Picture, cursor::LocalCursor, next_frame, same_display, take};
 use crate::screen::Screen;
+
+/// How long Windows may take over the first picture before this way of capturing counts as failed, and the
+/// longest the loop waits for the next one before it looks at the stream and the displays again.
+const FIRST_PICTURE: Duration = Duration::from_secs(2);
+const LONGEST_WAIT: Duration = Duration::from_millis(50);
 use crate::stream::Stream;
 
 struct Apartment;
@@ -119,7 +124,7 @@ pub(super) fn run(
             let (width, height) = picture.size;
             cursor.update(stream, monitor);
             stream.picture(&picture.bytes, width * 4, width, height);
-        } else if picture.bytes.is_empty() && started.elapsed() >= Duration::from_secs(2) {
+        } else if picture.bytes.is_empty() && started.elapsed() >= FIRST_PICTURE {
             return Err("no first frame from Windows Graphics Capture".into());
         } else if !picture.bytes.is_empty() {
             cursor.update(stream, monitor);
@@ -128,7 +133,7 @@ pub(super) fn run(
             let (width, height) = picture.size;
             stream.picture(&picture.bytes, width * 4, width, height);
         }
-        let mut wait = stream.patience().min(Duration::from_millis(50));
+        let mut wait = stream.patience().min(LONGEST_WAIT);
         if latest.lock().unwrap().is_some() {
             wait = wait.min(due.saturating_duration_since(Instant::now()));
         }

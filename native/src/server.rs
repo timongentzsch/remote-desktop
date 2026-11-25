@@ -14,10 +14,13 @@ use crate::screen::Layout;
 use crate::tls::Connection;
 use crate::{certificate, fail, quic, session, update, ws};
 
+/// The client's manifest, which is also what tells this host from another program on its port (install.rs).
+pub const MANIFEST_PATH: &str = "/manifest.json";
+pub const MANIFEST: &[u8] = include_bytes!("../../manifest.json");
 /// The client, compiled into the binary: path, content type, body.
 const PAGES: [(&str, &str, &[u8]); 6] = [
     ("/", "text/html", include_bytes!("../../index.html")),
-    ("/manifest.json", "application/manifest+json", include_bytes!("../../manifest.json")),
+    (MANIFEST_PATH, "application/manifest+json", MANIFEST),
     ("/icon.svg", "image/svg+xml", include_bytes!("../../icon.svg")),
     // What a phone's home screen shows, which takes no SVG.
     ("/icon.png", "image/png", include_bytes!("../../icon.png")),

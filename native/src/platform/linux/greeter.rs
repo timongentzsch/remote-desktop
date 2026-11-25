@@ -13,6 +13,8 @@ use std::time::Duration;
 
 use crate::{fail, server};
 
+/// How often the host at the login screen looks whether that screen is still there.
+const STILL_THERE: Duration = Duration::from_secs(1);
 /// Where logind keeps a file for each session. A change there is what wakes the search for a login screen;
 /// nothing is read from it.
 const SESSIONS: &str = "/run/systemd/sessions";
@@ -44,7 +46,7 @@ pub fn run(address: &str) -> ! {
     }
     thread::spawn(move || {
         while greeter.is_there() {
-            thread::sleep(Duration::from_secs(1));
+            thread::sleep(STILL_THERE);
         }
         std::process::exit(0) // someone logged in, or the display manager stopped
     });

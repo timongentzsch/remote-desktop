@@ -11,7 +11,7 @@ use crate::install::{check_tcp_port, run, run_quietly, serves, write};
 use crate::{NAME, fail};
 
 pub const BINARY: &str = "/usr/local/bin/remote-desktop";
-const LABEL: &str = "remote-desktop";
+const LABEL: &str = NAME;
 /// How long the host takes to start where it is allowed, how long `install` waits for the user to allow it, and
 /// how often it looks.
 const STARTING: Duration = Duration::from_secs(2);

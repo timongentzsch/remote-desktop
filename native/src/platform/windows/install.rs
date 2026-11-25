@@ -18,7 +18,7 @@ const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 const TAILNET: &str = "100.64.0.0/10,fd7a:115c:a1e0::/48";
 /// How the host is started: on its own, with no console window.
 const DETACHED_PROCESS: u32 = 0x0000_0008;
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub fn binary() -> PathBuf {
     let programs =

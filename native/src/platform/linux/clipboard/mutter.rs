@@ -18,6 +18,8 @@ use super::{Copied, Inbox, TEXT_TYPES, read_text};
 use crate::capture::Shared;
 use crate::platform::linux::gnome::{self, Service, unreadable};
 
+/// How long the desktop's word on its clipboard is waited for before `shared.stop` is looked at again.
+const LOOK: Duration = Duration::from_millis(100);
 pub const SERVICE: &str = "org.gnome.Mutter.RemoteDesktop";
 const SESSION: &str = "org.gnome.Mutter.RemoteDesktop.Session";
 
@@ -31,7 +33,7 @@ pub fn run(inbox: &Inbox, shared: &Shared, mut copied: Copied) -> Result<(), Str
     // straight back.
     let (mut own, mut last) = (String::new(), String::new());
     while !shared.stop.load(Ordering::Relaxed) {
-        if let Some(signal) = mutter.signal(Duration::from_millis(100))? {
+        if let Some(signal) = mutter.signal(LOOK)? {
             match signal.dynheader.member.as_deref() {
                 // Something was copied on the desktop: fetch it if it is text and not this side's own.
                 Some("SelectionOwnerChanged") => {

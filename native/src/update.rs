@@ -35,7 +35,10 @@ const KEY: [u8; 32] = [
     0xa2, 0xb0, 0xdb, 0xe5, 0x7d, 0xa8, 0x7e, 0x7d, 0x92, 0x2f, 0x41, 0x44, 0x44, 0xa5, 0x8b, 0x92, 0x13, 0x63, 0x74,
     0xfa, 0xa0, 0x9e, 0x8f, 0x8f, 0x49, 0xb3, 0x92, 0xfe, 0x02, 0xc5, 0x6c, 0xfb,
 ];
-/// How long a download may take.
+/// A release's list of its binaries and that list's signature, as files of the release.
+const LIST: &str = "update";
+const SIGNATURE: &str = "update.sig";
+/// Seconds a download may take, as curl is told them.
 const PATIENCE: &str = "120";
 /// The host looks once it has settled and the network is likely there, then daily.
 const SETTLED: Duration = Duration::from_secs(60);
@@ -44,6 +47,9 @@ const DAY: Duration = Duration::from_secs(24 * 3600);
 const IDLE_CHECK: Duration = Duration::from_secs(60);
 #[cfg(not(target_os = "macos"))]
 const STARTING: Duration = Duration::from_secs(30);
+/// How often it is asked meanwhile whether it serves.
+#[cfg(not(target_os = "macos"))]
+const STARTING_CHECK: Duration = Duration::from_millis(500);
 
 /// Where `install --auto-update` leaves its mark, and the host the version it has asked for.
 pub fn wanted_path() -> std::path::PathBuf {
@@ -92,7 +98,7 @@ fn listed(list: &str, name: &str, program: &[u8]) -> bool {
 
 /// The newest release's version and list of binaries, if it is newer than this program.
 fn newer() -> Result<Option<(String, String)>, String> {
-    let (list, signed) = (fetch("update")?, fetch("update.sig")?);
+    let (list, signed) = (fetch(LIST)?, fetch(SIGNATURE)?);
     genuine(&KEY, &list, &signed)?;
     let list = String::from_utf8_lossy(&list).into_owned();
     let version = list.lines().next().unwrap_or_default().to_owned();
@@ -201,7 +207,7 @@ fn replace(program: &[u8], version: &str) {
     service::start_updated();
     let began = std::time::Instant::now();
     while put.is_ok() && served && !serves() && began.elapsed() < STARTING {
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(STARTING_CHECK);
     }
     if put.is_ok() && (!served || serves()) {
         let _ = fs::remove_file(&old); // Windows keeps it for as long as this program, which it is, runs

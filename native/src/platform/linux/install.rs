@@ -17,6 +17,8 @@ pub const BINARY: &str = "/usr/local/bin/remote-desktop";
 /// The user service that runs the host in the desktop session, and the system service at the login screen.
 const USER_UNIT: &str = "remote-desktop.service";
 const UDEV_RULE_PATH: &str = "/etc/udev/rules.d/70-remote-desktop.rules";
+/// What lets the binary listen on a port that Linux keeps for root, as `setcap` is told it.
+const PORT_CAPABILITY: &str = "cap_net_bind_service=ep";
 /// Lets whoever is logged in at the seat create input devices. The number must stay below 73.
 const UDEV_RULE: &str = r#"KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput""#;
 /// A user service, because capture and input belong to the logged-in desktop session.
@@ -178,7 +180,7 @@ pub fn stop_for_update() {}
 /// start again from it, the one at the login screen and that of the user whose settings these are.
 pub fn start_updated() {
     if port_is_reserved() {
-        run_quietly("setcap", &["cap_net_bind_service=ep", BINARY]);
+        run_quietly("setcap", &[PORT_CAPABILITY, BINARY]);
     }
     restart_service(|| Command::new("systemctl"), LOGIN_UNIT);
     if let Ok(owner) = fs::metadata(config_directory()) {
@@ -228,7 +230,7 @@ pub fn start(tailnet_only: bool) {
         run("sudo", &["install", "-Dm755", &this.to_string_lossy(), BINARY]);
     }
     if port_is_reserved() {
-        run("sudo", &["setcap", "cap_net_bind_service=ep", BINARY]);
+        run("sudo", &["setcap", PORT_CAPABILITY, BINARY]);
     }
     let rule = format!("printf '%s\\n' '{UDEV_RULE}' > {UDEV_RULE_PATH}");
     run(
