@@ -55,6 +55,18 @@ jobs:
         with:
           name: remote-desktop
           path: native/dist/
+      # What hosts that look for a newer version read (see native/src/update.rs): the version and each binary's
+      # SHA-256 in `update`, and that file's signature by the key whose public half the hosts have.
+      - name: Sign the list of the release's binaries
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "v$version" = "$GITHUB_REF_NAME" ] # or hosts would install this release again and again
+          cd dist
+          { echo "$version"; sha256sum remote-desktop-*; } > update
+          openssl pkeyutl -sign -rawin -inkey <(printf '%s\n' "$UPDATE_KEY") -in update -out update.sig
+        env:
+          UPDATE_KEY: ${{ secrets.UPDATE_KEY }}
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/')
         run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes

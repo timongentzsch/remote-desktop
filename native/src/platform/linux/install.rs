@@ -2,12 +2,14 @@
 //! the desktop's autostart (see ../../install.rs for the rest).
 
 use std::fs;
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
 use crate::install::{run, run_quietly, write};
 use crate::platform::linux::firewall;
-use crate::{NAME, fail, port};
+use crate::{NAME, fail, port, update};
 
 pub use firewall::check_port;
 
@@ -60,6 +62,43 @@ WantedBy=multi-user.target
     )
 }
 
+/// Two more system units where newer versions install themselves. The host cannot replace its own binary,
+/// which is root's: it writes the version it wants where the first unit watches, and that starts the second,
+/// which is this program as root (see update.rs). It is told where the user's settings are, for the port.
+const UPDATE_WATCH: &str = "remote-desktop-update.path";
+const UPDATE_UNIT: &str = "remote-desktop-update.service";
+
+fn update_watch() -> String {
+    format!(
+        "\
+[Unit]
+Description=Remote desktop host asks for a newer version
+
+[Path]
+PathModified={}
+
+[Install]
+WantedBy=paths.target
+",
+        update::wanted_path().display()
+    )
+}
+
+fn update_unit() -> String {
+    format!(
+        "\
+[Unit]
+Description=Remote desktop host's newer version
+
+[Service]
+Type=oneshot
+Environment=XDG_CONFIG_HOME={}
+ExecStart={BINARY} update
+",
+        config_directory().display()
+    )
+}
+
 /// The program's desktop entry, hidden from menus. Plasma before 6.8 only casts the screen for a program whose
 /// entry asks for that (see capture/kwin.rs), and a copy among the desktop's autostart entries starts the
 /// host at login where systemd does not.
@@ -88,8 +127,16 @@ fn desktop_entry_path() -> PathBuf {
     user_directory("XDG_DATA_HOME", ".local/share").join("applications").join(format!("{NAME}.desktop"))
 }
 
-fn login_unit_path() -> String {
-    format!("{SYSTEM_UNITS}/{LOGIN_UNIT}")
+fn system_unit_path(unit: &str) -> String {
+    format!("{SYSTEM_UNITS}/{unit}")
+}
+
+/// Puts a unit among the system's, through sudo.
+fn install_system_unit(unit: &str, contents: &str) {
+    let draft = data_directory().join(unit); // where no one else writes
+    write(&draft, contents);
+    run("sudo", &["install", "-m644", &draft.to_string_lossy(), &system_unit_path(unit)]);
+    let _ = fs::remove_file(draft);
 }
 
 pub fn config_directory() -> PathBuf {
@@ -104,6 +151,55 @@ pub fn data_directory() -> PathBuf {
 /// Whether systemd runs the user's services. Where it does not, the desktop's autostart starts the host.
 fn has_systemd() -> bool {
     Command::new("systemctl").args(["--user", "show-environment"]).output().is_ok_and(|output| output.status.success())
+}
+
+pub fn binary() -> PathBuf {
+    BINARY.into()
+}
+
+/// Whether newer versions can install themselves, or else why not.
+pub fn updates_itself() -> Result<(), &'static str> {
+    if has_systemd() { Ok(()) } else { Err("that takes systemd. `remote-desktop update` installs one.") }
+}
+
+/// Whether the host's port is one that Linux keeps for root and for programs given the capability.
+fn port_is_reserved() -> bool {
+    let unprivileged = fs::read_to_string("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+        .ok()
+        .and_then(|port| port.trim().parse::<u16>().ok())
+        .unwrap_or(1024);
+    port() < unprivileged
+}
+
+/// Nothing has to stop before the binary changes: a running host keeps the file it was started from.
+pub fn stop_for_update() {}
+
+/// As root, once the binary has changed: the new file gets the capability the old one had, and the hosts
+/// start again from it, the one at the login screen and that of the user whose settings these are.
+pub fn start_updated() {
+    if port_is_reserved() {
+        run_quietly("setcap", &["cap_net_bind_service=ep", BINARY]);
+    }
+    restart_service(|| Command::new("systemctl"), LOGIN_UNIT);
+    if let Ok(owner) = fs::metadata(config_directory()) {
+        let users = || {
+            let mut systemctl = Command::new("systemctl");
+            systemctl.arg("--user").uid(owner.uid()).gid(owner.gid());
+            systemctl.env("XDG_RUNTIME_DIR", format!("/run/user/{}", owner.uid()));
+            systemctl
+        };
+        restart_service(users, USER_UNIT);
+    }
+}
+
+/// Restarts a service that runs, and one that systemd restarts over and over or has given up on, as it does
+/// with a binary that does not start. One that was not running stays so.
+fn restart_service(systemctl: impl Fn() -> Command, unit: &str) {
+    let state = systemctl().args(["is-active", unit]).output().map(|output| output.stdout).unwrap_or_default();
+    if matches!(state.trim_ascii(), b"active" | b"activating" | b"failed") {
+        let _ = systemctl().args(["reset-failed", unit]).status();
+        let _ = systemctl().args(["restart", unit]).status();
+    }
 }
 
 /// What the user is told to run for a change of password or certificate to take effect.
@@ -131,11 +227,7 @@ pub fn start(tailnet_only: bool) {
     if this != std::path::Path::new(BINARY) {
         run("sudo", &["install", "-Dm755", &this.to_string_lossy(), BINARY]);
     }
-    let unprivileged = fs::read_to_string("/proc/sys/net/ipv4/ip_unprivileged_port_start")
-        .ok()
-        .and_then(|port| port.trim().parse::<u16>().ok())
-        .unwrap_or(1024);
-    if port() < unprivileged {
+    if port_is_reserved() {
         run("sudo", &["setcap", "cap_net_bind_service=ep", BINARY]);
     }
     let rule = format!("printf '%s\\n' '{UDEV_RULE}' > {UDEV_RULE_PATH}");
@@ -155,13 +247,18 @@ pub fn start(tailnet_only: bool) {
         run("systemctl", &["--user", "daemon-reload"]);
         run("systemctl", &["--user", "enable", USER_UNIT]);
         run("systemctl", &["--user", "restart", USER_UNIT]);
-        let draft = data_directory().join(LOGIN_UNIT); // where no one else writes
-        write(&draft, &login_unit());
-        run("sudo", &["install", "-m644", &draft.to_string_lossy(), &login_unit_path()]);
-        let _ = fs::remove_file(draft);
+        install_system_unit(LOGIN_UNIT, &login_unit());
+        let updates = update::wanted_path().exists();
+        if updates {
+            install_system_unit(UPDATE_WATCH, &update_watch());
+            install_system_unit(UPDATE_UNIT, &update_unit());
+        }
         run("sudo", &["systemctl", "daemon-reload"]);
         run("sudo", &["systemctl", "--quiet", "enable", LOGIN_UNIT]);
         run("sudo", &["systemctl", "restart", LOGIN_UNIT]);
+        if updates {
+            run("sudo", &["systemctl", "--quiet", "enable", "--now", UPDATE_WATCH]);
+        }
         println!("Installed {BINARY} and started the {USER_UNIT} user service,");
         println!("and the {LOGIN_UNIT} system service for the login screen.");
     } else {
@@ -180,7 +277,7 @@ pub fn stop() {
     // Whichever way it was started; what is not there to stop or remove is fine.
     if has_systemd() {
         run_quietly("systemctl", &["--user", "--quiet", "disable", "--now", USER_UNIT]);
-        run_quietly("sudo", &["systemctl", "--quiet", "disable", "--now", LOGIN_UNIT]);
+        run_quietly("sudo", &["systemctl", "--quiet", "disable", "--now", LOGIN_UNIT, UPDATE_WATCH]);
     }
     stop_host();
     for path in [unit_path(), autostart_path(), desktop_entry_path()] {
@@ -190,7 +287,8 @@ pub fn stop() {
         run("systemctl", &["--user", "daemon-reload"]);
     }
     firewall::close();
-    run("sudo", &["rm", "-f", BINARY, UDEV_RULE_PATH, &login_unit_path()]);
+    let units = [LOGIN_UNIT, UPDATE_WATCH, UPDATE_UNIT].map(system_unit_path);
+    run("sudo", &["rm", "-f", BINARY, UDEV_RULE_PATH, &units[0], &units[1], &units[2]]);
     run("sudo", &["udevadm", "control", "--reload"]);
 }
 

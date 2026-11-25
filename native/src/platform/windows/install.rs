@@ -17,10 +17,39 @@ const TAILNET: &str = "100.64.0.0/10,fd7a:115c:a1e0::/48";
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-fn binary() -> PathBuf {
+pub fn binary() -> PathBuf {
     let programs =
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| fail("LOCALAPPDATA is not set"));
     programs.join("Programs").join(NAME).join(format!("{NAME}.exe"))
+}
+
+/// Newer versions can install themselves: the binary is in the user's own folder.
+pub fn updates_itself() -> Result<(), &'static str> {
+    Ok(())
+}
+
+/// Starts the installed program as `remote-desktop update`, which outlives the host that it replaces. It has
+/// a console without a window, and what it runs shares that.
+pub fn ask_for_update() {
+    if let Err(error) = Command::new(binary()).arg("update").creation_flags(CREATE_NO_WINDOW).spawn() {
+        warn!("cannot start the update: {error}");
+    }
+}
+
+/// The host leaves before the binary changes, and is started from the new one. Windows lets a running
+/// program's file be renamed, which is how `update`, run from that file, makes room for the new one.
+pub fn stop_for_update() {
+    end_running(&binary());
+}
+
+pub fn start_updated() {
+    let _ = start_host(&binary());
+}
+
+/// The host outlives this program, and Windows leaves nothing behind of a process nobody waits for.
+#[allow(clippy::zombie_processes)]
+fn start_host(binary: &Path) -> std::io::Result<()> {
+    Command::new(binary).creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW).spawn().map(drop)
 }
 
 /// Installing again restarts the host.
@@ -54,12 +83,7 @@ pub fn start(tailnet_only: bool) {
     let command = format!("\"{}\"", binary.display());
     run("reg", &["add", RUN_KEY, "/v", NAME, "/t", "REG_SZ", "/d", &command, "/f"]);
     open_firewall(tailnet_only);
-    // The host outlives this program, and Windows leaves nothing behind of a process nobody waits for.
-    #[allow(clippy::zombie_processes)]
-    Command::new(&binary)
-        .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
-        .spawn()
-        .unwrap_or_else(|error| fail(&format!("cannot start {}: {error}", binary.display())));
+    start_host(&binary).unwrap_or_else(|error| fail(&format!("cannot start {}: {error}", binary.display())));
     println!("Installed {} and started it; from now on it starts at logon.", binary.display());
 }
 
@@ -69,6 +93,7 @@ pub fn stop() {
     run_quietly("reg", &["delete", RUN_KEY, "/v", NAME, "/f"]);
     as_administrator(&format!("netsh advfirewall firewall delete rule name={NAME}"));
     let _ = std::fs::remove_file(binary());
+    let _ = std::fs::remove_file(binary().with_extension("old")); // what an update leaves (see update.rs)
 }
 
 /// The rule follows where the certificate comes from: everyone, or the tailnet only.

@@ -12,7 +12,7 @@ use rustls::ServerConfig;
 use crate::platform::{self, Input};
 use crate::screen::Layout;
 use crate::tls::Connection;
-use crate::{certificate, fail, quic, session, ws};
+use crate::{certificate, fail, quic, session, update, ws};
 
 /// The client, compiled into the binary: path, content type, body.
 const PAGES: [(&str, &str, &[u8]); 5] = [
@@ -53,6 +53,10 @@ pub struct Host {
     tls: Mutex<Arc<ServerConfig>>,
     /// The UDP side, once the host serves and if the UDP port could be had.
     pub udp: OnceLock<quic::Endpoint>,
+    /// Held once more by each connection that asks for a session: nobody is connected while it is held once.
+    pub viewers: Arc<()>,
+    /// A newer version than this one, once the host knows of it, and whether it installs itself (see update.rs).
+    pub newer: Mutex<Option<(String, bool)>>,
 }
 
 impl Host {
@@ -72,6 +76,8 @@ impl Host {
             tailnet_only,
             tls: Mutex::new(tls),
             udp: OnceLock::new(),
+            viewers: Arc::default(),
+            newer: Mutex::default(),
         })
     }
 }
@@ -91,6 +97,13 @@ pub fn run(address: &str) -> ! {
             }
         }
     });
+    // Only the installed host looks for newer versions of itself, not one run by hand beside it.
+    if std::env::current_exe().is_ok_and(|this| this == platform::install::binary()) {
+        thread::spawn({
+            let host = host.clone();
+            move || update::watch(host)
+        });
+    }
     serve(listen(address), host)
 }
 
@@ -180,6 +193,7 @@ fn answer(socket: TcpStream, host: &Arc<Host>) -> io::Result<()> {
         }
         let accept = ws::accept_key(key);
         connection.write(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").as_bytes())?;
+        let _viewer = host.viewers.clone();
         session::run(&connection, host);
         return Ok(());
     }

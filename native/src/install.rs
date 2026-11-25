@@ -7,14 +7,22 @@ use std::process::{Command, Stdio};
 
 use crate::platform::install::{self as service, BINARY};
 use crate::platform::{password_path, without_echo, write_private};
-use crate::{PORT, certificate, fail, port, port_path};
+use crate::{PORT, certificate, fail, port, port_path, update};
 
 /// `remote-desktop install`: asks for a password unless there is one, makes the certificate unless there is one,
 /// and leaves the host running as a service, on `chosen` where a port is given and else on the one it had.
-pub fn install(tailscale: bool, no_password: bool, chosen: Option<u16>) {
+/// With `auto_update`, newer versions install themselves from then on, where they can (see update.rs).
+pub fn install(tailscale: bool, no_password: bool, chosen: Option<u16>, auto_update: bool) {
     service::check_port(chosen.unwrap_or_else(port));
     if let Some(chosen) = chosen {
         write_private(&port_path(), chosen.to_string().as_bytes()).unwrap_or_else(|error| fail(&error));
+    }
+    if auto_update && !update::wanted_path().exists() {
+        match service::updates_itself() {
+            Ok(()) if !run_quietly("curl", &["--version"]) => fail("--auto-update needs curl, which is not found"),
+            Ok(()) => write(&update::wanted_path(), ""),
+            Err(why_not) => println!("Newer versions are not installed by themselves: {why_not}"),
+        }
     }
     if no_password {
         clear_password();
@@ -130,6 +138,24 @@ pub fn check_tcp_port(port: u16, installed_owns_it: impl FnOnce() -> bool) -> Re
         ));
     }
     Ok(())
+}
+
+/// curl, which each of the systems has. A host without a console must not have one opened for it.
+pub fn curl() -> Command {
+    let mut curl = Command::new("curl");
+    curl.args(["--disable", "--silent"]);
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut curl, 0x0800_0000); // CREATE_NO_WINDOW
+    curl
+}
+
+/// Whether the host answers on `port` of this machine: with its client, whatever the certificate.
+pub fn serves(port: u16) -> bool {
+    let url = format!("https://127.0.0.1:{port}/manifest.json");
+    curl()
+        .args(["--noproxy", "*", "--insecure", "--max-time", "3", &url])
+        .output()
+        .is_ok_and(|reply| reply.status.success() && reply.stdout == include_bytes!("../../manifest.json")[..])
 }
 
 /// Runs a command that has to succeed, or else ends with what went wrong.

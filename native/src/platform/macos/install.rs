@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::input;
-use crate::install::{check_tcp_port, run, run_quietly, write};
+use crate::install::{check_tcp_port, run, run_quietly, serves, write};
 use crate::{NAME, fail};
 
 pub const BINARY: &str = "/usr/local/bin/remote-desktop";
@@ -60,6 +60,16 @@ pub fn restart_command() -> String {
     format!("launchctl kickstart -k {}", service())
 }
 
+pub fn binary() -> PathBuf {
+    BINARY.into()
+}
+
+/// Whether newer versions can install themselves, or else why not.
+pub fn updates_itself() -> Result<(), &'static str> {
+    Err("a Mac asks at the Mac for a new version's permissions. The page says when there is \
+         one, and `remote-desktop update` installs it.")
+}
+
 /// Only the active LaunchAgent that this installer replaces may already hold the listening port.
 pub fn check_port(port: u16) {
     check_tcp_port(port, || {
@@ -101,13 +111,7 @@ fn wait_until_serving() {
         if TcpStream::connect(("127.0.0.1", port)).is_err() {
             return false;
         }
-        let url = format!("https://127.0.0.1:{port}/manifest.json");
-        let response = Command::new("/usr/bin/curl")
-            .args(["--disable", "--noproxy", "*", "--silent", "--insecure", "--max-time", "3", &url])
-            .output();
-        if !response.is_ok_and(|reply| {
-            reply.status.success() && reply.stdout == include_bytes!("../../../../manifest.json")[..]
-        }) {
+        if !serves(port) {
             fail(&format!(
                 "port {port} is answering but did not serve the remote desktop client. Check for another HTTPS service."
             ));

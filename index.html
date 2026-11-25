@@ -50,7 +50,7 @@
   .problem { color: var(--text); }
   /* Before connecting, the panel has only its settings, under the login. */
   .connect .panel { flex: none; max-width: 360px; }
-  .connect .panel > :is(.notice, .stats, .delay, .actions) { display: none; }
+  .connect .panel > :is(.notice, .newer, .stats, .delay, .actions) { display: none; }
 
   /* Session */
   canvas { display: none; width: 100%; height: 100%; object-fit: contain; background: #000; }
@@ -87,6 +87,7 @@
   .panel > * { border-bottom: 1px solid var(--line); }
   .notice { display: none; margin: 0; padding: 8px var(--inset); background: var(--text); color: var(--ground); }
   .slow .notice { display: block; }
+  .newer { margin: 0; padding: 8px var(--inset); color: var(--muted); }
   .stats, .delay { padding: 10px var(--inset) 8px; display: flex; flex-direction: column; gap: 2px; }
   .now { display: flex; gap: 18px; font-size: 16px; font-weight: 500; white-space: nowrap; }
   .stats small, .says { font-size: 12px; color: var(--muted); }
@@ -197,6 +198,7 @@
 <div class="overlay">
   <form class="panel" id="settings" hidden>
     <p class="notice" id="notice"></p>
+    <p class="newer" id="newer" hidden></p>
     <div class="stats">
       <div class="now"><output id="now-fps">–</output><output id="now-delay">–</output><output id="now-bitrate">–</output></div>
       <small id="now-picture">–</small>
@@ -917,6 +919,11 @@ function connect() {
   const told = {
     size(width, height) { sourceSize = { width, height }; place(); },
     scale(percent) { windowsScale = percent; },
+    // A newer version of the host than the one that runs, and whether that one installs it by itself.
+    update(version, automatic) {
+      $('newer').textContent = `Version ${version} is out. ` + (automatic ? 'The host installs it once nobody is connected.' : 'On the host, run: remote-desktop update');
+      $('newer').hidden = false;
+    },
     ping(sent) { roundTrip = performance.now() - sent; },
     stats(encode, send, kbps, heldBack) { host = { encode, send, kbps, heldBack }; },
     clipboard(text) { navigator.clipboard.writeText(clipboard = text).catch(() => {}); },
@@ -962,6 +969,7 @@ function connect() {
     if (hello.size === 'client') clientWindow = hello.window;
     ws.send(JSON.stringify(hello));
     greeted = true;
+    $('newer').hidden = true;  // until this host says so again
   };
   ws.onmessage = event => {
     received += event.data.byteLength ?? event.data.length;

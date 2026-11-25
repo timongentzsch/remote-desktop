@@ -96,6 +96,9 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
         let names: Vec<&str> = screens.iter().map(|screen| screen.name.as_str()).collect();
         outbox.push_control(text(&json!(["screens", names, shown.name])));
     }
+    if let Some((version, automatic)) = &*host.newer.lock().unwrap() {
+        outbox.push_control(text(&json!(["update", version, automatic])));
+    }
     // Where the host has a UDP side, the client is told how to open its end of a link.
     let link = host.udp.get().map(|udp| udp.link());
     let way_by_udp = || {

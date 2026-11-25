@@ -1,10 +1,11 @@
 //! Remote desktop host in one binary: serves the web client, streams the screen as H.264 and injects the
 //! client's keyboard and pointer input.
 //!
-//!     remote-desktop install [--tailscale] [--no-password] [--port=PORT]
+//!     remote-desktop install [--tailscale] [--no-password] [--port=PORT] [--auto-update]
 //!                                               install system-wide and run as a service of the desktop session;
 //!                                               with --tailscale, for devices on the tailnet only
 //!     remote-desktop uninstall                  remove what install set up
+//!     remote-desktop update                     install the newest release, if it is newer (see update.rs)
 //!     remote-desktop password [--none]          set the login password, or allow access without one
 //!     remote-desktop certificate [--tailscale]  make a new certificate, or switch where it comes from
 //!     remote-desktop [--listen ADDRESS]         run the host (default 0.0.0.0:443, or the port installed with)
@@ -36,14 +37,15 @@ mod session;
 mod stream;
 mod tls;
 mod typing;
+mod update;
 mod ws;
 
 /// The program's name: that of its binary, its services and the directory its settings are kept in.
 const NAME: &str = "remote-desktop";
 /// The host's port, for TCP and for UDP, unless `install --port=` chose another.
 const PORT: u16 = 443;
-const USAGE: &str = "usage: remote-desktop [install [--tailscale] [--no-password] [--port=PORT] | uninstall | \
-                     password [--none] | certificate [--tailscale] | --listen ADDRESS]";
+const USAGE: &str = "usage: remote-desktop [install [--tailscale] [--no-password] [--port=PORT] [--auto-update] | \
+                     uninstall | update | password [--none] | certificate [--tailscale] | --listen ADDRESS]";
 
 /// Ends the program with what went wrong.
 fn fail(message: &str) -> ! {
@@ -83,13 +85,14 @@ fn main() {
             let given = |option: &str| options.iter().any(|given| given == option);
             let port = options.iter().find_map(|option| option.strip_prefix("--port="));
             let port = port.map(|port| port.parse().ok().filter(|&port| port != 0).unwrap_or_else(|| fail(USAGE)));
-            let known = |option: &String| ["--tailscale", "--no-password"].contains(&option.as_str());
+            let known = |option: &String| ["--tailscale", "--no-password", "--auto-update"].contains(&option.as_str());
             if options.iter().any(|option| !known(option) && !option.starts_with("--port=")) {
                 fail(USAGE);
             }
-            install::install(given("--tailscale"), given("--no-password"), port)
+            install::install(given("--tailscale"), given("--no-password"), port, given("--auto-update"))
         }
         (Some("uninstall"), None) => install::uninstall(),
+        (Some("update"), None) => update::update(),
         (Some("password"), None) => install::set_password(),
         (Some("password"), Some(option)) if option == "--none" => install::remove_password(),
         (Some("certificate"), option) if is_tailscale(&option) => install::renew_certificate(option.is_some()),

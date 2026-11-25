@@ -73,6 +73,7 @@ The script says which system it found and what the install will ask for, downloa
 | `--tailscale` | Certificate from Tailscale; only devices on the tailnet are answered (see [Certificates](#certificates)). |
 | `--no-password` | No login password. With `--tailscale`, access is what the tailnet's rules allow. |
 | `--port=N` | Another port than 443, where that is taken. Kept by later installs; the address ends in `:N`. |
+| `--auto-update` | Newer versions install themselves (see [Updates](#updates)). Kept by later installs. Linux with systemd, and Windows. |
 
 What it sets up:
 
@@ -82,7 +83,7 @@ What it sets up:
 | Started by | systemd user service, or the desktop's autostart | LaunchAgent | Run key, at logon |
 | Password, certificate | `~/.config/remote-desktop/` | `~/Library/Application Support/remote-desktop/` | `%LOCALAPPDATA%\remote-desktop\` |
 | Log | journal | `~/Library/Logs/remote-desktop.log` | with the password |
-| Besides | udev rule for `/dev/uinput`; port in ufw or firewalld, TCP and UDP; system service for the login screen | asks for Screen & System Audio Recording and Accessibility, again after each new version | firewall rule, with an administrator's consent |
+| Besides | udev rule for `/dev/uinput`; port in ufw or firewalld, TCP and UDP; system service for the login screen; with `--auto-update`, a path unit and a service that replace the binary as root | asks for Screen & System Audio Recording and Accessibility, again after each new version | firewall rule, with an administrator's consent |
 
 `remote-desktop uninstall` removes all of it but the password and the certificate. Where Linux reserves low
 ports, the binary gets `CAP_NET_BIND_SERVICE` through `setcap`, and with it ignores `LD_LIBRARY_PATH`; a port
@@ -92,14 +93,33 @@ The login screen is shown by the system service under the same address and passw
 port to the user's host, and the page reconnects by itself. Seen working with SDDM. It needs systemd and a
 graphical login: without, let the display manager log the user in and lock the session at once.
 
-    remote-desktop install [--tailscale] [--no-password] [--port=N]
+    remote-desktop install [--tailscale] [--no-password] [--port=N] [--auto-update]
     remote-desktop uninstall
+    remote-desktop update                      install the newest release, if it is newer
     remote-desktop password [--none]           set the login password, or allow access without one
     remote-desktop certificate [--tailscale]   make a new certificate, or switch where it comes from
     remote-desktop --listen 127.0.0.1:8765     run by hand on another address
 
 Versions before 0.10 served on port 8765. Installing moves the host to 443 and removes the old firewall
 rules; bookmarks and a tailnet's access rules need the new address.
+
+## Updates
+
+An installed host asks GitHub once a day for the newest release's `update` file: the version and the SHA-256
+of each binary, signed with Ed25519. The public key is in the binary, the private one a secret of the workflow
+that publishes releases. Only a signed list with a higher version counts, and only a binary with the listed
+hash is installed. The menu on the page says when there is a newer version.
+
+`remote-desktop update` installs it by hand, as `install` would. With `install --auto-update` the host does it
+itself, while nobody is connected:
+
+- **Linux:** the host writes the version it wants to `~/.config/remote-desktop/update`; a systemd path unit
+  watches that file and starts `remote-desktop update` as root, which downloads and verifies for itself.
+- **Windows:** the host starts `remote-desktop update` as the user.
+- **macOS:** not unattended, as a new binary needs its permissions allowed again at the Mac.
+
+If the host served before the binary changed and does not within 30 seconds after, the old binary is put back
+and that version is not tried again. Deleting the `update` file among the settings switches this off.
 
 ## Certificates
 
@@ -137,6 +157,8 @@ Whoever logs in controls the desktop session: treat the address and password lik
   has read the password and the certificate, then the display manager's user.
   `sudo systemctl disable --now remote-desktop-login` switches it off.
 - The host listens on all interfaces unless started with `--listen`.
+- With `--auto-update`, whoever can publish a release of this repository decides what runs on the host, on
+  Linux also as root at the login screen.
 
 ## Build
 
@@ -172,6 +194,7 @@ The Windows binary is built on Linux too, with mingw-w64 and the target `x86_64-
       rate.rs                  the bitrate a connection is given, from how well frames get through
       tls.rs, certificate.rs   the encrypted connection; the certificate behind it
       install.rs               install, uninstall, the password and the certificate; each platform's part
+      update.rs                newer versions: looking for one, checking its signature, putting it in place
       capture.rs, screen.rs    what a session asks of a capture; the screens and where the pointer goes
       stream/                  pictures to video: pacing, size, colour detail, the encoders, the FLV they go in
       audio.rs                 the desktop's sound as Opus

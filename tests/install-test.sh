@@ -41,6 +41,8 @@ sleep 1
 echo "page on port 8765: $(python3 -c "
 import ssl, urllib.request
 print(urllib.request.urlopen('https://localhost:8765/', context=ssl._create_unverified_context()).status)")"
+# Newer versions install themselves through systemd, which is not here: the install says so and goes on.
+/usr/local/bin/remote-desktop install --auto-update | grep "not installed by themselves" || exit 1
 /usr/local/bin/remote-desktop password --none | tail -1
 /usr/local/bin/remote-desktop uninstall 2>&1 | tail -1
 sleep 0.5
