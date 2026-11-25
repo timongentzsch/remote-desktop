@@ -717,7 +717,6 @@ function showStatistics(frames, parts, received, allowed, heldBack, way) {
     ? ` (browser requested ${Math.round(width * ratio)} × ${Math.round(height * ratio)})` : '';
   const percent = Math.round(ratio * 100);
   let scale = '';
-  if (windowsScale === null) scale = ', Windows scale unavailable';
   if (Number.isFinite(windowsScale)) {
     scale = `, Windows scale ${windowsScale}%`;
     if (windowsScale !== percent) scale += ` (${percent}% requested)`;
@@ -912,8 +911,6 @@ function connect() {
     ping(sent) { roundTrip = performance.now() - sent; },
     stats(encode, send, kbps, heldBack) { host = { encode, send, kbps, heldBack }; },
     clipboard(text) { navigator.clipboard.writeText(clipboard = text).catch(() => {}); },
-    // Windows may include the pointer in the video even when a local pointer was requested.
-    pointer(visible) { document.body.classList.toggle('remote-cursor', !visible); },
     // The host's screens and the one it shows. The choice is only offered where there is one to make.
     screens(names, shown) {
       settings.screen.replaceChildren(...names.map(name => new Option(name)));
@@ -939,6 +936,9 @@ function connect() {
     [POINTER](data) {
       const view = new DataView(data), [width, height, x, y] = [1, 3, 5, 7].map(at => view.getUint16(at));
       shape = { width, height, x, y, image: new ImageData(new Uint8ClampedArray(data.slice(9)), width, height) };
+      // A shape of no size: the host has no pointer for this page to draw, as it is hidden or in the picture.
+      document.body.classList.toggle('remote-cursor', !width);
+      if (!width) return;
       showPointer();
     },
   };

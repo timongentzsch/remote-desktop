@@ -30,8 +30,7 @@ pub const HEIGHTS: [usize; 4] = [1080, 720, 540, 360];
 /// What a session and its capture exchange while the capture runs.
 #[derive(Default)]
 pub struct Shared {
-    /// Share Windows' existing capture topology poll with input on every screen.
-    #[cfg(windows)]
+    /// The host's screens, where every session's pointer finds them: a capture that looks at them anew says so here.
     pub screens: std::sync::Arc<crate::screen::Layout>,
     /// Set by the session to end the capture.
     pub stop: AtomicBool,
@@ -58,8 +57,9 @@ pub struct Shared {
 }
 
 /// What the pointer looks like: rows of pixels, each red, green, blue and how opaque it is, and the place in
-/// the picture that is at the pointer's position.
-#[derive(Clone, PartialEq)]
+/// the picture that is at the pointer's position. One of no size leaves the client none to draw: the pointer
+/// is hidden, or in the picture already.
+#[derive(Clone, Default, PartialEq)]
 pub struct Shape {
     pub width: u16,
     pub height: u16,
@@ -97,9 +97,6 @@ pub enum Output<'a> {
     Video(Vec<u8>, Option<Frame>),
     /// The pointer's shape, where the client draws the pointer and the desktop tells its shape.
     Pointer(&'a Shape),
-    /// Whether the client should show its own pointer. Desktop Duplication can include it in the picture.
-    #[cfg(windows)]
-    PointerVisible(bool),
 }
 
 /// Receives what the capture puts out; returns false once nobody is listening any more.

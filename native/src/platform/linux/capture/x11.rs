@@ -75,7 +75,7 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
     // Where the client draws the pointer, it is told the pointer's shape, now and whenever that changes.
     if !stream.settings.cursor {
         x.xfixes_select_cursor_input(root, CursorNotifyMask::DISPLAY_CURSOR)?.check()?;
-        stream.pointer(shape(&x.xfixes_get_cursor_image()?.reply()?));
+        stream.pointer(&shape(&x.xfixes_get_cursor_image()?.reply()?));
     }
 
     // The picture in the stream is out of date: at first because there is none.
@@ -87,7 +87,7 @@ fn capture(stream: &mut Stream) -> Result<Ended, Box<dyn std::error::Error>> {
         while let Some(event) = events.next(&x)? {
             match event {
                 Event::DamageNotify(_) => stale = true,
-                Event::XfixesCursorNotify(_) => stream.pointer(shape(&x.xfixes_get_cursor_image()?.reply()?)),
+                Event::XfixesCursorNotify(_) => stream.pointer(&shape(&x.xfixes_get_cursor_image()?.reply()?)),
                 Event::ConfigureNotify(change) if change.window == root && (change.width, change.height) != whole => {
                     return Ok(Ended::Resized);
                 }

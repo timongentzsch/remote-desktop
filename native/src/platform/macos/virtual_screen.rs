@@ -136,6 +136,11 @@ impl VirtualScreen {
         NAME
     }
 
+    /// The screen is made at the client's own scale: there is none the desktop chose to tell.
+    pub fn scale_percent(&self) -> Option<u32> {
+        None
+    }
+
     /// Makes the display for `window` at `fps` frames a second.
     pub fn create(window: Window, fps: u32, _screen: Option<&str>) -> Result<Self, String> {
         let taken = || IN_USE.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok();

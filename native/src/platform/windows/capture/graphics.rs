@@ -16,7 +16,7 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 use windows::core::{Interface, factory};
 
-use super::{CHECK_DISPLAYS, Picture, cursor::LocalCursor, next_frame, take};
+use super::{CHECK_DISPLAYS, Picture, cursor::LocalCursor, next_frame, same_display, take};
 use crate::screen::Screen;
 use crate::stream::Stream;
 
@@ -98,7 +98,7 @@ pub(super) fn run(
     while stream.wanted() && !closed.load(Ordering::Relaxed) {
         let now = Instant::now();
         if now >= check_displays {
-            if !stream.same_display(screen)? {
+            if !same_display(stream, screen)? {
                 break;
             }
             check_displays = now + CHECK_DISPLAYS;

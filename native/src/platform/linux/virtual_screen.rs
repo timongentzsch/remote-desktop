@@ -32,6 +32,11 @@ impl VirtualScreen {
         NAME
     }
 
+    /// The screen is made at the client's own scale: there is none the desktop chose to tell.
+    pub fn scale_percent(&self) -> Option<u32> {
+        None
+    }
+
     /// Makes the screen for `window` at `fps` frames a second and switches the machine's own screens off.
     pub fn create(window: Window, fps: u32, _screen: Option<&str>) -> Result<Self, String> {
         if !hyprland::running() {

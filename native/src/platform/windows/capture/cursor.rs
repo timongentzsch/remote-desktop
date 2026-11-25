@@ -1,5 +1,5 @@
-//! Windows Graphics Capture leaves the pointer out of the video. Send its shape and visibility
-//! separately so moving it on the client never waits for a frame.
+//! Windows Graphics Capture leaves the pointer out of the video. Send its shape, or an empty one
+//! while it is not shown, so moving it on the client never waits for a frame.
 
 use windows::Win32::Graphics::Gdi::{
     BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, GdiFlush,
@@ -15,24 +15,22 @@ use crate::stream::Stream;
 
 #[derive(Default)]
 pub(super) struct LocalCursor {
-    visible: Option<bool>,
     handle: HCURSOR,
+    shape: Option<Shape>,
 }
 
 impl LocalCursor {
     pub(super) fn update(&mut self, stream: &mut Stream, monitor: HMONITOR) {
         let Ok(current) = current(monitor) else { return };
-        let visible = current.is_some();
-        if let Some(cursor) = current
-            && cursor != self.handle
+        // A pointer that is hidden or on another display leaves the client none to draw.
+        let Some(cursor) = current else { return stream.pointer(&Shape::default()) };
+        if cursor != self.handle
             && let Some(shape) = shape(cursor)
         {
-            stream.pointer(shape);
-            self.handle = cursor;
+            (self.handle, self.shape) = (cursor, Some(shape));
         }
-        if self.visible != Some(visible) {
-            stream.pointer_visible(visible);
-            self.visible = Some(visible);
+        if let Some(shape) = &self.shape {
+            stream.pointer(shape);
         }
     }
 }

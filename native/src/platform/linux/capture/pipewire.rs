@@ -20,7 +20,7 @@ pub fn run(node: u32, mut stream: Stream, desktop: &str) -> Result<(), String> {
             Err(()) => return Err(format!("{desktop} ended the screen cast")),
         }
         if let Some(shape) = screen.pointer() {
-            stream.pointer(shape);
+            stream.pointer(&shape);
         }
         // Reconnect to the existing cast for one native picture even when there is no damage.
         if stream.refine()

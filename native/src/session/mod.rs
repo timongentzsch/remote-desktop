@@ -87,7 +87,6 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     // The client is told which screens there are and which it is shown, and its pointer is placed on that one.
     let selected = settings.screen.clone();
     let outbox = Arc::new(Outbox::default());
-    #[cfg(windows)]
     if let Some(screen) = &made {
         tell_scale(&outbox, screen);
     }
@@ -107,12 +106,8 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     if let Some(message) = way_by_udp() {
         outbox.push_control(message);
     }
-    let shared = Arc::new(Shared {
-        patience: login.patience.into(),
-        #[cfg(windows)]
-        screens: host.screens.clone(),
-        ..Shared::default()
-    });
+    let shared =
+        Arc::new(Shared { patience: login.patience.into(), screens: host.screens.clone(), ..Shared::default() });
     let told = Arc::new(FromClient {
         ceiling: login.ceiling.into(),
         patience: login.patience.into(),
@@ -129,22 +124,17 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
             move || send(&outbox, &connection, &shared, &told, link.as_deref())
         }),
         thread::spawn({
-            let (outbox, shared, host) = (outbox.clone(), shared.clone(), host.clone());
+            let (outbox, shared) = (outbox.clone(), shared.clone());
             move || {
                 let sink = Box::new({
-                    let outbox = outbox.clone();
+                    let (outbox, screens) = (outbox.clone(), shared.screens.clone());
                     move |output: Output| match output {
                         Output::ScreenSize(width, height) => {
-                            drop(host.screens.refresh());
+                            drop(screens.refresh());
                             outbox.push_control(text(&json!(["size", width, height])));
                             true
                         }
                         Output::Video(piece, frame) => outbox.push_video(piece, frame),
-                        #[cfg(windows)]
-                        Output::PointerVisible(visible) => {
-                            outbox.push_control(text(&json!(["pointer", visible])));
-                            true
-                        }
                         // A message of its own kind: the shape's size and the place of its tip, then its pixels.
                         Output::Pointer(shape) => {
                             let numbers = [shape.width, shape.height, shape.hot.0, shape.hot.1];
@@ -238,7 +228,6 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
                         Ok(()) => drop(host.screens.refresh()),
                         Err(error) => warn!("the screen keeps its size: {error}"),
                     }
-                    #[cfg(windows)]
                     tell_scale(&outbox, made);
                 }
             }
@@ -453,9 +442,11 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
     connection.close(); // makes the session's read loop finish
 }
 
-#[cfg(windows)]
+/// Tells the client which scale the desktop gave the screen made for it, where the desktop says.
 fn tell_scale(outbox: &Outbox, screen: &VirtualScreen) {
-    outbox.push_control(text(&json!(["scale", screen.scale_percent()])));
+    if let Some(percent) = screen.scale_percent() {
+        outbox.push_control(text(&json!(["scale", percent])));
+    }
 }
 
 /// A text message to the client: a JSON array whose first element names it.

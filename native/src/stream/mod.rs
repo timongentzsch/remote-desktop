@@ -199,7 +199,7 @@ enum Frame {
 
 pub struct Stream {
     pub settings: Settings,
-    shared: Arc<Shared>,
+    pub shared: Arc<Shared>,
     sink: Sink,
     /// The size of the screen the encoder is open for.
     screen: (usize, usize),
@@ -291,12 +291,6 @@ impl Stream {
     /// The time between two frames at the wanted frame rate.
     pub fn frame_interval(&self) -> Duration {
         Duration::from_secs(1) / self.settings.fps
-    }
-
-    #[cfg(windows)]
-    pub fn same_display(&self, screen: &crate::screen::Screen) -> Result<bool, String> {
-        let current = self.shared.screens.refresh()?;
-        Ok(crate::screen::choose(&current, self.settings.screen.as_deref()) == Some(screen))
     }
 
     /// How long the capture may wait for the screen to change before it calls `refine` and looks at `wanted`
@@ -582,16 +576,11 @@ impl Stream {
     }
 
     /// Passes the pointer's shape on, unless it is the one passed on last.
-    pub fn pointer(&mut self, shape: Shape) {
-        if self.pointer.as_ref() != Some(&shape) {
-            self.put_out(Output::Pointer(&shape));
-            self.pointer = Some(shape);
+    pub fn pointer(&mut self, shape: &Shape) {
+        if self.pointer.as_ref() != Some(shape) {
+            self.put_out(Output::Pointer(shape));
+            self.pointer = Some(shape.clone());
         }
-    }
-
-    #[cfg(windows)]
-    pub fn pointer_visible(&mut self, visible: bool) {
-        self.put_out(Output::PointerVisible(visible));
     }
 
     fn put_out(&mut self, output: Output) {
@@ -673,12 +662,6 @@ mod tests {
         let (sizes, observed) = std::sync::mpsc::channel();
         let mut stream = Stream::new(
             settings,
-        let poor_motion = |stream: &mut Stream| {
-            stream.weighed = Weighed::default();
-            for _ in 0..EFFORT_FRAMES {
-                stream.weigh_effort(Some(stream.frame_interval()), Duration::from_millis(1), true, true);
-            }
-        };
             Arc::new(Shared::default()),
             Box::new(move |output| {
                 if let Output::ScreenSize(width, height) = output {
@@ -690,6 +673,12 @@ mod tests {
         let (width, height) = (128, 720);
         let pixels = vec![90; width * height * 4];
         let picture = |stream: &mut Stream| stream.picture(&pixels, width * 4, width, height);
+        let poor_motion = |stream: &mut Stream| {
+            stream.weighed = Weighed::default();
+            for _ in 0..EFFORT_FRAMES {
+                stream.weigh_effort(Some(stream.frame_interval()), Duration::from_millis(1), true, true);
+            }
+        };
         picture(&mut stream);
         poor_motion(&mut stream);
         assert_eq!(stream.settings.height, Some(540), "poor frames at the user's cap");
@@ -708,11 +697,6 @@ mod tests {
             stream.encoded = Instant::now() - REFINE_INTERVAL;
             assert!(!stream.refine());
         }
-
-        let rest = stream.size_rest.until;
-        poor_motion(&mut stream);
-        assert_eq!(stream.settings.height, Some(360), "poor motion again: straight back to the size it had");
-        assert_eq!(stream.size_rest.until, rest, "which is no reason for a longer rest");
         assert!(stream.still.level_frames >= Still::LEVEL_FRAMES);
         stream.encoded = Instant::now() - REFINE_INTERVAL;
         assert!(!stream.refine(), "a short pause keeps the current size");
@@ -724,6 +708,11 @@ mod tests {
         assert_eq!(stream.encoder.as_ref().unwrap().height, height);
         assert_eq!(stream.opened, 4, "one encoder per resolution");
         assert_eq!(observed.try_iter().collect::<Vec<_>>(), [(width, height)], "the pointer keeps its native scale");
+
+        let rest = stream.size_rest.until;
+        poor_motion(&mut stream);
+        assert_eq!(stream.settings.height, Some(360), "poor motion again: straight back to the size it had");
+        assert_eq!(stream.size_rest.until, rest, "which is no reason for a longer rest");
     }
 
     #[test]

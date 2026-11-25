@@ -47,23 +47,13 @@ struct Pointer {
     width: usize,
     pixels: Vec<u32>,
     at: Option<(i32, i32)>,
-    initialized: bool,
 }
 
-impl Pointer {
-    /// Only mouse updates carry a valid position. Report visibility on the first frame too: a driver that
-    /// draws the pointer into the image may never report a separate pointer.
-    fn update_position(&mut self, info: &DXGI_OUTDUPL_FRAME_INFO) -> Option<bool> {
-        let was_visible = self.at.is_some();
-        if info.LastMouseUpdateTime != 0 {
-            let position = info.PointerPosition;
-            self.at = position.Visible.as_bool().then_some((position.Position.x, position.Position.y));
-        }
-        let visible = self.at.is_some();
-        let changed = !self.initialized || was_visible != visible;
-        self.initialized = true;
-        changed.then_some(visible)
-    }
+/// Whether `screen` is still the display to capture. Looking tells every session's pointer where the displays
+/// now are.
+fn same_display(stream: &Stream, screen: &Screen) -> Result<bool, String> {
+    let current = stream.shared.screens.refresh()?;
+    Ok(crate::screen::choose(&current, stream.settings.screen.as_deref()) == Some(screen))
 }
 
 /// Says what of the capture failed, and how.
@@ -133,13 +123,14 @@ fn duplicate(
     let mut shown = Vec::new();
     let mut staging = None;
     let mut pointer = Pointer::default();
+    let mut drawn = None;
     let mut stale = false;
     let mut due = Instant::now();
     let mut check_displays = due + CHECK_DISPLAYS;
     while stream.wanted() {
         let now = Instant::now();
         if now >= check_displays {
-            if !stream.same_display(screen)? {
+            if !same_display(stream, screen)? {
                 return Ok(End::Reopen);
             }
             check_displays = now + CHECK_DISPLAYS;
@@ -152,7 +143,11 @@ fn duplicate(
         let (mut info, mut resource) = (DXGI_OUTDUPL_FRAME_INFO::default(), None::<IDXGIResource>);
         match unsafe { duplication.AcquireNextFrame(millis, &mut info, &mut resource) } {
             Ok(()) => {
-                let visible = pointer.update_position(&info);
+                // Only mouse updates carry a valid position.
+                if info.LastMouseUpdateTime != 0 {
+                    let position = info.PointerPosition;
+                    pointer.at = position.Visible.as_bool().then_some((position.Position.x, position.Position.y));
+                }
                 if pointer.at.is_none() && local_monitor.is_some_and(cursor::on_monitor) {
                     unsafe { duplication.ReleaseFrame() }.map_err(failed("the frame"))?;
                     return Ok(End::Embedded);
@@ -168,11 +163,13 @@ fn duplicate(
                 unsafe { duplication.ReleaseFrame() }.map_err(failed("the frame"))?;
                 taken.map_err(failed("the frame"))?;
                 if !stream.settings.cursor {
-                    if let Some(shape) = shape {
-                        stream.pointer(shape);
-                    }
-                    if let Some(visible) = visible {
-                        stream.pointer_visible(visible);
+                    drawn = shape.or(drawn);
+                    // A driver that draws the pointer into the picture may never tell of one apart from it:
+                    // the client then has none to draw, from the first frame on.
+                    match (pointer.at, &drawn) {
+                        (None, _) => stream.pointer(&Shape::default()),
+                        (Some(_), Some(shape)) => stream.pointer(shape),
+                        (Some(_), None) => {}
                     }
                 }
                 stale |= info.LastPresentTime != 0 || (stream.settings.cursor && info.LastMouseUpdateTime != 0);
@@ -405,28 +402,9 @@ mod tests {
         };
         let (_, _, pixels) = premultiplied(&shape, &[200, 100, 50, 128]);
         assert_eq!(pixels, [u32::from_le_bytes([100, 50, 25, 128])]);
-        let pointer = Pointer { width: 1, pixels, at: Some((1, 0)), ..Default::default() };
+        let pointer = Pointer { width: 1, pixels, at: Some((1, 0)) };
         let mut picture = [10u8; 8];
         paint(&pointer, &mut picture, 2, 1);
         assert_eq!(picture, [10, 10, 10, 10, 104, 54, 29, 10], "half of the pointer over half of what is under");
-    }
-
-    #[test]
-    fn local_pointer_follows_visibility_even_without_a_new_shape() {
-        let mut pointer = Pointer::default();
-        let mut frame = DXGI_OUTDUPL_FRAME_INFO::default();
-        assert_eq!(pointer.update_position(&frame), Some(false), "hide the local arrow on a baked-in first frame");
-        assert_eq!(pointer.update_position(&frame), None);
-        frame.LastMouseUpdateTime = 1;
-        frame.PointerPosition.Visible = true.into();
-        assert_eq!(pointer.update_position(&frame), Some(true));
-        frame.PointerPosition.Position.x = 7;
-        assert_eq!(pointer.update_position(&frame), None, "motion leaves the local cursor alone");
-        assert_eq!(pointer.at, Some((7, 0)));
-        assert_eq!(pointer.update_position(&Default::default()), None, "an image-only frame keeps visibility");
-        frame.PointerPosition.Visible = false.into();
-        assert_eq!(pointer.update_position(&frame), Some(false));
-        frame.PointerPosition.Visible = true.into();
-        assert_eq!(pointer.update_position(&frame), Some(true));
     }
 }
