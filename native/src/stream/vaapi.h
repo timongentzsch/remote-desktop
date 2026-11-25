@@ -41,6 +41,8 @@ struct vaapi_codec {
     /* Which headers the codec's file writes for the driver (VA_ENC_PACKED_HEADER_...): the parameter sets
        always, the slice headers where the driver does not write them itself. */
     unsigned packed_headers;
+    /* And which it writes besides where the driver takes them. */
+    unsigned packed_if_taken;
     /* Where set, chooses what the driver allows once its configuration is made (vaapi_attribute): the block
        sizes, encoder->block and the size in blocks with them, and whatever else the parameter sets need. */
     void (*configure)(struct vaapi *encoder);
@@ -59,6 +61,8 @@ struct vaapi {
     const struct vaapi_codec *codec;
     VAConfigID config;
     VAContextID context;
+    /* The headers the driver is given (see vaapi_codec.packed_headers). */
+    unsigned packed;
     VASurfaceID surfaces[SURFACES];
     VABufferID coded;
     /* The picture's size, and in blocks of `block` pixels. */
@@ -109,7 +113,7 @@ int vaapi_add(struct vaapi *encoder, VABufferType type, const void *data, unsign
 int vaapi_add_misc(struct vaapi *encoder, VAEncMiscParameterType type, const void *value, unsigned size, VABufferID *buffers, int *count);
 /* A header the driver writes into the stream as it is, NAL units after start codes, heading the part of it
    `kind` (VAEncPackedHeader...) says. */
-int vaapi_add_packed(struct vaapi *encoder, unsigned kind, const uint8_t *nal, int size, VABufferID *buffers, int *count);
+int vaapi_add_packed(struct vaapi *encoder, unsigned kind, const uint8_t *nal, int bits, VABufferID *buffers, int *count);
 /* Adds `rbsp` to encoder->headers as a parameter set of `type`. */
 void vaapi_header(struct vaapi *encoder, int type, const struct bits *rbsp);
 

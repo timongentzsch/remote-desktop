@@ -160,12 +160,12 @@ void vaapi_header(struct vaapi *encoder, int type, const struct bits *rbsp)
     encoder->header_sizes[at] = nal_write(encoder->headers[at], sizeof encoder->headers[at], encoder->codec->codec, type, rbsp);
 }
 
-int vaapi_add_packed(struct vaapi *encoder, unsigned kind, const uint8_t *nal, int size, VABufferID *buffers, int *count)
+int vaapi_add_packed(struct vaapi *encoder, unsigned kind, const uint8_t *nal, int bits, VABufferID *buffers, int *count)
 {
-    VAEncPackedHeaderParameterBuffer header = { .type = kind, .bit_length = size * 8, .has_emulation_bytes = 1 };
+    VAEncPackedHeaderParameterBuffer header = { .type = kind, .bit_length = bits, .has_emulation_bytes = 1 };
     if (vaapi_add(encoder, VAEncPackedHeaderParameterBufferType, &header, sizeof header, buffers, count) < 0)
         return -1;
-    return vaapi_add(encoder, VAEncPackedHeaderDataBufferType, nal, size, buffers, count);
+    return vaapi_add(encoder, VAEncPackedHeaderDataBufferType, nal, (bits + 7) / 8, buffers, count);
 }
 
 /* What goes with an IDR: the sequence, the driver's speed, and the parameter sets, all of which head the
@@ -181,7 +181,7 @@ static int add_idr(struct vaapi *encoder, VABufferID *buffers, int *count)
     }
     if (encoder->codec->add_sequence(encoder, buffers, count) < 0
         || vaapi_add_misc(encoder, VAEncMiscParameterTypeQualityLevel, &speed, sizeof speed, buffers, count) < 0
-        || vaapi_add_packed(encoder, VAEncPackedHeaderSequence, joined, size, buffers, count) < 0)
+        || vaapi_add_packed(encoder, VAEncPackedHeaderSequence, joined, size * 8, buffers, count) < 0)
         return -1;
     return 0;
 }
@@ -564,10 +564,12 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
     for (int plane = 0; plane < 3; plane++)
         if (!(encoder->planes[plane] = malloc(plane ? luma / 4 : luma)))
             goto failed;
+    unsigned taken = vaapi_attribute(encoder, VAConfigAttribEncPackedHeaders);
+    encoder->packed = kind->packed_headers | (taken == VA_ATTRIB_NOT_SUPPORTED ? 0 : taken & kind->packed_if_taken);
     VAConfigAttrib attributes[] = {
         { .type = VAConfigAttribRTFormat, .value = VA_RT_FORMAT_YUV420 },
         { .type = VAConfigAttribRateControl, .value = VA_RC_CQP },
-        { .type = VAConfigAttribEncPackedHeaders, .value = kind->packed_headers },
+        { .type = VAConfigAttribEncPackedHeaders, .value = encoder->packed },
     };
     pthread_mutex_lock(&calls);
     int configured = va.vaCreateConfig(display, kind->profile, ENTRYPOINT, attributes, 3, &encoder->config) == VA_STATUS_SUCCESS;

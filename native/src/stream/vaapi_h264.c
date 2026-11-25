@@ -12,6 +12,9 @@
 #define SLICE_P 0
 #define SLICE_I 2
 #define PROFILE_HIGH 100
+/* NAL unit types of slices (table 7-1). */
+#define NAL_SLICE 1
+#define NAL_IDR 5
 
 /* The part of the macroblocks that is not shown, right and below, in pairs of pixels as 4:2:0 counts it. */
 static int crop_right(const struct vaapi *encoder)
@@ -87,7 +90,8 @@ static void write_sps(struct vaapi *encoder)
     vaapi_header(encoder, NAL_SPS, &sps);
 }
 
-/* The picture parameter set: CABAC, one reference, 8x8 transforms, and deblocking the slices may adjust. */
+/* The picture parameter set: CABAC, one reference, and deblocking the slices may adjust. No 8x8 transforms:
+   AMD's encoders before VCN 5 have none, and Mesa then encodes without them whatever this says. */
 static void write_pps(struct vaapi *encoder)
 {
     struct bits pps = { 0 };
@@ -106,7 +110,7 @@ static void write_pps(struct vaapi *encoder)
     bits_put(&pps, 1, 1); /* deblocking_filter_control_present_flag */
     bits_put(&pps, 0, 1); /* constrained_intra_pred_flag */
     bits_put(&pps, 0, 1); /* redundant_pic_cnt_present_flag */
-    bits_put(&pps, 1, 1); /* transform_8x8_mode_flag */
+    bits_put(&pps, 0, 1); /* transform_8x8_mode_flag */
     bits_put(&pps, 0, 1); /* pic_scaling_matrix_present_flag */
     bits_put_se(&pps, 0); /* second_chroma_qp_index_offset */
     bits_trailing(&pps);
@@ -154,6 +158,37 @@ static int add_sequence(struct vaapi *encoder, VABufferID *buffers, int *count)
     return vaapi_add(encoder, VAEncSequenceParameterBufferType, &sequence, sizeof sequence, buffers, count);
 }
 
+/* The header of a frame's one slice, as the SPS and PPS have it, for a driver that takes one. Mesa's drivers
+   take the kind of NAL unit from it, and without one write a slice that no decoder reads; Intel's writes its
+   own where it is given none. It ends where the slice's data begins, which is not at a whole byte. */
+static int add_slice_header(struct vaapi *encoder, int idr, int qp, VABufferID *buffers, int *count)
+{
+    struct bits header = { 0 };
+    bits_put_ue(&header, 0); /* first_mb_in_slice */
+    bits_put_ue(&header, idr ? SLICE_I : SLICE_P);
+    bits_put_ue(&header, 0); /* pic_parameter_set_id */
+    bits_put(&header, encoder->frames % (1u << LOG2_MAX_FRAME_NUM), LOG2_MAX_FRAME_NUM);
+    if (idr) {
+        bits_put_ue(&header, encoder->idr_id);
+        bits_put(&header, 0, 1); /* no_output_of_prior_pics_flag */
+        bits_put(&header, 0, 1); /* long_term_reference_flag */
+    } else {
+        bits_put(&header, 0, 1); /* num_ref_idx_active_override_flag */
+        bits_put(&header, 0, 1); /* ref_pic_list_modification_flag_l0 */
+        bits_put(&header, 0, 1); /* adaptive_ref_pic_marking_mode_flag */
+        bits_put_ue(&header, 0); /* cabac_init_idc */
+    }
+    bits_put_se(&header, qp - INITIAL_QP); /* slice_qp_delta */
+    bits_put_ue(&header, 0);                /* disable_deblocking_filter_idc */
+    bits_put_se(&header, 0);                /* slice_alpha_c0_offset_div2 */
+    bits_put_se(&header, 0);                /* slice_beta_offset_div2 */
+    int unused = -header.length & 7;
+    bits_put(&header, 0, unused); /* nal_write takes whole bytes */
+    uint8_t nal[BITS_ROOM * 2];
+    int size = nal_write(nal, sizeof nal, CODEC_H264, idr ? NAL_IDR : NAL_SLICE, &header);
+    return size < 0 ? -1 : vaapi_add_packed(encoder, VAEncPackedHeaderSlice, nal, size * 8 - unused, buffers, count);
+}
+
 /* A picture entry that refers to nothing. */
 static VAPictureH264 nothing(void)
 {
@@ -178,7 +213,6 @@ static int add_frame(struct vaapi *encoder, int idr, int current, int qp, VABuff
             .idr_pic_flag = idr,
             .reference_pic_flag = 1,
             .entropy_coding_mode_flag = 1,
-            .transform_8x8_mode_flag = 1,
             .deblocking_filter_control_present_flag = 1,
         },
     };
@@ -203,7 +237,8 @@ static int add_frame(struct vaapi *encoder, int idr, int current, int qp, VABuff
         };
         picture.ReferenceFrames[0] = slice.RefPicList0[0] = before;
     }
-    if (vaapi_add(encoder, VAEncPictureParameterBufferType, &picture, sizeof picture, buffers, count) < 0)
+    if (vaapi_add(encoder, VAEncPictureParameterBufferType, &picture, sizeof picture, buffers, count) < 0
+        || (encoder->packed & VA_ENC_PACKED_HEADER_SLICE && add_slice_header(encoder, idr, qp, buffers, count) < 0))
         return -1;
     return vaapi_add(encoder, VAEncSliceParameterBufferType, &slice, sizeof slice, buffers, count);
 }
@@ -214,6 +249,7 @@ const struct vaapi_codec vaapi_h264 = {
     .block = MACROBLOCK,
     .most_samples = 36864 * MACROBLOCK * MACROBLOCK,
     .packed_headers = VA_ENC_PACKED_HEADER_SEQUENCE,
+    .packed_if_taken = VA_ENC_PACKED_HEADER_SLICE,
     .write_headers = write_headers,
     .add_sequence = add_sequence,
     .add_frame = add_frame,

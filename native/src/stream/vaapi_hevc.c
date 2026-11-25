@@ -300,7 +300,7 @@ static int add_slice_header(struct vaapi *encoder, int idr, int qp, VABufferID *
     bits_trailing(&header);                 /* byte_alignment(): a one, then zeros */
     uint8_t nal[BITS_ROOM * 2];
     int size = nal_write(nal, sizeof nal, CODEC_HEVC, idr ? NAL_IDR_W_RADL : NAL_TRAIL_R, &header);
-    return size < 0 ? -1 : vaapi_add_packed(encoder, VAEncPackedHeaderSlice, nal, size, buffers, count);
+    return size < 0 ? -1 : vaapi_add_packed(encoder, VAEncPackedHeaderSlice, nal, size * 8, buffers, count);
 }
 
 /* A picture entry that refers to nothing. */
