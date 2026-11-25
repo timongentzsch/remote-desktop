@@ -24,6 +24,7 @@ Beside the regression there are tools for looking at one thing closely. They sta
     loss-test.sh      frame delay and gaps between draws and browser refreshes on a lossy link (late-check.mjs)
     udp-test.sh       the video's way back to TCP when UDP is cut off, and to UDP when it returns
     page-check.mjs    drives the client page in headless Chrome and prints what it shows
+    fingers-check.mjs the page as a phone has it: each gesture on the picture and the trackpad, and what is sent
     serve-screens.sh, serve-x11.sh            desktops to point page-check.mjs at
     delay-check.mjs   the delay from moving the pointer to seeing it moved, on a real connection
     hostloop.py       the host's own share of that delay, measured on the host

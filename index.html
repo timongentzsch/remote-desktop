@@ -135,9 +135,14 @@
   .pad, .keybar, .point, .typing { display: none; }
   .touch canvas { position: fixed; left: 0; top: 0; width: auto; height: auto; transform-origin: 0 0; pointer-events: none; }
   .touch.connected .pad { display: flex; }
-  /* The browser's own zoom would enlarge the page, trackpad and all: fingers zoom the picture alone. */
-  .touch.connected { touch-action: none; }
-  .pad { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); height: calc((100% - var(--below, 0px)) * .42); box-sizing: border-box; padding: var(--inset); align-items: flex-start; gap: 8px; border-top: 1px solid var(--text); background: rgb(255 255 255 / .25); touch-action: none; user-select: none; -webkit-user-select: none; }
+  /* While connected the fingers are the page's alone (see "Fingers" in the script): the browser neither zooms
+     nor pans the page, marks nothing of it as text and offers no menu for what is pressed long. The panel and
+     the key bar still scroll, and the field typed into still takes text. */
+  .touch.connected { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  .touch .panel { touch-action: pan-y; }
+  .touch .keybar { touch-action: pan-x; }
+  .touch .typing { user-select: text; -webkit-user-select: text; }
+  .pad { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); height: calc((100% - var(--below, 0px)) * .42); box-sizing: border-box; padding: var(--inset); align-items: flex-start; gap: 8px; border-top: 1px solid var(--text); background: rgb(255 255 255 / .25); }
   .keys .pad { bottom: calc(var(--below, 0px) + var(--key) + 1px); }
   .pad button { height: var(--control); min-width: var(--control); padding: 0 var(--inset); display: flex; align-items: center; justify-content: center; border: 1px solid var(--text); background: var(--ground); }
   .pad button[aria-pressed="true"] { background: var(--text); color: var(--ground); }
@@ -803,7 +808,7 @@ function showPointer() {
 // what is seen of it: the part of the window that the phone's keyboard, the key bar and the trackpad leave. At
 // `zoom` 1 the whole picture fits there, in the middle of what it does not fill. Zoomed in, the picture stays
 // where it is near its edges and the pointer leaves the middle instead, so that nothing beside it is seen.
-const ARROW = 24, SMALLEST_ARROW = 8;  // a desktop pointer's height in its pixels, and the least here
+const ARROW = 24;  // a desktop pointer's height in its pixels
 let at = null, zoom = 1;
 function place(resizePointer = true) {
   if (TOUCH) {
@@ -821,10 +826,9 @@ function place(resizePointer = true) {
     root.setProperty('--pad', `${under}px`);
     root.setProperty('--point-x', `${x + at.x * scale}px`);
     root.setProperty('--point-y', `${y + at.y * scale}px`);
-    // The arrow that stands in for a pointer whose shape the host does not tell is as large as a desktop's
-    // would be in the picture, within what a finger's eye can make out.
-    const nativeScale = pictureScale(innerWidth, height, sourceSize) * zoom;
-    root.setProperty('--point-size', `${Math.min(Math.max(ARROW * nativeScale, SMALLEST_ARROW), ARROW)}px`);
+    // The arrow that stands in for a pointer whose shape the host does not tell is part of the picture: as
+    // large as a desktop's is in the host's pixels, shown as large as those are here.
+    root.setProperty('--point-size', `${ARROW * pictureScale(innerWidth, height, sourceSize) * zoom}px`);
     $('fit').hidden = zoom === 1;
   }
   if (resizePointer) showPointer();
@@ -1082,54 +1086,84 @@ canvas.onmousedown = event => {
 };
 addEventListener('mouseup', event => held.has(BUTTONS[event.button]) && key(BUTTONS[event.button], false));
 canvas.oncontextmenu = event => event.preventDefault();
+// A pinch, as a laptop's trackpad gives it to programs: scrolling with Ctrl held.
+const pinchScroll = (x, y) => {
+  send('key', CONTROL, 1);
+  send('scroll', x, y);
+  send('key', CONTROL, 0);
+};
 canvas.addEventListener('wheel', event => {
   event.preventDefault();
-  // A trackpad pinch arrives as a wheel event with ctrlKey set although Ctrl is not held; forward it as Ctrl+scroll.
-  const pinch = event.ctrlKey && !held.has(CONTROL);
-  const scale = pinch ? 10 : 1;
-  if (pinch) send('key', CONTROL, 1);
-  send('scroll', Math.round(event.deltaX * scale), Math.round(-event.deltaY * scale));
-  if (pinch) send('key', CONTROL, 0);
+  // This machine's trackpad says a pinch as a wheel event with ctrlKey set although Ctrl is not held.
+  if (event.ctrlKey && !held.has(CONTROL)) pinchScroll(Math.round(event.deltaX * 10), Math.round(-event.deltaY * 10));
+  else send('scroll', Math.round(event.deltaX), Math.round(-event.deltaY));
 }, { passive: false });
 
 // ---- Fingers ----
 
-// The trackpad works as a laptop's does. One finger moves the pointer, and so the picture under it; a tap is a
-// click, and a drag begun right after a tap holds the button. Two fingers scroll, or tapped click the right
-// button; moved apart or together they zoom the picture, here only. Two fingers do the same on the picture
-// itself, where one finger does nothing: it is not a touch screen's.
+// On a phone the window has two parts, and a gesture belongs to the part its first finger lands on.
+// The picture is for looking: two fingers on it, moved apart or together, zoom it, here only. Nothing done on
+// it reaches the host.
+// The trackpad is the host's, and works as a laptop's does. One finger moves the pointer, and so the picture
+// under it; a tap is a click, and a drag begun right after a tap holds the button. Two fingers scroll, tapped
+// they click the right button, and moved apart or together they pinch.
+// The browser has no part in any of it: its own zooming, panning and marking of text are off while connected
+// (see `.touch.connected` in the styles), so every finger arrives here.
 const TAP = 250, SLOP = 8;       // ms a tap lasts at most, and the pixels a finger may stray in it
 const SPEED = 1.6, MOST_ZOOM = 16, PINCH = .12, SCROLL = 5;
+const PINCH_SCROLL = 1000;       // wheel units (120 a notch) for fingers parting e-fold: 6 notches for twice as far
 const pad = $('pad'), fingers = new Map();
 let touch = null, lastTap = 0;   // the gesture under way, from the first finger down to the last up
 const apart = () => {
   const [a, b] = [...fingers.values()];
-  return { distance: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  return { distance: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 };
 const click = button => { key(button, true); key(button, false); };
-const down = event => {
-  if (event.target.closest('button')) return;
+// The gesture is over: a button it held is let go.
+const endTouch = () => {
+  if (touch?.held) key(BUTTONS[0], false);
+  touch = null;
+};
+function fingerDown(event) {
+  if (!connected() || event.target.closest('button, .panel, .keybar')) return;  // the page's own controls
   event.preventDefault();  // the phone's keyboard stays up, and no mouse is made up from the touch
   showPanel(false);
-  pad.setPointerCapture(event.pointerId);
+  // The first finger of a touch. What is left of one whose end never came, as when the phone took it for a
+  // gesture of its own, is dropped.
+  if (event.isPrimary) {
+    fingers.clear();
+    endTouch();
+  }
   fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
   if (fingers.size === 1) {
-    const onPad = event.currentTarget === pad;
-    touch = { since: event.timeStamp, strayed: 0, most: 1, holds: onPad && event.timeStamp - lastTap < TAP * 1.5, held: false, onPad };
+    const onPad = pad.contains(event.target);
+    touch = { onPad, since: event.timeStamp, strayed: 0, most: 1, holds: onPad && event.timeStamp - lastTap < TAP * 1.5, held: false };
   } else if (touch) Object.assign(touch, { most: fingers.size, two: apart(), does: null });
-};
-pad.addEventListener('pointerdown', down);
-// The picture lets fingers through to the page behind it.
-if (TOUCH) document.body.addEventListener('pointerdown', event => event.target === document.body && connected() && down(event));
-// Safari zooms the page at a pinch whatever a page's styles say, unless its own event for one is refused.
-addEventListener('gesturestart', event => TOUCH && connected() && event.preventDefault());
-pad.addEventListener('pointermove', event => {
+}
+function fingerMove(event) {
   const was = fingers.get(event.pointerId), now = { x: event.clientX, y: event.clientY };
   if (!was || !touch) return;
   fingers.set(event.pointerId, now);
-  if (touch.most === 1) {
+  if (fingers.size === 2) {
+    const two = apart(), from = touch.two, spread = two.distance / from.distance;
+    if (!touch.onPad) {
+      zoom = Math.min(Math.max(zoom * spread, 1), MOST_ZOOM);
+      place();
+      touch.two = two;
+      return;
+    }
+    touch.does ??= Math.abs(spread - 1) > PINCH ? 'pinch' : Math.hypot(two.x - from.x, two.y - from.y) > SLOP ? 'scroll' : null;
+    if (touch.does === 'pinch') {
+      const amount = Math.round(PINCH_SCROLL * Math.log(spread));
+      if (!amount) return;  // too little yet: it adds up
+      pinchScroll(0, amount);
+    }
+    // What is under the fingers goes where they go.
+    if (touch.does === 'scroll') send('scroll', Math.round((from.x - two.x) * SCROLL), Math.round((two.y - from.y) * SCROLL));
+    if (touch.does) touch.two = two;
+  } else if (touch.onPad && touch.most === 1) {
     touch.strayed += Math.hypot(now.x - was.x, now.y - was.y);
-    if (touch.strayed < SLOP || !touch.onPad) return;
+    if (touch.strayed < SLOP) return;
     if (touch.holds && !touch.held) key(BUTTONS[0], touch.held = true);
     const step = SPEED / (canvas.getBoundingClientRect().width / canvas.width);
     at = {
@@ -1138,31 +1172,31 @@ pad.addEventListener('pointermove', event => {
     };
     moveTo(Math.round(at.x / canvas.width * POINTER_RANGE), Math.round(at.y / canvas.height * POINTER_RANGE));
     place(false);  // Only the position changed. Reuse the pointer image at its current scale.
-  } else if (fingers.size === 2) {
-    const two = apart(), from = touch.two, spread = two.distance / from.distance;
-    touch.does ??= Math.abs(spread - 1) > PINCH ? 'zoom' : Math.hypot(two.x - from.x, two.y - from.y) > SLOP ? 'scroll' : null;
-    if (touch.does === 'zoom') {
-      zoom = Math.min(Math.max(zoom * spread, 1), MOST_ZOOM);
-      place();
+  }
+}
+function fingerUp(event) {
+  if (!fingers.delete(event.pointerId) || !touch) return;
+  if (fingers.size === 2) touch.two = apart();  // the two that remain of more begin anew
+  if (fingers.size) return;
+  const short = event.type === 'pointerup' && event.timeStamp - touch.since < TAP * touch.most;
+  if (touch.onPad && !touch.held && short) {
+    if (touch.most === 2 && !touch.does) click(BUTTONS[2]);
+    else if (touch.most === 1 && touch.strayed < SLOP) {
+      click(BUTTONS[0]);
+      lastTap = event.timeStamp;
     }
-    // What is under the fingers goes where they go.
-    if (touch.does === 'scroll') send('scroll', Math.round((from.x - two.x) * SCROLL), Math.round((two.y - from.y) * SCROLL));
-    if (touch.does) touch.two = two;
   }
-});
-const lift = event => {
-  if (!fingers.delete(event.pointerId) || fingers.size || !touch) return;
-  const short = event.timeStamp - touch.since < TAP * touch.most && event.type === 'pointerup';
-  if (touch.held) key(BUTTONS[0], false);
-  else if (touch.most === 2 && !touch.does && short) click(BUTTONS[2]);
-  else if (touch.most === 1 && touch.onPad && touch.strayed < SLOP && short) {
-    click(BUTTONS[0]);
-    lastTap = event.timeStamp;
-  }
-  touch = null;
-};
-pad.addEventListener('pointerup', lift);
-pad.addEventListener('pointercancel', lift);
+  endTouch();
+}
+if (TOUCH) {
+  // A finger's events go to what it first touched, and from there up to the window.
+  addEventListener('pointerdown', fingerDown);
+  addEventListener('pointermove', fingerMove);
+  addEventListener('pointerup', fingerUp);
+  addEventListener('pointercancel', fingerUp);
+  // Safari zooms the page at a pinch whatever a page's styles say, unless its own event for one is refused.
+  addEventListener('gesturestart', event => connected() && event.preventDefault());
+}
 pad.oncontextmenu = event => event.preventDefault();
 $('fit').onclick = () => {
   zoom = 1;
