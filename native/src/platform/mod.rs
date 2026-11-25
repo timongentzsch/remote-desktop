@@ -61,12 +61,16 @@ mod display {
         stream.ended.take().unwrap_or(Ok(()))
     }
 
-    // Linux needs compositor-specific hooks to wake displays, hide the pointer and restore capture settings.
+    // Linux needs compositor-specific hooks to wake displays and hide the pointer.
     pub fn wake_displays(_input: &super::Input) {}
     pub fn hide_pointer() -> Option<()> {
         None
     }
-    pub fn restore_leftovers() {}
+    /// A Windows display keeps the mode and scale a client gave it when the host ends without undoing them.
+    pub fn restore_leftovers() {
+        #[cfg(windows)]
+        super::os::virtual_screen::restore_leftover();
+    }
 }
 
 // What the client does: keys, buttons and the pointer, in the client's codes, which are Linux's (linux/input.rs).

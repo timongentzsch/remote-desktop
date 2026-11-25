@@ -89,7 +89,8 @@ impl Steps {
 
 pub(super) struct Scale {
     source: Source,
-    original: Steps,
+    /// The step to return to, counted from the smallest, which is the same step in every mode.
+    pub original: i32,
     // None after a manual change. Comparing the raw preference distinguishes it from a mode clamp.
     expected: Option<Steps>,
 }
@@ -107,7 +108,7 @@ impl Scale {
         let _ = unsafe { D3DKMTCloseAdapter(&D3DKMT_CLOSEADAPTER { hAdapter: adapter.hAdapter }) };
         let source = Source { adapter: adapter.AdapterLuid, id: adapter.VidPnSourceId };
         let original = source.steps()?;
-        Some(Self { source, original, expected: Some(original) })
+        Some(Self { source, original: original.current - original.min, expected: Some(original) })
     }
 
     pub fn percent(&self) -> Option<u32> {
@@ -130,7 +131,7 @@ impl Scale {
 
     pub fn restore(&mut self) {
         if let Some(steps) = self.source.steps() {
-            let original = self.original.relative_to(steps);
+            let original = self.original.saturating_add(steps.min);
             // Restore the underlying preference verbatim when Windows permits it. A subsequent
             // read after restoring the original resolution can expose more supported steps.
             if !self.apply(steps, original) && !(steps.min..=steps.max).contains(&original) {

@@ -13,8 +13,28 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 use windows::core::{HSTRING, Owned, PCWSTR, w};
 
-use super::display_mode;
+use super::{data_directory, display_mode, write_private};
 use crate::screen::{self, Window};
+
+/// Names the display a client has and the scale step it had, for a host that ends without giving them back.
+fn leftover_path() -> std::path::PathBuf {
+    data_directory().join("display")
+}
+
+/// Gives a display its own mode and scale back after a host ended while a client had it: killed, as an install
+/// does to the host it replaces, or at sign-out. A client's mode is never saved, so the saved one is its own.
+pub fn restore_leftover() {
+    let Ok(left) = std::fs::read_to_string(leftover_path()) else { return };
+    let Ok(_owner) = Owner::take() else { return }; // another host's client has the display now
+    let mut left = left.split_whitespace();
+    let device = HSTRING::from(format!(r"\\.\{}", left.next().unwrap_or_default()));
+    unsafe { ChangeDisplaySettingsExW(PCWSTR(device.as_ptr()), None, None, CDS_TYPE(0), None) };
+    if let (Some(step), Some(mut scale)) = (left.next().and_then(|step| step.parse().ok()), Scale::open(&device)) {
+        scale.original = step;
+        scale.restore();
+    }
+    let _ = std::fs::remove_file(leftover_path());
+}
 
 // A mutex in the interactive Windows session also covers hosts listening on different ports.
 struct Owner(Owned<HANDLE>);
@@ -61,6 +81,8 @@ impl VirtualScreen {
         let original = display_mode(PCWSTR(device.as_ptr()), ENUM_CURRENT_SETTINGS)
             .ok_or_else(|| format!("cannot read the display mode for {name}"))?;
         let scale = Scale::open(&device);
+        let left = scale.as_ref().map_or(name.clone(), |scale| format!("{name} {}", scale.original));
+        write_private(&leftover_path(), left.as_bytes())?;
         let mut made = Self { name, device, original, applied: None, scale, _owner: owner };
         made.resize(window)?;
         Ok(made)
@@ -180,6 +202,7 @@ impl Drop for VirtualScreen {
                 scale.restore();
             }
         }
+        let _ = std::fs::remove_file(leftover_path());
     }
 }
 
