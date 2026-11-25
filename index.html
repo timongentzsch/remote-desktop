@@ -24,7 +24,7 @@
      around it only where it is too small to hold the mark. */
   :focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
   .primary:focus-visible, .slow .pill:focus-visible { outline-color: var(--ground); outline-offset: -4px; }
-  .option input:focus-visible, .steps input:focus-visible { outline-offset: 2px; }
+  :is(.option, .steps, .setting) input:focus-visible { outline-offset: 2px; }
 
   /* Connect screen */
   .connect { position: fixed; inset: 0; box-sizing: border-box; padding: 24px; display: flex; flex-direction: column; align-items: center; justify-content: safe center; gap: 32px; overflow-y: auto; }
@@ -43,8 +43,8 @@
   .open .field { grid-template-columns: 1fr; }
   .open .field label, .open .field input { display: none; }
   .option { display: flex; align-items: flex-start; gap: 14px; cursor: pointer; }
-  .option input { appearance: none; flex: none; width: 18px; height: 18px; margin: 0; border: 1px solid var(--text); background: var(--ground); }
-  .option input:checked { background: var(--text); box-shadow: inset 0 0 0 4px var(--ground); }
+  .option input, .setting input { appearance: none; flex: none; width: 18px; height: 18px; margin: 0; border: 1px solid var(--text); background: var(--ground); cursor: pointer; }
+  :is(.option, .setting) input:checked { background: var(--text); box-shadow: inset 0 0 0 4px var(--ground); }
   .option small { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); }
   .summary { margin: 0; min-height: 1.4em; font-size: 12px; color: var(--muted); text-align: center; }
   .problem { color: var(--text); }
@@ -56,6 +56,12 @@
   canvas { display: none; width: 100%; height: 100%; object-fit: contain; background: #000; }
   .overlay { display: none; position: fixed; left: 0; right: 0; bottom: var(--edge); box-sizing: border-box; padding: 0 var(--edge); flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
   .overlay > * { pointer-events: auto; }
+  /* The pill and its panel stand where the Menu setting puts them: at the middle of the bottom edge or in a
+     corner, the panel on the pill's inner side. */
+  [data-pin^="top"] .overlay { top: var(--edge); bottom: auto; flex-direction: column-reverse; }
+  [data-pin$="left"] .overlay { align-items: flex-start; }
+  [data-pin$="right"] .overlay { align-items: flex-end; }
+  [data-pin^="top"] { --away: -1; }
   .connected .connect { display: none; }
   .connected canvas { display: block; }
   .connected .overlay { display: flex; }
@@ -70,19 +76,12 @@
   .waiting .dot { box-sizing: border-box; border: 1px solid currentColor; background: none; }
   .pill svg { transition: rotate .15s; }
   /* The pill waits below the bottom edge and slides in when asked for; it lingers a moment before leaving. */
-  .pill { translate: 0 calc(100% + 2 * var(--edge)); transition: translate .25s ease .4s; }
-  .pill-shown .pill, .panel-open .pill, .pill:focus-visible { translate: none; transition-delay: 0s; }
+  .pill { translate: 0 calc(var(--away, 1) * (100% + 2 * var(--edge))); transition: translate .25s ease .4s; }
+  :is(.pill-shown, .pinned, .panel-open) .pill, .pill:focus-visible { translate: none; transition-delay: 0s; }
   @media (hover: none) { .pill { translate: none; } }
   @media (prefers-reduced-motion: reduce) { .pill { transition-duration: 0s; } }
-  .panel-open .pill svg { rotate: 180deg; }
-
-  /* The numbers, pinned to a corner of the picture where that is chosen. */
-  .readout { display: none; position: fixed; padding: 6px 10px; gap: 14px; background: var(--ground); font-size: 12px; pointer-events: none; }
-  .connected[data-pin]:not([data-pin="off"]) .readout { display: flex; }
-  [data-pin^="top"] .readout { top: var(--inset); }
-  [data-pin^="bottom"] .readout { bottom: var(--inset); }
-  [data-pin$="left"] .readout { left: var(--inset); }
-  [data-pin$="right"] .readout { right: var(--inset); }
+  .panel-open .pill svg, [data-pin^="top"] .pill svg { rotate: 180deg; }
+  [data-pin^="top"].panel-open .pill svg { rotate: none; }
 
   .panel { width: 100%; max-width: 400px; box-sizing: border-box; display: flex; flex-direction: column; border: 1px solid var(--text); background: var(--ground); }
   .panel > * { border-bottom: 1px solid var(--line); }
@@ -110,6 +109,7 @@
   .settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line); border-bottom-color: var(--text); }
   .setting { min-width: 0; height: var(--control); padding: 0 var(--inset); display: flex; align-items: center; gap: 8px; background: var(--ground); color: var(--muted); white-space: nowrap; }
   .setting.wide { grid-column: 1 / -1; }
+  .setting input { margin-left: auto; }
   .setting select { appearance: none; flex: 1 1 0; min-width: 0; height: 100%; margin-right: calc(-1 * var(--inset)); padding: 0 var(--inset) 0 0; border: 0; background: var(--ground); color: var(--text); text-align: right; text-align-last: right; text-overflow: ellipsis; cursor: pointer; }
   /* A setting is marked as a whole, its name included, while its select has the focus or its list is open. */
   .setting:has(select:focus-visible), .setting:has(select:open) { outline: 2px solid var(--text); outline-offset: -2px; }
@@ -170,7 +170,6 @@
   <button type="button" value="106" aria-label="Right">→</button>
 </div>
 <input class="typing" id="typing" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Typing goes to the remote computer">
-<div class="readout" aria-hidden="true"><span id="pin-fps"></span><span id="pin-delay"></span><span id="pin-bitrate"></span></div>
 
 <main class="connect">
   <form class="card" id="login">
@@ -186,6 +185,10 @@
     <label class="option">
       <input type="checkbox" name="fullscreen" checked>
       <span>Open in full screen <small>Sends system shortcuts to the remote computer. Hold Esc to leave.</small></span>
+    </label>
+    <label class="option">
+      <input type="checkbox" name="auto">
+      <span>Connect on open <small>Skips this page from the next visit on. Full screen then begins with the first click.</small></span>
     </label>
   </form>
   <p class="summary" id="summary"></p>
@@ -266,14 +269,17 @@
           <option value="off">Off</option>
         </select>
       </label>
-      <label class="setting wide">Numbers
-        <select name="pin" title="Keeps frame rate, delay and bitrate in a corner of the picture.">
-          <option value="off">Hidden</option>
+      <label class="setting">Menu
+        <select name="pin" title="Where this menu and its numbers stand: at the middle of the bottom edge, or in a corner.">
+          <option value="bottom">Bottom</option>
           <option value="top-left">Top left</option>
           <option value="top-right">Top right</option>
           <option value="bottom-left">Bottom left</option>
           <option value="bottom-right">Bottom right</option>
         </select>
+      </label>
+      <label class="setting" title="Keeps the frame rate, delay and bitrate in view. Otherwise they slide in when the pointer comes near.">Always shown
+        <input type="checkbox" name="shown">
       </label>
       <label class="setting wide" hidden>Screen
         <select name="screen"></select>
@@ -620,9 +626,11 @@ let speaker, playAt = 0;
 // Decodes and plays sound packets; null when sound is switched off or the browser cannot decode it.
 function soundPlayer() {
   if (settings.sound.value !== 'on' || !window.AudioDecoder) return null;
-  // Browsers only let a page play sound once the user has acted on it; connecting is such an act.
+  // Browsers only let a page play sound once the user has acted on it; connecting is such an act, and where the
+  // page connected by itself, the first click or key is.
   speaker ??= new AudioContext({ sampleRate: SOUND_RATE, latencyHint: 'interactive' });
   speaker.resume();
+  if (speaker.state !== 'running') for (const act of ['pointerdown', 'keydown']) addEventListener(act, () => speaker.resume(), { once: true });
   let packets = 0;
   const decoder = new AudioDecoder({
     output(data) {
@@ -650,15 +658,16 @@ function soundPlayer() {
 
 // ---- Pill and panel ----
 
-// The pill slides in while the pointer is at the middle of the bottom edge (or on the pill itself), and for
+// The pill slides in while the pointer is at its place on the window's edge (or on the pill itself), and for
 // PEEK ms after connecting so that it is known to be there.
 const EDGE = 16, PEEK = 3000;
 let atEdge = false, peeking = 0;
 const showPill = () => document.body.classList.toggle('pill-shown', atEdge || !!peeking);
 addEventListener('pointermove', event => {
   if (event.buttons) return;  // a drag in the remote picture is not a request for the pill
-  const box = $('pill').getBoundingClientRect();  // below the window while hidden
-  atEdge = event.clientX > box.left - EDGE && event.clientX < box.right + EDGE && event.clientY > Math.min(box.top, innerHeight) - EDGE;
+  const box = $('pill').getBoundingClientRect();  // beyond the window's edge while hidden
+  const near = document.body.dataset.pin.startsWith('top') ? event.clientY < Math.max(box.bottom, 0) + EDGE : event.clientY > Math.min(box.top, innerHeight) - EDGE;
+  atEdge = event.clientX > box.left - EDGE && event.clientX < box.right + EDGE && near;
   showPill();
 });
 document.documentElement.addEventListener('pointerleave', () => showPill(atEdge = false));
@@ -707,10 +716,9 @@ function showStatistics(frames, parts, received, allowed, heldBack, way) {
   const slow = heldBack && allowed < SLOW_RATE;
   const megabits = kbps => (kbps / 1000).toFixed(1);
   document.body.classList.toggle('slow', slow);
-  // The three numbers stand in the panel and, where they are pinned, in a corner of the picture.
-  $('now-fps').textContent = $('pin-fps').textContent = `${frames} fps`;
-  $('now-delay').textContent = $('pin-delay').textContent = `${delay} ms`;
-  $('now-bitrate').textContent = $('pin-bitrate').textContent = `${megabits(received)} Mbit/s`;
+  $('now-fps').textContent = `${frames} fps`;
+  $('now-delay').textContent = `${delay} ms`;
+  $('now-bitrate').textContent = `${megabits(received)} Mbit/s`;
   const [width, height, ratio] = clientWindow ?? [];
   const requested = clientWindow &&
     (Math.abs(sourceSize.width - width * ratio) > 1 || Math.abs(sourceSize.height - height * ratio) > 1)
@@ -724,7 +732,7 @@ function showStatistics(frames, parts, received, allowed, heldBack, way) {
   $('now-picture').textContent =
     `${canvas.width} × ${canvas.height}${requested}${scale}, ${colourDetail} colour detail, ${way}, up to ${megabits(allowed)} Mbit/s`;
   $('notice').textContent = `This connection carries about ${megabits(allowed)} Mbit/s. Moving pictures are softened so the session stays responsive.`;
-  $('pill-text').textContent = slow ? `Slow link / ${megabits(allowed)} Mbit/s` : `${frames} fps / ${delay} ms / ${way}`;
+  $('pill-text').textContent = slow ? `Slow link / ${megabits(allowed)} Mbit/s` : `${frames} fps / ${delay} ms / ${megabits(received)} Mbit/s / ${way}`;
   for (const [name, value] of Object.entries(parts)) {
     settings.querySelector(`.bar .${name}`).style.setProperty('--weight', Math.max(value, 0.5));
     settings.querySelector(`output.${name}`).textContent = value.toFixed(value < 10 ? 1 : 0);
@@ -1198,7 +1206,12 @@ keybar.onclick = event => {
 
 // Keyboard Lock, which sends system shortcuts to the remote side, only takes effect in full screen. An iPhone
 // has no full screen for a page.
-const enterFullscreen = () => document.documentElement.requestFullscreen?.()?.then(() => navigator.keyboard?.lock());
+const enterFullscreen = () => {
+  // Browsers enter full screen only at a click or a key. A page that connects by itself has had neither: the
+  // first click on the picture then does it.
+  if (navigator.userActivation?.isActive === false) return canvas.addEventListener('pointerdown', enterFullscreen, { once: true });
+  return document.documentElement.requestFullscreen?.()?.then(() => navigator.keyboard?.lock());
+};
 
 login.onsubmit = event => {
   event.preventDefault();
@@ -1208,18 +1221,22 @@ login.onsubmit = event => {
   connect();
 };
 settings.onsubmit = event => event.preventDefault();
-// What the choice between response and quality means, in words, and where the numbers are pinned.
+// What the choice between response and quality means, in words, and where the menu stands and whether it stays.
 function showChoices() {
   const chosen = settings.querySelector('[name=patience]:checked');
   $('patience-says').textContent = `${chosen.ariaLabel}: video may run ${chosen.value} ms behind.`;
   document.body.dataset.pin = settings.pin.value;
+  document.body.classList.toggle('pinned', settings.shown.checked);
 }
 settings.onchange = event => {
-  try { localStorage.settings = JSON.stringify(Object.fromEntries(SAVED.map(name => [name, settings[name].value]))); } catch {}
+  try {
+    localStorage.settings = JSON.stringify(Object.fromEntries(SAVED.map(name => [name, settings[name].value])));
+    localStorage.shown = settings.shown.checked;
+  } catch {}
   const { name } = event.target;
   showChoices();
   if (name === 'bitrate' || name === 'patience') send(name, +settings[name].value);  // take effect in the running stream
-  else if (name !== 'pin' && connected()) connect();                               // the others when the capture starts
+  else if (name !== 'pin' && name !== 'shown' && connected()) connect();              // the others when the capture starts
 };
 $('pill').onclick = () => showPanel(settings.hidden);
 $('leave').onclick = () => {
@@ -1238,17 +1255,24 @@ try {
   }
 } catch {}
 if (!settings.patience.value) settings.patience.value = 100;
-// A phone is shown the host's screen as it is, which it zooms into itself, with the pointer drawn here.
-for (const [name, value] of TOUCH ? [['size', 'host'], ['cursor', 'no']] : []) {
+try { settings.shown.checked = localStorage.shown === 'true'; } catch {}
+// A phone is shown the host's screen as it is, which it zooms into itself, with the pointer drawn here, and
+// its menu stays above the trackpad.
+for (const [name, value] of TOUCH ? [['size', 'host'], ['cursor', 'no'], ['pin', 'bottom']] : []) {
   settings[name].value = value;
   settings[name].closest('label').hidden = true;
 }
+if (TOUCH) settings.shown.closest('label').hidden = true;
 if (!document.documentElement.requestFullscreen) login.fullscreen.closest('label').hidden = $('fullscreen').hidden = true;
 showChoices();
 try { login.password.value = localStorage.password ?? ''; } catch {}
 try { login.fullscreen.checked = localStorage.fullscreen !== 'false'; } catch {}
+try { login.auto.checked = localStorage.auto === 'true'; } catch {}
 login.fullscreen.onchange = () => { try { localStorage.fullscreen = login.fullscreen.checked; } catch {} };
+login.auto.onchange = () => { try { localStorage.auto = login.auto.checked; } catch {} };
 login.password.required = !document.documentElement.classList.contains('open');
 $('host').textContent = location.hostname.replace(/\.local$/, '') || 'Remote Desktop';
 setConnected(false);
+// Asked to connect as soon as the page opens: as if Connect were pressed, where the password is there.
+if (login.auto.checked && login.checkValidity()) login.requestSubmit();
 </script>
