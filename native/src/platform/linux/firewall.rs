@@ -4,12 +4,14 @@
 //! host then answers nobody else (see `server::on_tailnet`).
 
 use crate::install::{run, run_quietly};
-use crate::{NAME, PORT};
+use crate::{NAME, port};
 
 /// Tailscale's network interface, the one way in for devices on the tailnet.
 const TAILNET_INTERFACE: &str = "tailscale0";
 const UFW_PROFILE: &str = "/etc/ufw/applications.d/remote-desktop";
 const FIREWALLD_PROFILE: &str = "/etc/firewalld/services/remote-desktop.xml";
+/// The port of versions before 0.10, whose rules for it an install takes away.
+const OLD_PORT: &str = "8765";
 
 #[derive(Clone, Copy)]
 enum Firewall {
@@ -29,38 +31,44 @@ impl Firewall {
     }
 
     /// A dedicated service lets uninstall remove our rules even when another service also allows HTTPS.
-    fn profile(self) -> (&'static str, String) {
+    fn profile(self, port: u16) -> (&'static str, String) {
         match self {
             Self::Ufw => (
                 UFW_PROFILE,
                 format!(
-                    "[{NAME}]\ntitle=Remote desktop\ndescription=Remote desktop over HTTPS and QUIC\nports={PORT}/tcp|{PORT}/udp"
+                    "[{NAME}]\ntitle=Remote desktop\ndescription=Remote desktop over HTTPS and QUIC\nports={port}/tcp|{port}/udp"
                 ),
             ),
             Self::Firewalld => (
                 FIREWALLD_PROFILE,
                 format!(
-                    r#"<service><port port="{PORT}" protocol="tcp"/><port port="{PORT}" protocol="udp"/></service>"#
+                    r#"<service><port port="{port}" protocol="tcp"/><port port="{port}" protocol="udp"/></service>"#
                 ),
             ),
         }
     }
 
     fn change(self, add: bool, tailnet_only: bool) {
-        let (path, profile) = self.profile();
-        if add {
-            run("sudo", &["sh", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", &profile, path]);
-        } else if !std::path::Path::new(path).exists() {
+        let (path, profile) = self.profile(port());
+        if !add && !std::path::Path::new(path).exists() {
             return;
         }
+        let write = || run("sudo", &["sh", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", &profile, path]);
         match self {
             Self::Ufw => {
                 let all = ["allow", NAME];
                 let tailnet = ["allow", "in", "on", TAILNET_INTERFACE, "to", "any", "app", NAME];
+                // ufw finds a rule to delete by the ports its profile has: the old profile has to be there still.
                 for rule in [&all[..], &tailnet[..]] {
                     run_quietly("sudo", &[&["ufw", "delete"][..], rule].concat());
                 }
+                for protocol in ["tcp", "udp"] {
+                    let tailnet = ["in", "on", TAILNET_INTERFACE, "to", "any", "port", OLD_PORT, "proto", protocol];
+                    run_quietly("sudo", &["ufw", "delete", "allow", &format!("{OLD_PORT}/{protocol}")]);
+                    run_quietly("sudo", &[&["ufw", "delete", "allow"][..], &tailnet].concat());
+                }
                 if add {
+                    write();
                     let rule = if tailnet_only { &tailnet[..] } else { &all[..] };
                     run("sudo", &[&["ufw"][..], rule].concat());
                 }
@@ -68,13 +76,16 @@ impl Firewall {
             Self::Firewalld => {
                 // Reload once to discover a new service definition. Clear just our service from installed zones.
                 if add {
+                    write();
                     run("sudo", &["firewall-cmd", "--quiet", "--reload"]);
                 }
                 let zones = sudo_output(&["firewall-cmd", "--permanent", "--get-zones"])
                     .unwrap_or_else(|| crate::fail("cannot list firewall zones"));
                 let remove = format!("--remove-service={NAME}");
+                let old = ["tcp", "udp"].map(|protocol| format!("--remove-port={OLD_PORT}/{protocol}"));
                 for zone in zones.split_whitespace() {
-                    run_quietly("sudo", &["firewall-cmd", "--permanent", &format!("--zone={zone}"), &remove]);
+                    let zone = format!("--zone={zone}");
+                    run_quietly("sudo", &["firewall-cmd", "--permanent", &zone, &remove, &old[0], &old[1]]);
                 }
                 if add {
                     let query = if tailnet_only {
@@ -109,21 +120,21 @@ pub fn open(tailnet_only: bool) {
 
 /// Before an install changes the password, certificate or old binary, check that the host can take TCP.
 /// Opening firewall rules for UDP must also leave an unrelated service's exposure alone.
-pub fn check_port() {
-    check_listeners(Firewall::active().is_some());
+pub fn check_port(port: u16) {
+    check_listeners(port, Firewall::active().is_some());
 }
 
 pub fn follow_certificate(tailnet_only: bool) {
     if let Some(firewall) = Firewall::active() {
-        check_listeners(true);
+        check_listeners(port(), true);
         firewall.change(true, tailnet_only);
     }
 }
 
-fn check_listeners(udp: bool) {
+fn check_listeners(number: u16, udp: bool) {
     // The kernel's socket tables need no extra packages or privileges. Ask ss for owners only if
     // something is listening, or if the tables are unavailable. IPv6 can be disabled in the kernel.
-    let port = format!(":{PORT:04X}");
+    let port = format!(":{number:04X}");
     let free = |table: &str| match std::fs::read_to_string(format!("/proc/net/{table}")) {
         Ok(rows) => !rows.lines().skip(1).any(|row| {
             let mut fields = row.split_whitespace();
@@ -136,14 +147,14 @@ fn check_listeners(udp: bool) {
         return;
     }
     let flags = if udp { "-Hlnptu" } else { "-Hlnpt" };
-    let sockets = sudo_output(&["ss", flags, &format!("sport = :{PORT}")])
-        .unwrap_or_else(|| crate::fail(&format!("cannot identify the owner of port {PORT}; install iproute2 (ss)")));
+    let sockets = sudo_output(&["ss", flags, &format!("sport = :{number}")])
+        .unwrap_or_else(|| crate::fail(&format!("cannot identify the owner of port {number}; install iproute2 (ss)")));
     let installed = |pid: u32| {
         let executable = format!("/proc/{pid}/exe");
         run_quietly("sudo", &["test", &executable, "-ef", super::install::BINARY])
     };
     if sockets.lines().any(|line| !host_owns_socket(line, installed)) {
-        crate::fail(&format!("port {PORT} is in use by another service. Choose another port with --listen ADDRESS."));
+        crate::fail(&format!("port {number} is in use by another service. Install on another with --port=PORT."));
     }
 }
 
@@ -185,10 +196,10 @@ mod tests {
 
     #[test]
     fn both_firewalls_identify_our_service_separately_from_https() {
-        let (_, ufw) = Firewall::Ufw.profile();
+        let (_, ufw) = Firewall::Ufw.profile(443);
         assert!(ufw.starts_with("[remote-desktop]\n"));
         assert!(ufw.contains("ports=443/tcp|443/udp"));
-        let (path, xml) = Firewall::Firewalld.profile();
+        let (path, xml) = Firewall::Firewalld.profile(443);
         assert!(path.ends_with("/remote-desktop.xml"));
         for protocol in ["tcp", "udp"] {
             assert!(xml.contains(&format!(r#"<port port="443" protocol="{protocol}"/>"#)));

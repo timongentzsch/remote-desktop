@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::install::{check_tcp_port, run, run_quietly};
-use crate::{NAME, PORT, fail};
+use crate::{NAME, fail};
 
 pub const BINARY: &str = r"%LOCALAPPDATA%\Programs\remote-desktop\remote-desktop.exe";
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -29,8 +29,8 @@ pub fn restart_command() -> String {
 }
 
 /// The installed program may already be serving. A separate copy with the same name is a different host.
-pub fn check_port() {
-    check_tcp_port(PORT, || listens_on(&binary(), PORT)).unwrap_or_else(|error| fail(&error));
+pub fn check_port(port: u16) {
+    check_tcp_port(port, || listens_on(&binary(), port)).unwrap_or_else(|error| fail(&error));
 }
 
 fn listens_on(program: &Path, port: u16) -> bool {

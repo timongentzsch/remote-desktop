@@ -7,12 +7,15 @@ use std::process::{Command, Stdio};
 
 use crate::platform::install::{self as service, BINARY};
 use crate::platform::{password_path, without_echo, write_private};
-use crate::{PORT, certificate, fail};
+use crate::{PORT, certificate, fail, port, port_path};
 
 /// `remote-desktop install`: asks for a password unless there is one, makes the certificate unless there is one,
-/// and leaves the host running as a service.
-pub fn install(tailscale: bool, no_password: bool) {
-    service::check_port();
+/// and leaves the host running as a service, on `chosen` where a port is given and else on the one it had.
+pub fn install(tailscale: bool, no_password: bool, chosen: Option<u16>) {
+    service::check_port(chosen.unwrap_or_else(port));
+    if let Some(chosen) = chosen {
+        write_private(&port_path(), chosen.to_string().as_bytes()).unwrap_or_else(|error| fail(&error));
+    }
     if no_password {
         clear_password();
     } else if !password_path().exists() {
@@ -30,7 +33,7 @@ pub fn install(tailscale: bool, no_password: bool) {
         let who = if tailnet_only {
             "on your tailnet who may reach this machine".into()
         } else {
-            format!("who can reach port {PORT}")
+            format!("who can reach port {}", port())
         };
         println!("No password is set: anyone {who} can see and control this desktop.");
     }
@@ -67,12 +70,14 @@ fn use_tailscale() {
 
 /// Tells the user where to connect and, for a self-signed certificate, how to make their browser trust it.
 fn show_certificate() {
+    // A browser takes HTTPS's own port as said.
+    let port = if port() == PORT { String::new() } else { format!(":{}", port()) };
     if let Some(name) = certificate::tailscale_name() {
-        println!("\nOpen https://{name} in Chrome from any device on your tailnet.");
+        println!("\nOpen https://{name}{port} in Chrome from any device on your tailnet.");
         return;
     }
     let names = certificate::names();
-    println!("\nOpen https://{} in Chrome. It also answers to: {}", names[0], names[1..].join(", "));
+    println!("\nOpen https://{}{port} in Chrome. It also answers to: {}", names[0], names[1..].join(", "));
     println!("The certificate is self-signed, so each client has to trust it once. On a Mac:");
     println!("    scp <this machine>:{} remote-desktop.pem", certificate::path().display());
     println!(
@@ -98,7 +103,10 @@ pub fn set_password() {
 /// `remote-desktop password --none`: lets anyone who can reach this machine's port control it.
 pub fn remove_password() {
     clear_password();
-    println!("No password is needed any more: anyone who can reach port {PORT} on this machine can see and control");
+    println!(
+        "No password is needed any more: anyone who can reach port {} on this machine can see and control",
+        port()
+    );
     println!("this desktop. Restart the host to apply: {}", service::restart_command());
 }
 
@@ -115,8 +123,7 @@ pub fn check_tcp_port(port: u16, installed_owns_it: impl FnOnce() -> bool) -> Re
         && !installed_owns_it()
     {
         return Err(format!(
-            "cannot install on TCP port {port}: {error}. Free the port or run {0} --listen ADDRESS.",
-            crate::NAME
+            "cannot install on TCP port {port}: {error}. Free the port or install on another with --port=PORT."
         ));
     }
     Ok(())

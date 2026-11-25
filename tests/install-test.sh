@@ -34,6 +34,13 @@ print(urllib.request.urlopen('https://localhost/', context=ssl._create_unverifie
 /usr/local/bin/remote-desktop install >/dev/null || exit 1
 sleep 1
 echo "after installing again: $(pgrep -x -f /usr/local/bin/remote-desktop | wc -l) process"
+# Another port, as where another service has 443: the address says it, and installing again keeps it.
+/usr/local/bin/remote-desktop install --port=8765 | grep -o "Open https://[^ ]*" || exit 1
+/usr/local/bin/remote-desktop install >/dev/null || exit 1
+sleep 1
+echo "page on port 8765: $(python3 -c "
+import ssl, urllib.request
+print(urllib.request.urlopen('https://localhost:8765/', context=ssl._create_unverified_context()).status)")"
 /usr/local/bin/remote-desktop password --none | tail -1
 /usr/local/bin/remote-desktop uninstall 2>&1 | tail -1
 sleep 0.5

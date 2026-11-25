@@ -7,7 +7,7 @@ use std::process::Command;
 
 use crate::install::{run, run_quietly, write};
 use crate::platform::linux::firewall;
-use crate::{NAME, PORT, fail};
+use crate::{NAME, fail, port};
 
 pub use firewall::check_port;
 
@@ -135,7 +135,7 @@ pub fn start(tailnet_only: bool) {
         .ok()
         .and_then(|port| port.trim().parse::<u16>().ok())
         .unwrap_or(1024);
-    if PORT < unprivileged {
+    if port() < unprivileged {
         run("sudo", &["setcap", "cap_net_bind_service=ep", BINARY]);
     }
     let rule = format!("printf '%s\\n' '{UDEV_RULE}' > {UDEV_RULE_PATH}");

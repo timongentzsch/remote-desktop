@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use super::input;
 use crate::install::{check_tcp_port, run, run_quietly, write};
-use crate::{NAME, PORT, fail};
+use crate::{NAME, fail};
 
 pub const BINARY: &str = "/usr/local/bin/remote-desktop";
 const LABEL: &str = "remote-desktop";
@@ -61,13 +61,13 @@ pub fn restart_command() -> String {
 }
 
 /// Only the active LaunchAgent that this installer replaces may already hold the listening port.
-pub fn check_port() {
-    check_tcp_port(PORT, || {
+pub fn check_port(port: u16) {
+    check_tcp_port(port, || {
         let Ok(agent) = Command::new("/bin/launchctl").args(["print", &service()]).output() else { return false };
         let pid = String::from_utf8_lossy(&agent.stdout)
             .lines()
             .find_map(|line| line.strip_prefix("\tpid = ")?.parse::<u32>().ok());
-        agent.status.success() && pid.is_some_and(|pid| listens_on(pid, PORT))
+        agent.status.success() && pid.is_some_and(|pid| listens_on(pid, port))
     })
     .unwrap_or_else(|error| fail(&error));
 }
@@ -96,11 +96,12 @@ pub fn start(_tailnet_only: bool) {
 
 /// Waits for the host to answer, which it does once macOS lets it record the screen and control the Mac.
 fn wait_until_serving() {
+    let port = crate::port();
     let serving = || {
-        if TcpStream::connect(("127.0.0.1", PORT)).is_err() {
+        if TcpStream::connect(("127.0.0.1", port)).is_err() {
             return false;
         }
-        let url = format!("https://127.0.0.1:{PORT}/manifest.json");
+        let url = format!("https://127.0.0.1:{port}/manifest.json");
         let response = Command::new("/usr/bin/curl")
             .args(["--disable", "--noproxy", "*", "--silent", "--insecure", "--max-time", "3", &url])
             .output();
@@ -108,7 +109,7 @@ fn wait_until_serving() {
             reply.status.success() && reply.stdout == include_bytes!("../../../../manifest.json")[..]
         }) {
             fail(&format!(
-                "port {PORT} is answering but did not serve the remote desktop client. Check for another HTTPS service."
+                "port {port} is answering but did not serve the remote desktop client. Check for another HTTPS service."
             ));
         }
         true

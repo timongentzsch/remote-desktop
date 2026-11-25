@@ -7,6 +7,7 @@
 #
 #     --tailscale     a certificate from Tailscale, and only devices on the tailnet are answered
 #     --no-password   no login password (with --tailscale: anyone on the tailnet who may reach this machine)
+#     --port=PORT     another port than HTTPS's own, 443, where that one is taken
 #
 # REMOTE_DESKTOP_RELEASE names where the binaries are, for another version than the latest, such as
 # https://github.com/timongentzsch/remote-desktop/releases/download/v0.3.0.
