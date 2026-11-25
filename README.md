@@ -3,10 +3,7 @@
 Your running Linux desktop, Mac or Windows PC in a browser tab. One file on the host, nothing on the other
 device.
 
-<p>
-  <img src="docs/gnome.jpg" alt="A GNOME desktop in Chrome" width="74%">
-  <img src="docs/windows-phone.jpg" alt="A Windows desktop on a phone, zoomed in above the trackpad" width="22%">
-</p>
+<img src="docs/desktop-and-phone.jpg" alt="A GNOME desktop in a browser window, at its Tailscale address, and a Windows desktop on a phone, zoomed in above the trackpad" width="100%">
 
 - **Nothing to install where you sit.** Open the address in Chrome, or install the page as an app.
 - **One binary, one command.** GNOME, KDE, Hyprland, Sway and X11 on x86_64 and aarch64, Macs with Apple
@@ -24,8 +21,8 @@ device.
 
 ## What it is not
 
-- **Not a way around routers.** The other device has to reach the machine: on the same network, over a VPN
-  such as Tailscale, or through a port you open.
+- **Not a way around routers.** The other device has to reach the machine: over Tailscale, which is the
+  way it is made for, on the same network, or through a port you open.
 - **Not a game streamer.** It is made for desktop work: no gamepads, no HDR.
 - **Not a session of its own.** It shows what the machine's own screen shows, login screen included. On
   Hyprland and on a Mac, the size Client gives the desktop a screen of the browser window's size while
@@ -38,8 +35,8 @@ Any Linux distribution, with any desktop, on Wayland or X11. The exceptions:
 
 - Distributions without glibc 2.28 or newer, such as Alpine with musl, and NixOS and Guix, which run no
   binaries built for other distributions as they are.
-- Wayland compositors other than GNOME, KDE, Hyprland and those built on wlroots, such as Sway. (It needs
-  the `ext-image-copy-capture-v1` or the `wlr-screencopy` protocol.)
+- Wayland compositors other than GNOME, KDE, Hyprland and those built on wlroots, such as Sway, labwc and
+  Wayfire. (It needs the `ext-image-copy-capture-v1` or the `wlr-screencopy` protocol.)
 - Without PipeWire or PulseAudio there is no sound.
 
 The GPU encodes with NVIDIA's driver 470 or newer (one viewer at a time), or on Intel and AMD with their VA-API
@@ -50,12 +47,12 @@ compositor, take it as keys of the desktop's own keyboard, which has not every c
 macOS 12.3 or newer on Apple Silicon; sound needs macOS 13. Its size Client makes a virtual display, through
 an interface of macOS's that is not public, which display tools use as well.
 
-Windows 11 on x86_64, encoding with x264, one viewer per display (Windows 10 has the same interfaces, but
-has not been tried). NVIDIA's encoder is built in but has not been tried there yet, and Intel's and AMD's are
-not used. Its size Client gives the display the resolution and scale nearest the browser window's that it
-offers, and its own back on disconnect. Where a driver puts the pointer into the picture and Windows cannot
-leave it out, the pointer comes with the video. Not yet on Windows: the login screen and the screens Windows
-asks for an administrator's consent on, and input into programs that run as administrator.
+Windows 10 and 11 on x86_64, encoding with x264, one viewer per display. NVIDIA's encoder is built in but has
+not been tried there yet, and Intel's and AMD's are not used. Its size Client gives the display the resolution
+and scale nearest the browser window's that it offers, and its own back on disconnect. Where a driver puts the
+pointer into the picture and Windows cannot leave it out, the pointer comes with the video. Not yet on
+Windows: the login screen and the screens Windows asks for an administrator's consent on, and input into
+programs that run as administrator.
 
 The client needs WebCodecs, and Keyboard Lock to send system shortcuts such as Alt+Tab to the remote side,
 which works in full screen. Video over UDP needs WebTransport; without it, or where the network lets no UDP
@@ -63,20 +60,24 @@ through, the video takes the same connection as everything else. It is developed
 
 ## Install
 
-In a terminal of the desktop session you want to control:
+In a terminal of the desktop session you want to control, on a machine that is on a tailnet. This is the
+preferred way: browsers trust the certificate as it is, the machine is reached from wherever the tailnet
+reaches, and nobody else is answered.
+
+    curl -fsSL https://github.com/timongentzsch/remote-desktop/releases/latest/download/install.sh | sh -s -- --tailscale
+
+Without Tailscale, for the local network or a port you open, with a certificate each client has to trust
+once:
 
     curl -fsSL https://github.com/timongentzsch/remote-desktop/releases/latest/download/install.sh | sh
-
-For a machine on a tailnet, reached only from the tailnet, and without a password:
-
-    curl -fsSL https://github.com/timongentzsch/remote-desktop/releases/latest/download/install.sh | sh -s -- --tailscale --no-password
 
 The script downloads the binary for this machine's architecture and runs `remote-desktop install` with the
 options given:
 
 - `--tailscale` takes the certificate from Tailscale (see [Certificates](#certificates)) and answers devices on
   the tailnet only,
-- `--no-password` lets in whoever reaches the host without a password,
+- `--no-password` lets in whoever reaches the host without a password: with `--tailscale`, whoever the
+  tailnet's access rules let reach the machine,
 - `--port=8765` serves on that port where another service has HTTPS's own, 443; the address then ends in
   `:8765`. Installing again keeps the port.
 
@@ -133,15 +134,8 @@ the old port's firewall rules away; bookmarks and a tailnet's access rules need 
 
 Browsers only decode video and capture the keyboard on secure pages, so the host always serves HTTPS.
 
-**Self-signed (default).** Works on any network. Each client has to trust the certificate once; on a Mac:
-
-    scp user@host:.config/remote-desktop/certificate.pem remote-desktop.pem
-    security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db remote-desktop.pem
-
-It is valid for 820 days and names the machine's hostname and address as they were when it was made.
-
-**Tailscale.** On a tailnet with HTTPS certificates enabled, `install --tailscale` takes the certificate from
-Tailscale instead. Browsers trust it as it is, the host is reachable from the tailnet at
+**Tailscale (preferred).** On a tailnet with HTTPS certificates enabled, `install --tailscale` takes the
+certificate from Tailscale. Browsers trust it as it is, the host is reachable from the tailnet at
 `https://<machine>.<tailnet>.ts.net`, and the certificate renews itself. A self-hosted Headscale issues
 these certificates from version 0.30 on, with `dns.certificates` and a DNS challenge provider configured.
 
@@ -150,6 +144,14 @@ With this certificate the host answers devices on the tailnet only: connections 
 over any other interface, so nobody on the local network can pose as one, and a subnet router's forwarding
 from the tailnet into the local network does not count. Who on the tailnet may reach the machine is up to the
 tailnet's access rules.
+
+**Self-signed.** What `install` makes where it is not told `--tailscale`. Works on any network. Each client
+has to trust the certificate once; on a Mac:
+
+    scp user@host:.config/remote-desktop/certificate.pem remote-desktop.pem
+    security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db remote-desktop.pem
+
+It is valid for 820 days and names the machine's hostname and address as they were when it was made.
 
 Reaching the host from another network is left to Tailscale or another VPN altogether; this program has no
 relay or router traversal of its own. Where Tailscale cannot connect two devices directly it relays them
@@ -167,8 +169,8 @@ Whoever logs in controls the desktop session, so treat the address and password 
   Tailscale or another VPN.
 - The client keeps the password in the browser's local storage after a successful login. Anyone with access
   to that browser profile can read it.
-- With `password --none`, anyone who can reach the host's port controls the desktop. Other web sites cannot do so
-  through a visitor's browser: the host only accepts connections from its own page.
+- With `password --none`, anyone who can reach the host's port controls the desktop. Other web sites cannot do
+  so through a visitor's browser: the host only accepts connections from its own page.
 - The udev rule lets every program of the user at the machine create input devices, not only this one.
 - The service for the login screen answers before anyone has logged in, behind the same password. It is root
   only until it has read the password and the certificate, and serves as the display manager's own user.
