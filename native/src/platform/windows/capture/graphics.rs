@@ -59,6 +59,8 @@ pub(super) fn run(
     let session = pool.CreateCaptureSession(&item)?;
     let capture = Capture { pool, session };
     capture.session.SetIsCursorCaptureEnabled(false)?;
+    // No frame around the display at the machine itself, where Windows lets a program say so (11).
+    let _ = capture.session.SetIsBorderRequired(false);
     // WGC's 16ms minimum can skip every other refresh on a 64Hz display. Give the source
     // headroom; the worker below sets the output rate. Older Windows lacks this property.
     let _ = capture.session.SetMinUpdateInterval((stream.frame_interval() / 2).into());

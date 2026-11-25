@@ -846,6 +846,7 @@ function connect() {
     ws.close();
   }), sound = soundPlayer();
   let live = false;  // whether the stream has begun, which is what shows that the login was accepted
+  let greeted = false;  // whether the login was sent, which has to be the first message
   let bytes = 0, received = 0, roundTrip = 0;  // `received` counts all that arrived
   let host = { encode: 0, send: 0, kbps: 0, heldBack: false };  // what the host reports once a second
   // Video comes over the WebSocket until the host is reached over UDP, and from then on as datagrams. When it
@@ -890,7 +891,7 @@ function connect() {
       showPointer();
       resizeWindow();
     }
-    if (live) send('ping', performance.now(), ...(document.hidden ? [0, 0] : [Math.round(roundTrip), received]));
+    if (greeted) send('ping', performance.now(), ...(document.hidden ? [0, 0] : [Math.round(roundTrip), received]));
   }, PING);
   let reported = performance.now();
   const report = setInterval(() => {
@@ -935,10 +936,10 @@ function connect() {
     [PADDING]() {},  // only there to show the host what the link carries
     [POINTER](data) {
       const view = new DataView(data), [width, height, x, y] = [1, 3, 5, 7].map(at => view.getUint16(at));
-      shape = { width, height, x, y, image: new ImageData(new Uint8ClampedArray(data.slice(9)), width, height) };
       // A shape of no size: the host has no pointer for this page to draw, as it is hidden or in the picture.
       document.body.classList.toggle('remote-cursor', !width);
       if (!width) return;
+      shape = { width, height, x, y, image: new ImageData(new Uint8ClampedArray(data.slice(9)), width, height) };
       showPointer();
     },
   };
@@ -952,6 +953,7 @@ function connect() {
     };
     if (hello.size === 'client') clientWindow = hello.window;
     ws.send(JSON.stringify(hello));
+    greeted = true;
   };
   ws.onmessage = event => {
     received += event.data.byteLength ?? event.data.length;
