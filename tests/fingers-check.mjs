@@ -85,6 +85,22 @@ await withPage(process.argv[2], async ({ command, evaluate }) => {
   await touch('touchStart', [[150, padY]]);
   await touch('touchEnd', []);
   await sleep(300);
+  // Fit, shown while the picture is zoomed, brings it back, and the keyboard's button still takes its tap.
+  const middle = id => evaluate(`JSON.stringify((r => [r.left + r.width / 2, r.top + r.height / 2])($('${id}').getBoundingClientRect()))`).then(JSON.parse);
+  await touch('touchStart', [await middle('fit')]);
+  await touch('touchEnd', []);
+  await sleep(200);
+  r = await evaluate(`zoom`);
+  say('a tap on Fit shows the whole picture again', r, r === 1);
+  await touch('touchStart', [await middle('keys')]);
+  await touch('touchEnd', []);
+  await sleep(300);
+  r = await evaluate(`$('keys').getAttribute('aria-pressed')`);
+  say('a tap on the keyboard button switches it on', r, r === 'true');
+  await touch('touchStart', [await middle('keys')]);
+  await touch('touchEnd', []);
+  await sleep(300);
+  await evaluate(`zoom = ${3.33}; place(); true`);
   // A finger whose end never came must not spoil the next gesture.
   await sleep(300);
   await evaluate(`fingers.set(99, { x: 5, y: 5 }); true`);
@@ -97,7 +113,7 @@ await withPage(process.argv[2], async ({ command, evaluate }) => {
   await touch('touchMove', [[100, pictureY, 0], [332, pictureY, 2]]);
   const after = await evaluate(`Math.round(zoom * 100) / 100`);
   await touch('touchEnd', []);
-  say('picture, three fingers then two, moved a pixel: the zoom does not jump', { zoom: after }, Math.abs(after - zoomed) < .05);
+  say('picture, three fingers then two, moved a pixel: the zoom does not jump', { zoom: after }, Math.abs(after - 3.33) < .05);
   // The arrow that stands in for the host's pointer is 24 of the host's pixels high, whatever the zoom.
   r = JSON.parse(await evaluate(`JSON.stringify([1, 4].map(times => { zoom = times; place(); return parseFloat(document.documentElement.style.getPropertyValue('--point-size')) / (canvas.getBoundingClientRect().width / sourceSize.width); }))`));
   say('the arrow is 24 of the host\'s pixels high at every zoom', r, r.every(height => Math.abs(height - 24) < .01));

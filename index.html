@@ -1195,11 +1195,19 @@ if (TOUCH) {
   // Safari zooms the page at a pinch whatever a page's styles say, unless its own event for one is refused.
   addEventListener('gesturestart', event => connected() && event.preventDefault());
   // And it takes a finger held still for the start of marking text, and shows its magnifying glass, unless the
-  // touch itself is refused. The events above come all the same; what is left out are the controls that need
-  // the browser's own tap and scrolling.
+  // touch itself is refused. The events above come all the same. The browser keeps the touches it is needed
+  // for: on the panel and the key bar, which scroll, and on the button that brings up the phone's keyboard,
+  // which only a tap of the browser's own does. A refused touch makes no click, so the other buttons of the
+  // page are clicked here, by a finger that lifts where it came down.
+  const BROWSERS = '.panel, .keybar, #keys';
   addEventListener('touchstart', event => {
-    if (connected() && !event.target.closest('button:not([data-button]), .panel, .keybar')) event.preventDefault();
+    if (connected() && !event.target.closest(BROWSERS)) event.preventDefault();
   }, { passive: false });
+  addEventListener('touchend', event => {
+    const button = connected() && !event.target.closest(BROWSERS) && event.target.closest('button:not([data-button])');
+    const { clientX, clientY } = event.changedTouches[0];
+    if (button && button.contains(document.elementFromPoint(clientX, clientY))) button.click();
+  });
 }
 // The trackpad's buttons. Each is one finger's at a time, and a first finger takes it over from one whose end
 // never came.
