@@ -188,12 +188,13 @@ fn executable(_program: &std::path::Path) -> std::io::Result<()> {
 }
 
 /// Puts the new binary where the installed one is and starts it in its place. If the host served before and
-/// does not within `STARTING` afterwards, the binary from before is put back and started.
+/// does not within `STARTING` afterwards, the binary from before is put back and started. Serving is that the
+/// port answers with a client's manifest, whatever is in it: the new version's is not this one's.
 #[cfg(not(target_os = "macos"))]
 fn replace(program: &[u8], version: &str) {
     let binary = service::binary();
     let old = binary.with_extension("old");
-    let serves = || crate::install::serves(crate::port());
+    let serves = || crate::install::served_manifest(crate::port()).is_some();
     let served = serves();
     service::stop_for_update();
     let put = fs::rename(&binary, &old).and_then(|()| fs::write(&binary, program)).and_then(|()| executable(&binary));

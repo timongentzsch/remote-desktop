@@ -121,6 +121,9 @@ itself, while nobody is connected:
 If the host served before the binary changed and does not within 30 seconds after, the old binary is put back
 and that version is not tried again. Deleting the `update` file among the settings switches this off.
 
+Versions 0.11.0 and 0.11.1 take a newer version whose page has changed for one that does not serve, and put
+themselves back: install over those by hand, as at first.
+
 ## Certificates
 
 The host always serves HTTPS: browsers decode video and capture the keyboard on secure pages only.

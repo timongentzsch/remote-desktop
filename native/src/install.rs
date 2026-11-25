@@ -149,13 +149,18 @@ pub fn curl() -> Command {
     curl
 }
 
-/// Whether the host answers on `port` of this machine: with its client, whatever the certificate.
-pub fn serves(port: u16) -> bool {
+/// The client's manifest as what listens on `port` of this machine serves it, whatever the certificate. None
+/// if nothing answers there or it has no such file.
+pub fn served_manifest(port: u16) -> Option<Vec<u8>> {
     let url = format!("https://127.0.0.1:{port}/manifest.json");
-    curl()
-        .args(["--noproxy", "*", "--insecure", "--max-time", "3", &url])
-        .output()
-        .is_ok_and(|reply| reply.status.success() && reply.stdout == include_bytes!("../../manifest.json")[..])
+    let reply = curl().args(["--noproxy", "*", "--insecure", "--fail", "--max-time", "3", &url]).output().ok()?;
+    reply.status.success().then_some(reply.stdout)
+}
+
+/// Whether this version of the host answers on `port` of this machine, and not another program.
+#[cfg(target_os = "macos")]
+pub fn serves(port: u16) -> bool {
+    served_manifest(port).is_some_and(|manifest| manifest == include_bytes!("../../manifest.json"))
 }
 
 /// Runs a command that has to succeed, or else ends with what went wrong.

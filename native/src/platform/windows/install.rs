@@ -6,6 +6,9 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use windows::Win32::Foundation::{HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation};
+use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+
 use crate::install::{check_tcp_port, run, run_quietly};
 use crate::{NAME, fail};
 
@@ -46,10 +49,25 @@ pub fn start_updated() {
     let _ = start_host(&binary());
 }
 
-/// The host outlives this program, and Windows leaves nothing behind of a process nobody waits for.
+/// The host outlives this program, and Windows leaves nothing behind of a process nobody waits for. It takes
+/// none of this program's input and output along: a new process gets every handle of the one that starts it
+/// that may be handed on, and where those are pipes, as under ssh, whoever waits for them to close would wait
+/// for the host.
 #[allow(clippy::zombie_processes)]
 fn start_host(binary: &Path) -> std::io::Result<()> {
-    Command::new(binary).creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW).spawn().map(drop)
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        if let Ok(handle) = unsafe { GetStdHandle(which) } {
+            let _ = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) };
+        }
+    }
+    let nothing = std::process::Stdio::null;
+    Command::new(binary)
+        .stdin(nothing())
+        .stdout(nothing())
+        .stderr(nothing())
+        .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+        .spawn()
+        .map(drop)
 }
 
 /// Installing again restarts the host.
