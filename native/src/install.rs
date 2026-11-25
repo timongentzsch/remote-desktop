@@ -115,15 +115,18 @@ fn clear_password() {
     write_private(&password_path(), b"").unwrap_or_else(|error| fail(&error));
 }
 
-/// An existing managed listener can give the port back during an upgrade. Only ask the OS who
-/// owns it when binding the same IPv4 wildcard address as the host actually fails.
+/// Whether the host can have TCP port `port`: nobody answers there, or the installed host that this install
+/// replaces does. Asked by connecting, as a program that listens to find out is one that Windows' firewall and
+/// the Mac's ask the user about.
 #[cfg(any(target_os = "macos", windows))]
 pub fn check_tcp_port(port: u16, installed_owns_it: impl FnOnce() -> bool) -> Result<(), String> {
-    if let Err(error) = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
+    let here = (std::net::Ipv4Addr::LOCALHOST, port).into();
+    if std::net::TcpStream::connect_timeout(&here, std::time::Duration::from_millis(500)).is_ok()
         && !installed_owns_it()
     {
         return Err(format!(
-            "cannot install on TCP port {port}: {error}. Free the port or install on another with --port=PORT."
+            "cannot install on TCP port {port}: another program has it. Free the port or install on another with \
+             --port=PORT."
         ));
     }
     Ok(())
