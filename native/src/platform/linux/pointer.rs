@@ -41,6 +41,16 @@ impl Drop for HiddenPointer {
     }
 }
 
+/// Hyprland shows its pointer again when it reads its configuration anew, which the end of a virtual screen has
+/// it do (see virtual_screen.rs). It is hidden again for the sessions that still draw their own.
+pub fn hide_again() {
+    if *HIDING.lock().unwrap() > 0
+        && let Err(error) = set_invisible(true)
+    {
+        warn!("the desktop's pointer is back in the picture: {error}");
+    }
+}
+
 /// Shows the pointer again if a host ended with it hidden, as one that crashed would.
 pub fn restore_leftover() {
     if hyprland::marker(MARKER).exists() && hyprland::running() {

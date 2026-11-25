@@ -137,7 +137,9 @@ fn switch_off(name: &str) -> Result<(), String> {
 }
 
 /// Reading the configuration again brings its screens back as they were set up; then the headless one goes.
+/// It also undoes what other sessions have set, which is set again.
 fn restore_outputs() -> Result<(), String> {
     let reloaded = hyprland::hyprctl(&["reload"]);
+    super::pointer::hide_again();
     hyprland::hyprctl(&["output", "remove", NAME]).and(reloaded)
 }
