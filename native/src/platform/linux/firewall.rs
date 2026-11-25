@@ -85,7 +85,9 @@ impl Firewall {
                 let old = ["tcp", "udp"].map(|protocol| format!("--remove-port={OLD_PORT}/{protocol}"));
                 for zone in zones.split_whitespace() {
                     let zone = format!("--zone={zone}");
-                    run_quietly("sudo", &["firewall-cmd", "--permanent", &zone, &remove, &old[0], &old[1]]);
+                    // One kind of change a call: a service that is not there ends the call before the ports.
+                    run_quietly("sudo", &["firewall-cmd", "--permanent", &zone, &remove]);
+                    run_quietly("sudo", &["firewall-cmd", "--permanent", &zone, &old[0], &old[1]]);
                 }
                 if add {
                     let query = if tailnet_only {

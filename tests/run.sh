@@ -31,6 +31,7 @@ echo "== older sway: bursts";           run rd-test-oldsway ./burst-test.sh 3000
 echo "== older sway: clipboard";        run rd-test-oldsway ./clipboard-test.sh sway | grep "$keep"
 echo "== older sway: two screens";      run rd-test-oldsway ./screens-test.sh sway | grep "$screens"
 echo "== install without systemd";      run rd-test-oldsway ./install-test.sh || exit 1
+echo "== install with ufw and firewalld"; run --cap-add NET_ADMIN rd-test-oldsway ./firewall-test.sh || exit 1
 echo "== GNOME: motion";                run rd-test-gnome ./gnome-test.sh 8 "" motion | grep "$keep"
 echo "== GNOME: clipboard";             run rd-test-gnome ./gnome-clipboard.sh | grep "$keep"
 echo "== GNOME: two screens";           run rd-test-gnome ./screens-test.sh mutter | grep "$screens"
