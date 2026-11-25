@@ -200,6 +200,8 @@ enum Frame {
 pub struct Stream {
     pub settings: Settings,
     pub shared: Arc<Shared>,
+    /// Set by a capture whose pixels come red, green, blue, as some renderers read them, not blue, green, red.
+    pub red_first: bool,
     sink: Sink,
     /// The size of the screen the encoder is open for.
     screen: (usize, usize),
@@ -254,6 +256,7 @@ impl Stream {
         Self {
             settings,
             shared,
+            red_first: false,
             sink,
             screen: (0, 0),
             shrinker: None,
@@ -321,7 +324,8 @@ impl Stream {
             (source, stride) = (&self.scaled, encoder.width * convert::BYTES_PER_PIXEL);
         }
         let full_chroma = encoder.full_chroma;
-        convert::bgrx_to_yuv(source, stride, encoder.width, encoder.height, encoder.planes(), full_chroma);
+        let size = (encoder.width, encoder.height);
+        convert::bgrx_to_yuv(source, stride, size, encoder.planes(), full_chroma, self.red_first);
         self.encode_picture(started);
     }
 

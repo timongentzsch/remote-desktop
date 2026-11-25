@@ -155,10 +155,12 @@ impl Capture {
         {
             return Ok(());
         }
-        // Both hold blue, green, red and a fourth byte per pixel, which is what the stream takes.
-        let WEnum::Value(format @ (wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888)) = format else {
+        // Four bytes a pixel: blue, green, red and one more, or with red first, as renderers on a GPU often read.
+        use wl_shm::Format::{Abgr8888, Argb8888, Xbgr8888, Xrgb8888};
+        let WEnum::Value(format @ (Argb8888 | Xrgb8888 | Abgr8888 | Xbgr8888)) = format else {
             return Err(format!("unsupported capture pixel format {format:?}"));
         };
+        self.stream.red_first = matches!(format, Abgr8888 | Xbgr8888);
         let memory = Memory::new(stride * height)?;
         let pool = self.shm.create_pool(memory.file.as_fd(), (stride * height) as i32, queue, ());
         let buffer = pool.create_buffer(0, width as i32, height as i32, stride as i32, format, queue, ());

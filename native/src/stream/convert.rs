@@ -11,8 +11,16 @@ use yuv::{BufferStoreMut, YuvConversionMode, YuvPlanarImageMut, YuvRange, YuvSta
 
 use super::encode::Plane;
 
-/// Fills the encoder's planes from `pixels` (rows of `stride` bytes, four bytes per pixel in B, G, R, x order).
-pub fn bgrx_to_yuv(pixels: &[u8], stride: usize, width: usize, height: usize, planes: [Plane; 3], full_chroma: bool) {
+/// Fills the encoder's planes from `pixels` (rows of `stride` bytes, four bytes per pixel in B, G, R, x order, or
+/// in R, G, B, x where `red_first`).
+pub fn bgrx_to_yuv(
+    pixels: &[u8],
+    stride: usize,
+    (width, height): (usize, usize),
+    planes: [Plane; 3],
+    full_chroma: bool,
+    red_first: bool,
+) {
     let [y, u, v] = planes;
     let mut image = YuvPlanarImageMut {
         y_plane: BufferStoreMut::Borrowed(y.bytes),
@@ -24,7 +32,12 @@ pub fn bgrx_to_yuv(pixels: &[u8], stride: usize, width: usize, height: usize, pl
         width: width as u32,
         height: height as u32,
     };
-    let convert = if full_chroma { yuv::bgra_to_yuv444 } else { yuv::bgra_to_yuv420 };
+    let convert = match (full_chroma, red_first) {
+        (true, false) => yuv::bgra_to_yuv444,
+        (false, false) => yuv::bgra_to_yuv420,
+        (true, true) => yuv::rgba_to_yuv444,
+        (false, true) => yuv::rgba_to_yuv420,
+    };
     convert(&mut image, pixels, stride as u32, YuvRange::Full, YuvStandardMatrix::Bt709, YuvConversionMode::Balanced)
         .expect("the planes were allocated for this picture size");
 }
@@ -85,8 +98,9 @@ mod tests {
         let colours = [[255, 255, 255, 0], [0, 0, 0, 0], [0, 0, 255, 0], [255, 0, 0, 0]];
         let expected = [(255, 128, 128), (0, 128, 128), (54, 99, 255), (18, 255, 116)];
         for (colour, expected) in colours.into_iter().zip(expected) {
-            let pixels = colour.repeat(4);
-            for full_chroma in [false, true] {
+            for (full_chroma, red_first) in [(false, false), (true, false), (false, true), (true, true)] {
+                let [blue, green, red, unused] = colour;
+                let pixels = if red_first { [red, green, blue, unused] } else { colour }.repeat(4);
                 let chroma_size = if full_chroma { 4 } else { 1 };
                 let (mut y, mut u, mut v) = (vec![0; 4], vec![0; chroma_size], vec![0; chroma_size]);
                 let chroma_stride = if full_chroma { 2 } else { 1 };
@@ -95,8 +109,8 @@ mod tests {
                     Plane { bytes: &mut u, stride: chroma_stride },
                     Plane { bytes: &mut v, stride: chroma_stride },
                 ];
-                bgrx_to_yuv(&pixels, 8, 2, 2, planes, full_chroma);
-                assert_eq!((y[0], u[0], v[0]), expected, "{colour:?} full_chroma={full_chroma}");
+                bgrx_to_yuv(&pixels, 8, (2, 2), planes, full_chroma, red_first);
+                assert_eq!((y[0], u[0], v[0]), expected, "{colour:?} full_chroma={full_chroma} red_first={red_first}");
             }
         }
     }
