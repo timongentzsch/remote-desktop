@@ -11,8 +11,6 @@ use crate::install::{run, run_quietly, write};
 use crate::platform::linux::firewall;
 use crate::{NAME, fail, port, update};
 
-pub use firewall::check_port;
-
 pub const BINARY: &str = "/usr/local/bin/remote-desktop";
 /// The user service that runs the host in the desktop session, and the system service at the login screen.
 const USER_UNIT: &str = "remote-desktop.service";
@@ -40,6 +38,27 @@ WantedBy=default.target
     )
 }
 
+/// What an install needs before it asks for anything else: sudo, by which all of the system's is changed, and
+/// the port free or the installed host's own.
+pub fn check_port(port: u16) {
+    if !run_quietly("sudo", &["true"]) {
+        fail("the install needs sudo, and this user allowed to use it");
+    }
+    firewall::check_port(port);
+}
+
+/// A path of the user's as a unit file takes it, whatever is in its name: systemd reads `%` as the start of
+/// a specifier.
+fn in_unit(path: &std::path::Path) -> String {
+    path.display().to_string().replace('%', "%%")
+}
+
+/// The same between quotation marks, as a variable's value is given: there a backslash and a quotation mark
+/// are escaped as well.
+fn quoted_in_unit(path: &std::path::Path) -> String {
+    in_unit(path).replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 const LOGIN_UNIT: &str = "remote-desktop-login.service";
 const SYSTEM_UNITS: &str = "/etc/systemd/system";
 
@@ -52,7 +71,7 @@ fn login_unit() -> String {
 Description=Remote desktop host at the login screen
 
 [Service]
-Environment=XDG_CONFIG_HOME={}
+Environment=\"XDG_CONFIG_HOME={}\"
 ExecStart={BINARY} login-screen
 Restart=always
 RestartSec=1
@@ -60,7 +79,7 @@ RestartSec=1
 [Install]
 WantedBy=multi-user.target
 ",
-        config_directory().display()
+        quoted_in_unit(&config_directory())
     )
 }
 
@@ -82,7 +101,7 @@ PathModified={}
 [Install]
 WantedBy=paths.target
 ",
-        update::wanted_path().display()
+        in_unit(&update::wanted_path())
     )
 }
 
@@ -94,10 +113,10 @@ Description=Remote desktop host's newer version
 
 [Service]
 Type=oneshot
-Environment=XDG_CONFIG_HOME={}
+Environment=\"XDG_CONFIG_HOME={}\"
 ExecStart={BINARY} update
 ",
-        config_directory().display()
+        quoted_in_unit(&config_directory())
     )
 }
 
@@ -309,4 +328,17 @@ pub fn follow_certificate(tailnet_only: bool) {
 pub fn allow_tailscale() {
     let user = std::env::var("USER").unwrap_or_else(|_| fail("USER is not set"));
     run("sudo", &["tailscale", "set", &format!("--operator={user}")]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_is_written_into_a_unit_so_that_systemd_reads_it_back() {
+        // As systemd 259 read each back: the first from a path unit, the second from a variable in quotation marks.
+        let path = std::path::Path::new(r#"/tmp/rd e%s"c\d"#);
+        assert_eq!(in_unit(path), r#"/tmp/rd e%%s"c\d"#);
+        assert_eq!(quoted_in_unit(path), r#"/tmp/rd e%%s\"c\\d"#);
+    }
 }

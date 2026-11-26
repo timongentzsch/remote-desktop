@@ -17,10 +17,13 @@ release=${REMOTE_DESKTOP_RELEASE:-https://github.com/timongentzsch/remote-deskto
 
 fail() { echo "remote-desktop: $1" >&2; exit 1; }
 
-case $(uname -m) in
+# The processor's kind is what the kernel says, or the Mac itself where a translated shell says otherwise.
+machine=$(uname -m)
+[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" != 1 ] || machine=arm64
+case $machine in
     x86_64 | amd64) architecture=x86_64 ;;
     aarch64 | arm64) architecture=aarch64 ;;
-    *) fail "there is no build for $(uname -m), only x86_64 and aarch64" ;;
+    *) fail "there is no build for $machine, only x86_64 and aarch64" ;;
 esac
 
 # Which system this is: what cannot work is said before anything is downloaded, and what the install will ask
@@ -40,7 +43,12 @@ case $(uname -s) in
 and run it in a terminal with: install" ;;
         esac
         [ ! -e /etc/NIXOS ] || fail "NixOS runs no binaries built for other distributions as they are"
-        getconf GNU_LIBC_VERSION >/dev/null 2>&1 || fail "this system has no glibc, which the builds need (2.28 or newer)"
+        glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | cut -d' ' -f2) || glibc=
+        [ -n "$glibc" ] || fail "this system has no glibc, which the builds need (2.28 or newer)"
+        minor=${glibc#*.}
+        [ "${glibc%%.*}" -gt 2 ] || [ "${minor%%.*}" -ge 28 ] || fail "this system's glibc is $glibc, and the builds need 2.28 or newer"
+        [ "$(getconf LONG_BIT)" = 64 ] || fail "this system is a 32-bit one on a 64-bit processor, and the builds are 64-bit"
+        command -v sudo >/dev/null || fail "the install needs sudo, which this system does not have"
         echo "This is Linux${XDG_CURRENT_DESKTOP:+, with $XDG_CURRENT_DESKTOP}${XDG_SESSION_TYPE:+ on $XDG_SESSION_TYPE}. The install asks for sudo: to put the program in"
         echo "/usr/local/bin, to let you create input devices (a udev rule), and to open its port in ufw or firewalld."
         if [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
@@ -57,8 +65,15 @@ case " $* " in
     *" --tailscale "*) command -v tailscale >/dev/null || fail "--tailscale needs Tailscale's command, tailscale, on this machine and in the PATH: https://tailscale.com/download" ;;
 esac
 
+# Where the program is downloaded to and run from once. Some systems run nothing from their temporary folder.
 directory=$(mktemp -d)
 trap 'rm -rf "$directory"' EXIT
+printf '#!/bin/sh\n' > "$directory/runs" && chmod +x "$directory/runs"
+if ! "$directory/runs" 2>/dev/null; then
+    rm -rf "$directory"
+    mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"
+    directory=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/remote-desktop.XXXXXX")
+fi
 echo "Downloading remote-desktop for $architecture"
 curl -fsSL -o "$directory/remote-desktop" "$release/remote-desktop-$architecture"
 chmod +x "$directory/remote-desktop"
