@@ -85,4 +85,6 @@ pub mod greeter {
     pub fn run(_address: &str) -> ! {
         crate::fail("there is no login screen to show on macOS")
     }
+
+    pub fn stand_back() {}
 }

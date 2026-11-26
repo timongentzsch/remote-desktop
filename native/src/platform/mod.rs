@@ -81,9 +81,9 @@ pub use os::input::Input;
 pub use os::audio::run as record_sound;
 pub use os::clipboard;
 
-// Setting the host up: the `install`, `uninstall`, `password` and `certificate` commands, and the host at the
-// login screen (`login_screen(address)`).
-pub use os::greeter::run as login_screen;
+// Setting the host up: the `install`, `uninstall`, `password` and `certificate` commands, the host at the
+// login screen (`login_screen(address)`), and a user's host making room for it (`stand_back()`).
+pub use os::greeter::{run as login_screen, stand_back};
 pub use os::install;
 
 // Where the password and certificate are kept, the machine's name, typing the password unseen, and a host that

@@ -2,12 +2,19 @@
 //! before anyone has logged in. The host gets there by starting as root, waiting for such a session, and then
 //! becoming that user in that session's environment: from then on it is the host as in any desktop session.
 //! When the login screen goes, this process goes too, and the system service that runs it starts over.
+//!
+//! A login screen can also come while a user is logged in: where it is the lock screen, as with LightDM, and
+//! where one user makes room for another. The seat then shows it and no longer the user's session, so the
+//! host of that session stands back for as long (see `stand_back`), and this one has the port. Which session
+//! a seat shows is logind's to say.
 
 use std::ffi::CString;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
@@ -23,6 +30,8 @@ const GREETER: (&str, &str) = ("XDG_SESSION_CLASS", "greeter");
 /// The variables by which a process finds the desktop session it runs in, a display among them.
 const DISPLAYS: [&str; 2] = ["WAYLAND_DISPLAY", "DISPLAY"];
 const DESKTOP: [&str; 5] = ["XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"];
+/// What a user's host that starts over tells itself: that it had a seat (see `stand_back`).
+const SEATED: &str = "REMOTE_DESKTOP_SEATED";
 /// How often the login screen is looked for while its session is coming up, and for how long after a change.
 const LOOK: Duration = Duration::from_millis(500);
 const LOOKS: u32 = 30;
@@ -53,13 +62,84 @@ pub fn run(address: &str) -> ! {
     server::serve(listener, host)
 }
 
-/// The user of a session as logind describes it in its directory, if the session is a login screen's. Only
-/// logind's word counts for whose processes are looked at: what a process has in its environment is its
-/// owner's to say, and this service hands whoever it takes for the login screen the port and the password.
-fn greeter_user(session: &str) -> Option<u32> {
-    let value = |name: &str| session.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix('='));
-    let user = value("UID")?.parse().ok().filter(|&user| user != 0)?;
-    (value("CLASS")? == GREETER.1).then_some(user)
+/// A session as logind describes it in its directory: whose it is, whether it is a login screen's, whether it
+/// is the one its seat shows, and that seat, which a session from elsewhere, as over ssh, has none of.
+#[derive(Debug, PartialEq)]
+struct Session {
+    user: u32,
+    greeter: bool,
+    shown: bool,
+    seat: String,
+}
+
+fn session(told: &str) -> Option<Session> {
+    let value = |name: &str| told.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix('='));
+    Some(Session {
+        user: value("UID")?.parse().ok()?,
+        greeter: value("CLASS")? == GREETER.1,
+        shown: value("ACTIVE") == Some("1"),
+        seat: value("SEAT").unwrap_or_default().to_owned(),
+    })
+}
+
+fn sessions() -> Vec<Session> {
+    let files = fs::read_dir(SESSIONS).into_iter().flatten().flatten();
+    // Older versions of logind keep a pipe beside each session's file, which nothing is to be read from.
+    let described = files.filter(|file| file.file_type().is_ok_and(|kind| kind.is_file()));
+    described.filter_map(|file| session(&fs::read_to_string(file.path()).ok()?)).collect()
+}
+
+/// The users of the login screens that their seats show. Only logind's word counts for whose processes are
+/// looked at: what a process has in its environment is its owner's to say, and this service hands whoever it
+/// takes for the login screen the port and the password. Root is never given up for root.
+fn greeters() -> Vec<u32> {
+    let shown = sessions().into_iter().filter(|session| session.greeter && session.shown && session.user != 0);
+    shown.map(|session| session.user).collect()
+}
+
+/// Whether `user` has a session on a seat, and whether such a seat shows a login screen.
+fn seat_of(user: u32, sessions: &[Session]) -> (bool, bool) {
+    let own = sessions.iter().filter(|session| session.user == user && !session.seat.is_empty());
+    let seats: Vec<&str> = own.map(|session| &*session.seat).collect();
+    let login = |session: &Session| session.greeter && session.shown && seats.contains(&&*session.seat);
+    (!seats.is_empty(), sessions.iter().any(login))
+}
+
+/// What the host of a user's session does about login screens: it waits while its seat shows one, and from
+/// then on leaves as soon as it does, or when the user has no session on a seat any more. A host that never
+/// had one, as on a machine without a seat, is none of this.
+///
+/// It leaves by starting over, which lets go of the port and of every client at once, and brings it back here
+/// to wait. When the user's session has ended, it ends: the next login starts it.
+pub fn stand_back() {
+    let user = unsafe { libc::getuid() };
+    let look = move || seat_of(user, &sessions());
+    let ended = || std::process::exit(0);
+    // A host that started over knows that it had a seat, which one that waits here may lose meanwhile.
+    let mut seated = std::env::var_os(SEATED).is_some();
+    loop {
+        match look() {
+            (true, true) => seated = true,
+            (true, false) => break,
+            (false, _) if seated => ended(),
+            (false, _) => return,
+        }
+        thread::sleep(LOOK);
+    }
+    thread::spawn(move || {
+        loop {
+            thread::sleep(STILL_THERE);
+            match look() {
+                (true, false) => {}
+                (true, true) => {
+                    let again = std::env::current_exe()
+                        .map(|this| Command::new(this).args(std::env::args_os().skip(1)).env(SEATED, "1").exec());
+                    fail(&format!("cannot start over: {}", again.unwrap_or_else(|error| error)));
+                }
+                (false, _) => ended(),
+            }
+        }
+    });
 }
 
 /// Sleeps until there is a login screen.
@@ -92,11 +172,7 @@ fn wait() -> Greeter {
 /// The login screen, if a process says it belongs to one and knows a display. A Wayland one is preferred: a
 /// login screen on Wayland has an X server as well, for old programs.
 fn find() -> Option<Greeter> {
-    let users: Vec<u32> = fs::read_dir(SESSIONS)
-        .ok()?
-        .flatten()
-        .filter_map(|session| greeter_user(&fs::read_to_string(session.path()).ok()?))
-        .collect();
+    let users = greeters();
     let mut found: Vec<Greeter> = fs::read_dir("/proc")
         .ok()?
         .flatten()
@@ -128,9 +204,10 @@ fn desktop_of(environment: &[u8]) -> Option<Vec<(String, String)>> {
 }
 
 impl Greeter {
-    /// Whether the process this was found by is still the login screen's.
+    /// Whether the process this was found by is still the login screen's, and its seat still shows that.
     fn is_there(&self) -> bool {
         fs::metadata(format!("/proc/{}", self.process)).is_ok_and(|owner| owner.uid() == self.user)
+            && greeters().contains(&self.user)
     }
 
     /// Gives up root for the login screen's user, for good, and takes over where its desktop is.
@@ -170,13 +247,33 @@ mod tests {
     }
 
     #[test]
-    fn only_a_login_screen_s_session_names_its_user() {
-        let session = |class: &str, user: u32| {
-            format!("# This is private data.\nUID={user}\nUSER=sddm\nACTIVE=1\nCLASS={class}\nLEADER=1203\n")
+    fn a_session_is_read_as_logind_describes_it() {
+        let told = |class: &str, user: u32, shown: u8, seat: &str| {
+            format!(
+                "# This is private data.\nUID={user}\nUSER=sddm\nACTIVE={shown}\n{seat}CLASS={class}\nLEADER=1203\n"
+            )
         };
-        assert_eq!(greeter_user(&session("greeter", 961)), Some(961));
-        assert_eq!(greeter_user(&session("user", 1000)), None);
-        assert_eq!(greeter_user(&session("greeter", 0)), None, "root is never given up for root");
-        assert_eq!(greeter_user("CLASS=greeter\n"), None);
+        let greeter = session(&told("greeter", 961, 1, "SEAT=seat0\n")).unwrap();
+        assert_eq!(greeter, Session { user: 961, greeter: true, shown: true, seat: "seat0".into() });
+        let behind = session(&told("user", 1000, 0, "SEAT=seat0\n")).unwrap();
+        assert!(!behind.greeter && !behind.shown && behind.seat == "seat0", "a user's session behind a login screen");
+        assert_eq!(session(&told("user", 1000, 1, "")).unwrap().seat, "", "over ssh: no seat");
+        assert_eq!(session("CLASS=greeter\n"), None);
+    }
+
+    #[test]
+    fn a_user_s_host_stands_back_for_a_login_screen_that_its_seat_shows() {
+        let session = |user, greeter, shown, seat: &str| Session { user, greeter, shown, seat: seat.into() };
+        let (own, behind) = (session(1000, false, true, "seat0"), session(1000, false, false, "seat0"));
+        let ssh = session(1000, false, true, "");
+        assert_eq!(seat_of(1000, &[own, ssh]), (true, false), "the seat shows the user's session");
+        let lock = [behind, session(112, true, true, "seat0")];
+        assert_eq!(seat_of(1000, &lock), (true, true), "a login screen in front, as a lock screen is");
+        let waiting = [session(1000, false, true, "seat0"), session(112, true, false, "seat0")];
+        assert_eq!(seat_of(1000, &waiting), (true, false), "one that waits behind the session");
+        let elsewhere = [session(1000, false, true, "seat0"), session(112, true, true, "seat1")];
+        assert_eq!(seat_of(1000, &elsewhere), (true, false), "another seat's");
+        let gone = [session(1000, false, true, ""), session(112, true, true, "seat0")];
+        assert_eq!(seat_of(1000, &gone), (false, false), "no session on a seat: logged out, or never had one");
     }
 }

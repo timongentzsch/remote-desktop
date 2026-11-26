@@ -132,4 +132,6 @@ pub mod greeter {
     pub fn run(_address: &str) -> ! {
         crate::fail(super::NOT_YET)
     }
+
+    pub fn stand_back() {}
 }
