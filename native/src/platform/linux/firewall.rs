@@ -1,7 +1,8 @@
 //! The firewall, where one is active that this knows how to configure: ufw or firewalld. The host's port is
 //! opened for TCP, which the page and the session take, and for UDP of the same number, which video takes where
-//! it can (see quic.rs). With a certificate from Tailscale it is opened on Tailscale's interface only, as the
-//! host then answers nobody else (see `server::on_tailnet`).
+//! it can (see quic.rs). With a certificate from Tailscale it is opened for the tailnet only, as the host then
+//! answers nobody else (see `server::on_tailnet`): on Tailscale's interface, or, where firewalld has that
+//! interface in no zone of its own, for the tailnet's addresses.
 
 use crate::install::{run, run_quietly};
 use crate::{NAME, port};
@@ -83,23 +84,36 @@ impl Firewall {
                     .unwrap_or_else(|| crate::fail("cannot list firewall zones"));
                 let remove = format!("--remove-service={NAME}");
                 let old = ["tcp", "udp"].map(|protocol| format!("--remove-port={OLD_PORT}/{protocol}"));
+                let tailnet = tailnet_rules();
                 for zone in zones.split_whitespace() {
                     let zone = format!("--zone={zone}");
                     // One kind of change a call: a service that is not there ends the call before the ports.
                     run_quietly("sudo", &["firewall-cmd", "--permanent", &zone, &remove]);
                     run_quietly("sudo", &["firewall-cmd", "--permanent", &zone, &old[0], &old[1]]);
+                    for rule in &tailnet {
+                        run_quietly(
+                            "sudo",
+                            &["firewall-cmd", "--permanent", &zone, &format!("--remove-rich-rule={rule}")],
+                        );
+                    }
                 }
                 if add {
-                    let query = if tailnet_only {
-                        format!("--get-zone-of-interface={TAILNET_INTERFACE}")
-                    } else {
-                        "--get-default-zone".to_owned()
-                    };
-                    if let Some(zone) = sudo_output(&["firewall-cmd", &query]).filter(|zone| !zone.is_empty()) {
+                    let zone_of = |query: &str| sudo_output(&["firewall-cmd", query]).filter(|zone| !zone.is_empty());
+                    let interface = format!("--get-zone-of-interface={TAILNET_INTERFACE}");
+                    let own = tailnet_only.then(|| zone_of(&interface)).flatten();
+                    let service = format!("--add-service={NAME}");
+                    if let Some(zone) = own {
+                        run("sudo", &["firewall-cmd", "--permanent", &format!("--zone={zone}"), &service]);
+                    } else if let Some(zone) = zone_of("--get-default-zone") {
+                        // Tailscale's interface is in no zone unless someone put it in one: the default zone
+                        // then speaks for it, and there the tailnet is let in by its addresses.
                         let zone = format!("--zone={zone}");
-                        run("sudo", &["firewall-cmd", "--permanent", &zone, &format!("--add-service={NAME}")]);
+                        let rules = tailnet.iter().map(|rule| format!("--add-rich-rule={rule}"));
+                        for change in if tailnet_only { rules.collect() } else { vec![service] } {
+                            run("sudo", &["firewall-cmd", "--permanent", &zone, &change]);
+                        }
                     } else {
-                        println!("No matching firewalld zone. Assign the interface a zone to enable access.");
+                        println!("firewalld names no default zone: the port is left closed.");
                     }
                 }
             }
@@ -176,8 +190,21 @@ pub fn close() {
     }
 }
 
+/// firewalld's rules that let the tailnet's addresses, and nobody else, reach the service.
+fn tailnet_rules() -> [String; 2] {
+    let (v4, v6) = (crate::server::TAILNET_V4, crate::server::TAILNET_V6);
+    [("ipv4", format!("{}/{}", v4.0, v4.1)), ("ipv6", format!("{}/{}", v6.0, v6.1))].map(|(family, range)| {
+        format!(r#"rule family="{family}" source address="{range}" service name="{NAME}" accept"#)
+    })
+}
+
+/// The one language every tool speaks, whatever the system's is: the locale, and the list of languages that
+/// programs in Python, as ufw and firewall-cmd are, put before it.
+const PLAIN: [&str; 2] = ["LC_ALL=C", "LANGUAGE=C"];
+
+/// What a tool says when run as root. It is read here, so the tool is asked in that language.
 fn sudo_output(arguments: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("sudo").args(arguments).output().ok()?;
+    let output = std::process::Command::new("sudo").arg("env").args(PLAIN).args(arguments).output().ok()?;
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 

@@ -42,8 +42,8 @@ const PORT_PATIENCE: Duration = Duration::from_secs(20);
 const PORT_RETRY: Duration = Duration::from_millis(250);
 
 /// Tailscale's addresses (see `on_tailnet`): 100.64.0.0/10, and fd7a:115c:a1e0::/48.
-const TAILNET_V4: (Ipv4Addr, u32) = (Ipv4Addr::new(100, 64, 0, 0), 10);
-const TAILNET_V6: (Ipv6Addr, u32) = (Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0), 48);
+pub const TAILNET_V4: (Ipv4Addr, u32) = (Ipv4Addr::new(100, 64, 0, 0), 10);
+pub const TAILNET_V6: (Ipv6Addr, u32) = (Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0), 48);
 
 /// What all connections share.
 pub struct Host {
