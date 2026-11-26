@@ -59,6 +59,8 @@ Client browser, and opens a new Host session to verify that the original setting
 
     node client-size-check.mjs https://HOST/ 1024x768@1=1024x768 640x360@2=1280x720
 
+An X11 host has no scale to set: its screen is the window's size in CSS pixels, so `1500x850@2=1500x850`.
+
 To measure Windows UI scaling as well, run the fixture in the interactive session on the primary display.
 Use a stop file that does not yet exist.
 

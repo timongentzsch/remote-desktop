@@ -95,6 +95,16 @@ pub fn place(screen: &Screen, all: &[Screen], x: i32, y: i32) -> (i32, i32) {
     (along(screen.x, screen.width, x, left, right), along(screen.y, screen.height, y, top, bottom))
 }
 
+/// How far a display's mode of `size` is from the `wanted` one, for choosing the nearest where a display has
+/// only its own. Relative errors give width and height equal weight; their difference counts against a mode
+/// that would stretch the window's shape.
+#[cfg(not(target_os = "macos"))]
+pub fn distance(size: (u32, u32), wanted: (u32, u32)) -> f64 {
+    let x = f64::from(size.0) / f64::from(wanted.0);
+    let y = f64::from(size.1) / f64::from(wanted.1);
+    (x - 1.0).powi(2) + (y - 1.0).powi(2) + (x - y).powi(2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +145,16 @@ mod tests {
         assert_eq!(window(390.0, 844.0, 3.0).scale(), 3.0);
         assert_eq!(window(1512.0, 982.0, 2.0).size(), (1512, 982), "listed in the desktop's units");
         assert_eq!(window(800.0, 600.0, 0.5).scale(), 1.0);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_nearest_mode_is_near_in_both_dimensions() {
+        let modes = [(1024, 768), (1280, 720), (1280, 768), (1280, 800), (1440, 900), (1920, 1080)];
+        let closest =
+            |wanted| modes.into_iter().min_by(|&a, &b| distance(a, wanted).total_cmp(&distance(b, wanted))).unwrap();
+        assert_eq!(closest((1024, 768)), (1024, 768));
+        assert_eq!(closest((1218, 742)), (1280, 768));
+        assert_eq!(closest((1420, 890)), (1440, 900));
     }
 }

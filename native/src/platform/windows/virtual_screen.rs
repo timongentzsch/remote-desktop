@@ -143,23 +143,17 @@ impl VirtualScreen {
             .collect();
         sizes.sort_unstable();
         sizes.dedup();
-        sizes.sort_by(|&a, &b| distance(a, wanted).total_cmp(&distance(b, wanted)));
+        let distance = |size| screen::distance(size, wanted);
+        sizes.sort_by(|&a, &b| distance(a).total_cmp(&distance(b)));
         let (width, height) = sizes
             .into_iter()
-            .take_while(|&size| distance(size, wanted) < distance(current, wanted))
+            .take_while(|&size| distance(size) < distance(current))
             .filter(|&size| size != wanted)
             .find(|&size| apply(size))
             .unwrap_or(current);
         warn!("{} uses {width}x{height} for a {}x{} client window", self.name, wanted.0, wanted.1);
         Ok(())
     }
-}
-
-// Relative errors give width and height equal weight. Their difference penalizes stretching the window's aspect.
-fn distance(size: (u32, u32), wanted: (u32, u32)) -> f64 {
-    let x = f64::from(size.0) / f64::from(wanted.0);
-    let y = f64::from(size.1) / f64::from(wanted.1);
-    (x - 1.0).powi(2) + (y - 1.0).powi(2) + (x - y).powi(2)
 }
 
 // EnumDisplaySettingsExW fills the display members of these unions. A manual change to the
@@ -216,15 +210,5 @@ mod tests {
         assert!(same_mode(&applied, &applied));
         assert!(!same_mode(&applied, &DEVMODEW { dmDisplayFrequency: 120, ..applied }));
         assert!(!same_mode(&applied, &DEVMODEW { dmPelsHeight: 720, ..applied }));
-    }
-
-    #[test]
-    fn matches_supported_client_sizes_and_ranks_nearby_modes_by_both_dimensions() {
-        let modes = [(1024, 768), (1280, 720), (1280, 768), (1280, 800), (1440, 900), (1920, 1080)];
-        let closest =
-            |wanted| modes.into_iter().min_by(|&a, &b| distance(a, wanted).total_cmp(&distance(b, wanted))).unwrap();
-        assert_eq!(closest((1024, 768)), (1024, 768));
-        assert_eq!(closest((1218, 742)), (1280, 768));
-        assert_eq!(closest((1420, 890)), (1440, 900));
     }
 }

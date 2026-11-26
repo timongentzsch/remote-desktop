@@ -43,6 +43,8 @@ echo "== X11: motion";                  run rd-test-x11 ./x11-test.sh 8 "" motio
 echo "== X11: pointer, sessions";       run rd-test-x11 ./x11-extra.sh | grep "$keep"
 echo "== X11: clipboard";               run rd-test-x11 ./x11-clipboard.sh | grep "$keep"
 echo "== X11: resize";                  run rd-test-x11 ./x11-resize.sh | grep "$keep"
+echo "== X11: client size";             run rd-test-x11 ./x11-client-size.sh xorg | grep "window\|during\|after\|picture\|screen is"
+echo "== X11: client size, Xvfb";       run rd-test-x11 ./x11-client-size.sh xvfb | grep "window\|during\|after\|picture\|screen is"
 echo "== X11: three monitors";          run rd-test-x11 ./screens-test.sh x11 | grep "$screens"
 echo "== X11: pointer shapes";          run rd-test-x11 ./pointer-test.sh x11 | grep "pointer\|shapes"
 # The clients so far speak TCP only. These watch through the real client in a browser, where video takes UDP.

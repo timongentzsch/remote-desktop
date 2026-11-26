@@ -22,7 +22,7 @@ Your running Linux desktop, Mac or Windows PC in a browser tab. One binary on th
 - **Not a game streamer.** No gamepads, no HDR.
 - **Not a session of its own.** It shows the machine's own screen, login screen included. The size Client
   gives it a screen of the browser window's size while connected: a virtual one on Hyprland and macOS, the
-  display's own mode and scale on Windows, restored afterwards.
+  display's own mode on X11 and, with its scale, on Windows, restored afterwards.
 - **Not file transfer.** Clipboard text only.
 
 ## What it runs on
