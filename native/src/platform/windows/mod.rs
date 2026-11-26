@@ -133,5 +133,6 @@ pub mod greeter {
         crate::fail(super::NOT_YET)
     }
 
-    pub fn stand_back() {}
+    /// The host runs in the user's session, started by it.
+    pub fn await_desktop() {}
 }

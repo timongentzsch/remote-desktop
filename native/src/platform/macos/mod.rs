@@ -86,5 +86,6 @@ pub mod greeter {
         crate::fail("there is no login screen to show on macOS")
     }
 
-    pub fn stand_back() {}
+    /// The host runs in the user's session, started by it.
+    pub fn await_desktop() {}
 }

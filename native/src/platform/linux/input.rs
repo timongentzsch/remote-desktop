@@ -9,6 +9,8 @@ use std::sync::{Mutex, OnceLock};
 use super::typing::Typist;
 use crate::typing::{self, MODIFIERS};
 
+/// The kernel's device through which input devices are made.
+pub const DEVICE: &str = "/dev/uinput";
 const EV_SYN: u16 = 0;
 const EV_KEY: u16 = 1;
 const EV_REL: u16 = 2;
@@ -64,9 +66,8 @@ pub struct Input {
 
 impl Input {
     pub fn open() -> io::Result<Self> {
-        Self::create().map_err(|error| {
-            io::Error::new(error.kind(), format!("/dev/uinput: {error}; run `remote-desktop install`"))
-        })
+        Self::create()
+            .map_err(|error| io::Error::new(error.kind(), format!("{DEVICE}: {error}; run `remote-desktop install`")))
     }
 
     fn create() -> io::Result<Self> {
@@ -121,7 +122,7 @@ impl Input {
 }
 
 fn device(name: &str, keys: &[u16], relative: &[u16], absolute: &[u16]) -> io::Result<File> {
-    let file = OpenOptions::new().write(true).open("/dev/uinput")?;
+    let file = OpenOptions::new().write(true).open(DEVICE)?;
     let control = |request: u32, argument: usize| match unsafe { libc::ioctl(file.as_raw_fd(), request as _, argument) }
     {
         -1 => Err(io::Error::last_os_error()),

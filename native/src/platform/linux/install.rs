@@ -21,21 +21,21 @@ const UDEV_RULE_PATH: &str = "/etc/udev/rules.d/70-remote-desktop.rules";
 const PORT_CAPABILITY: &str = "cap_net_bind_service=ep";
 /// Lets whoever is logged in at the seat create input devices. The number must stay below 73.
 const UDEV_RULE: &str = r#"KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput""#;
-/// A user service, because capture and input belong to the logged-in desktop session.
+/// A user service, because capture and input belong to the logged-in desktop session. It starts with the
+/// user's other services and finds that session itself (see greeter.rs): not every desktop tells systemd when
+/// it is up.
 fn user_unit() -> String {
     format!(
         "\
 [Unit]
 Description=Remote desktop host
-PartOf=graphical-session.target
-After=graphical-session.target
 
 [Service]
 ExecStart={BINARY}
 Restart=on-failure
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target
 "
     )
 }
@@ -117,21 +117,6 @@ X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1
     )
 }
 
-/// What the desktop's autostart runs at login where systemd has the user's service: it starts that service.
-/// A desktop that tells systemd of its session has started it by then, and this changes nothing; one that
-/// does not, such as Xfce, never reaches `graphical-session.target`, and the service would wait for good.
-fn autostart_entry() -> String {
-    format!(
-        "\
-[Desktop Entry]
-Type=Application
-Name=Remote Desktop
-Exec=systemctl --user start {USER_UNIT}
-NoDisplay=true
-"
-    )
-}
-
 /// One of the user's base directories: where `variable` points, or `fallback` in the home directory.
 fn user_directory(variable: &str, fallback: &str) -> PathBuf {
     std::env::var_os(variable)
@@ -165,7 +150,7 @@ pub fn data_directory() -> PathBuf {
     config_directory().join(NAME)
 }
 
-/// Whether systemd runs the user's services. Where it does not, the desktop's autostart starts the host itself.
+/// Whether systemd runs the user's services. Where it does not, the desktop's autostart starts the host.
 fn has_systemd() -> bool {
     Command::new("systemctl").args(["--user", "show-environment"]).output().is_ok_and(|output| output.status.success())
 }
@@ -238,8 +223,7 @@ fn stop_host() {
 }
 
 /// Copies this binary into place, grants access to uinput (both through sudo) and starts the host: as a
-/// service of the user's systemd, which the session or the desktop's autostart starts at each login, or without
-/// systemd now and through the autostart alone from then on.
+/// service of the user's systemd, or without one now and through the desktop's autostart at each login.
 pub fn start(tailnet_only: bool) {
     let this = std::env::current_exe().unwrap_or_else(|error| fail(&format!("cannot locate this program: {error}")));
     if this != std::path::Path::new(BINARY) {
@@ -261,8 +245,11 @@ pub fn start(tailnet_only: bool) {
 
     write(&desktop_entry_path(), &desktop_entry());
     if has_systemd() {
+        // What earlier versions had start the service goes: the session's target, and from 0.11.4 the
+        // desktop's autostart beside it.
+        run_quietly("systemctl", &["--user", "--quiet", "disable", USER_UNIT]);
+        let _ = fs::remove_file(autostart_path());
         write(&unit_path(), &user_unit());
-        write(&autostart_path(), &autostart_entry());
         run("systemctl", &["--user", "daemon-reload"]);
         run("systemctl", &["--user", "enable", USER_UNIT]);
         run("systemctl", &["--user", "restart", USER_UNIT]);
