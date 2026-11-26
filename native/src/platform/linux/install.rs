@@ -103,7 +103,7 @@ ExecStart={BINARY} update
 
 /// The program's desktop entry, hidden from menus. Plasma before 6.8 only casts the screen for a program whose
 /// entry asks for that (see capture/kwin.rs), and a copy among the desktop's autostart entries starts the
-/// host at login where systemd does not.
+/// host at login where systemd runs no services for the user.
 fn desktop_entry() -> String {
     format!(
         "\
@@ -113,6 +113,21 @@ Name=Remote Desktop
 Exec={BINARY}
 NoDisplay=true
 X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1
+"
+    )
+}
+
+/// What the desktop's autostart runs at login where systemd has the user's service: it starts that service.
+/// A desktop that tells systemd of its session has started it by then, and this changes nothing; one that
+/// does not, such as Xfce, never reaches `graphical-session.target`, and the service would wait for good.
+fn autostart_entry() -> String {
+    format!(
+        "\
+[Desktop Entry]
+Type=Application
+Name=Remote Desktop
+Exec=systemctl --user start {USER_UNIT}
+NoDisplay=true
 "
     )
 }
@@ -150,7 +165,7 @@ pub fn data_directory() -> PathBuf {
     config_directory().join(NAME)
 }
 
-/// Whether systemd runs the user's services. Where it does not, the desktop's autostart starts the host.
+/// Whether systemd runs the user's services. Where it does not, the desktop's autostart starts the host itself.
 fn has_systemd() -> bool {
     Command::new("systemctl").args(["--user", "show-environment"]).output().is_ok_and(|output| output.status.success())
 }
@@ -223,7 +238,8 @@ fn stop_host() {
 }
 
 /// Copies this binary into place, grants access to uinput (both through sudo) and starts the host: as a
-/// service of the user's systemd, or without one now and through the desktop's autostart at each login.
+/// service of the user's systemd, which the session or the desktop's autostart starts at each login, or without
+/// systemd now and through the autostart alone from then on.
 pub fn start(tailnet_only: bool) {
     let this = std::env::current_exe().unwrap_or_else(|error| fail(&format!("cannot locate this program: {error}")));
     if this != std::path::Path::new(BINARY) {
@@ -246,6 +262,7 @@ pub fn start(tailnet_only: bool) {
     write(&desktop_entry_path(), &desktop_entry());
     if has_systemd() {
         write(&unit_path(), &user_unit());
+        write(&autostart_path(), &autostart_entry());
         run("systemctl", &["--user", "daemon-reload"]);
         run("systemctl", &["--user", "enable", USER_UNIT]);
         run("systemctl", &["--user", "restart", USER_UNIT]);
