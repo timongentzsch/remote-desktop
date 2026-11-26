@@ -25,6 +25,7 @@ Beside the regression there are tools for looking at one thing closely. They sta
     udp-test.sh       the video's way back to TCP when UDP is cut off, and to UDP when it returns
     page-check.mjs    drives the client page in headless Chrome and prints what it shows
     fingers-check.mjs the page as a phone has it: each gesture on the picture and the trackpad, and what is sent
+    decoder-check.mjs the page in a browser that does not decode what the host sends: it asks for less, once
     serve-screens.sh, serve-x11.sh            desktops to point page-check.mjs at
     delay-check.mjs   the delay from moving the pointer to seeing it moved, on a real connection
     hostloop.py       the host's own share of that delay, measured on the host

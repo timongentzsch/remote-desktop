@@ -348,17 +348,20 @@ const send = (...message) => socket?.readyState === WebSocket.OPEN && socket.sen
 
 const context = canvas.getContext('2d', { alpha: false, desynchronized: true });  // skip compositor queueing where supported
 
-// Whether this browser decodes HEVC, which the host then sends where its GPU encodes it (stream/vaapi_hevc.c),
-// asked of it as the stream's own codec string. A decoder that fails on HEVC after all rules it out for the
-// connections that follow.
-const HEVC_PROBE = 'hvc1.1.6.L150.B0';
-let decodesHevc = (async () => {
+// What this browser decodes besides plain H.264, asked of it as the stream's own codec strings: HEVC, which
+// the host sends where its GPU encodes it (stream/vaapi_hevc.c), and H.264 with full colour detail, the High
+// 4:4:4 Predictive profile, which the host sends otherwise and Apple's decoders do not take. A decoder that
+// fails on one of them after all rules it out for the connections that follow.
+const HEVC_PROBE = 'hvc1.1.6.L150.B0', FULL_PROBE = 'avc1.f40033';
+const REDUCED = '420';  // the colour detail every decoder takes, as the setting names it
+const decodes = async codec => {
   try {
-    return (await VideoDecoder.isConfigSupported({ codec: HEVC_PROBE, optimizeForLatency: true })).supported === true;
+    return (await VideoDecoder.isConfigSupported({ codec, optimizeForLatency: true })).supported === true;
   } catch {
     return false;
   }
-})();
+};
+let decodesHevc = decodes(HEVC_PROBE), decodesFull = decodes(FULL_PROBE);
 
 // The codec string of an HEVC stream, from its hvcC record (stream/record.rs): the profile, the compatibility
 // flags in reverse bit order, the tier and level, and the constraint flags without the zero bytes at their end.
@@ -373,7 +376,8 @@ function hevcCodec(record) {
   return [`hvc1.${space}${profile}`, hex(reversed), `${tier}${record[12]}`, ...constraints.map(hex)].join('.');
 }
 
-// Decodes the stream and draws it. `failed` is called if the decoder gives up, saying whether on HEVC.
+// Decodes the stream and draws it. `failed` is called if the decoder gives up, saying whether on HEVC and
+// whether on full colour detail.
 function videoPlayer(failed) {
   let pending = null, frames = 0, decodeTime = 0, codec = AVC;
   const submitted = [];  // when each frame still inside the decoder was handed to it
@@ -393,7 +397,7 @@ function videoPlayer(failed) {
       context.drawImage(frame, 0, 0);
       frame.close();
     },
-    error: () => failed(codec === HEVC),
+    error: () => failed(codec === HEVC, colourDetail === 'full'),
   });
   return {
     // Takes the next piece of the stream, however the network cut it up. The stream is FLV: a 13-byte header
@@ -870,8 +874,13 @@ function connect() {
   leaving = false;
   document.body.classList.toggle('remote-cursor', settings.cursor.value === 'yes');
   const ws = socket = new WebSocket('/ws');
-  const video = videoPlayer(onHevc => {
+  // A decoder that gave up on what the host can leave out is asked again without it; one that gave up on
+  // plain H.264 has nothing left to ask for.
+  let undecoded = false;
+  const video = videoPlayer((onHevc, onFull) => {
     if (onHevc) decodesHevc = Promise.resolve(false);
+    else if (onFull) decodesFull = Promise.resolve(false);
+    else undecoded = true;
     ws.close();
   }), sound = soundPlayer();
   let live = false;  // whether the stream has begun, which is what shows that the login was accepted
@@ -979,12 +988,13 @@ function connect() {
   };
   ws.binaryType = 'arraybuffer';
   ws.onopen = async () => {
-    const hevc = await decodesHevc;
+    const [hevc, full] = [await decodesHevc, await decodesFull];
     if (ws.readyState !== WebSocket.OPEN) return;
     const hello = {
       password: login.password.value, window: windowSize(), hevc,
       ...Object.fromEntries(new FormData(settings)),
     };
+    if (!full) hello.chroma = REDUCED;
     if (hello.size === 'client') clientWindow = hello.window;
     ws.send(JSON.stringify(hello));
     greeted = true;
@@ -1024,14 +1034,15 @@ function connect() {
     end();
     held.clear();
     if (live && !leaving) retryUntil = performance.now() + RETRY;
-    if (!leaving && performance.now() < retryUntil) {
+    if (!leaving && !undecoded && performance.now() < retryUntil) {
       $('pill-text').textContent = 'Reconnecting';
       document.body.classList.add('waiting');
       return setTimeout(() => ws === socket && !leaving && connect(), RECONNECT);
     }
     retryUntil = 0;
     if (!live) try { localStorage.removeItem('password'); } catch {}
-    setConnected(false, live ? 'Disconnected' : 'Could not connect. Is the password right?');
+    const problem = undecoded ? 'This browser cannot decode the video.' : live ? 'Disconnected' : 'Could not connect. Is the password right?';
+    setConnected(false, problem);
     if (document.fullscreenElement) document.exitFullscreen();
   };
 }
