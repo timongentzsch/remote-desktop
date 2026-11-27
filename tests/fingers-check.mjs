@@ -86,18 +86,32 @@ await withPage(process.argv[2], async ({ command, evaluate }) => {
   await touch('touchEnd', []);
   await sleep(300);
   // Fit, shown while the picture is zoomed, brings it back, and the keyboard's button still takes its tap.
-  const middle = id => evaluate(`JSON.stringify((r => [r.left + r.width / 2, r.top + r.height / 2])($('${id}').getBoundingClientRect()))`).then(JSON.parse);
-  await touch('touchStart', [await middle('fit')]);
+  const middle = element => evaluate(`JSON.stringify((r => [r.left + r.width / 2, r.top + r.height / 2])(${element}.getBoundingClientRect()))`).then(JSON.parse);
+  await touch('touchStart', [await middle(`$('fit')`)]);
   await touch('touchEnd', []);
   await sleep(200);
   r = await evaluate(`zoom`);
   say('a tap on Fit shows the whole picture again', r, r === 1);
-  await touch('touchStart', [await middle('keys')]);
+  await touch('touchStart', [await middle(`$('keys')`)]);
   await touch('touchEnd', []);
   await sleep(300);
   r = await evaluate(`$('keys').getAttribute('aria-pressed')`);
   say('a tap on the keyboard button switches it on', r, r === 'true');
-  await touch('touchStart', [await middle('keys')]);
+  // The key bar, which the keyboard's button brings up with the phone's keyboard: its keys take a tap, Ctrl stays
+  // down until a key was typed with it, the field typed into keeps the focus, and every key is in sight.
+  const tapKey = async code => {
+    await evaluate(`sent.length = 0; true`);
+    await touch('touchStart', [await middle(`keybar.querySelector('[value="${code}"]')`)]);
+    await touch('touchEnd', []);
+    await sleep(200);
+    return keys();
+  };
+  r = await tapKey(1); say('key bar, Esc tapped: pressed and let go', r, r.join() === '1:1,1:0');
+  r = await tapKey(29); say('key bar, Ctrl tapped: held', r, r.join() === '29:1');
+  r = await tapKey(103); say('key bar, Up tapped with Ctrl held: pressed, then both let go', r, r.join() === '103:1,103:0,29:0');
+  r = JSON.parse(await evaluate(`JSON.stringify([document.activeElement.id, keybar.scrollWidth <= keybar.clientWidth])`));
+  say('the field typed into kept the focus, and the key bar is as wide as the window', r, r.join() === 'typing,true');
+  await touch('touchStart', [await middle(`$('keys')`)]);
   await touch('touchEnd', []);
   await sleep(300);
   await evaluate(`zoom = ${3.33}; place(); true`);

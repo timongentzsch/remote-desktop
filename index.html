@@ -136,11 +136,10 @@
   .touch canvas { position: fixed; left: 0; top: 0; width: auto; height: auto; transform-origin: 0 0; pointer-events: none; }
   .touch.connected .pad { display: flex; }
   /* While connected the fingers are the page's alone (see "Fingers" in the script): the browser neither zooms
-     nor pans the page, marks nothing of it as text and offers no menu for what is pressed long. The panel and
-     the key bar still scroll, and the field typed into still takes text. */
+     nor pans the page, marks nothing of it as text and offers no menu for what is pressed long. The panel
+     still scrolls, and the field typed into still takes text. */
   .touch.connected { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   .touch .panel { touch-action: pan-y; }
-  .touch .keybar { touch-action: pan-x; }
   .touch .typing { user-select: text; -webkit-user-select: text; }
   .pad { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); height: calc((100% - var(--below, 0px)) * .42); box-sizing: border-box; padding: var(--inset); align-items: flex-start; gap: 8px; border-top: 1px solid var(--text); background: rgb(255 255 255 / .25); }
   .keys .pad { bottom: calc(var(--below, 0px) + var(--key) + 1px); }
@@ -155,8 +154,8 @@
   .touch.connected:not(.remote-cursor) .point { display: block; }
   .point { position: fixed; left: var(--point-x, 50%); top: var(--point-y, 50%); width: calc(var(--point-size, 12px) * 2 / 3); height: var(--point-size, 12px); background: 0 0 / 100% 100% no-repeat url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 21"><path d="M.5.9v17l4.500-4 3.500 6.600 3-1.600-3.500-6.400h5.500z" fill="white" stroke="black"/></svg>'); pointer-events: none; }
   .touch.connected.keys .keybar { display: flex; }
-  .keybar { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); border-top: 1px solid var(--text); background: var(--ground); overflow-x: auto; scrollbar-width: none; }
-  .keybar button { flex: 1 0 auto; min-width: 42px; height: var(--key); padding: 0 8px; border: 0; border-right: 1px solid var(--line); background: var(--ground); }
+  .keybar { position: fixed; left: 0; right: 0; bottom: var(--below, 0px); border-top: 1px solid var(--text); background: var(--ground); }
+  .keybar button { flex: 1 1 0; min-width: 0; height: var(--key); padding: 0; border: 0; border-right: 1px solid var(--line); background: var(--ground); }
   .keybar button[aria-pressed="true"] { background: var(--text); color: var(--ground); font-weight: 500; }
   /* The field the phone's keyboard types into: out of sight, and large enough in type that Safari does not zoom to it. */
   .touch .typing { display: block; position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; font-size: 16px; }
@@ -1135,7 +1134,7 @@ const SPEED = 1.6, MOST_ZOOM = 16, PINCH = .12, SCROLL = 5;
 const PINCH_SCROLL = 1000;       // wheel units (120 a notch) for fingers parting e-fold: 6 notches for twice as far
 // The page's own controls, which no gesture begins on; of them the buttons that are a mouse's, down while a
 // finger is on them; and those whose touches stay the browser's (see the end of this part).
-const CONTROLS = 'button, .panel, .keybar', MOUSE_BUTTONS = '[data-button]', BROWSERS = '.panel, .keybar, #keys';
+const CONTROLS = 'button, .panel, .keybar', MOUSE_BUTTONS = '[data-button]', BROWSERS = '.panel, #keys';
 const pad = $('pad'), fingers = new Map();
 let touch = null;                // the gesture under way, from the first finger down to the last up
 const apart = () => {
@@ -1212,9 +1211,9 @@ if (TOUCH) {
   addEventListener('gesturestart', event => connected() && event.preventDefault());
   // And it takes a finger held still for the start of marking text, and shows its magnifying glass, unless the
   // touch itself is refused. The events above come all the same. The browser keeps the touches it is needed
-  // for: on the panel and the key bar, which scroll, and on the button that brings up the phone's keyboard,
-  // which only a tap of the browser's own does. A refused touch makes no click, so the other buttons of the
-  // page are clicked here, by a finger that lifts where it came down.
+  // for: on the panel, which scrolls, and on the button that brings up the phone's keyboard, which only a tap
+  // of the browser's own does. A refused touch makes no click, so the other buttons of the page, the key
+  // bar's among them, are clicked here, by a finger that lifts where it came down.
   addEventListener('touchstart', event => {
     if (connected() && !event.target.closest(BROWSERS)) event.preventDefault();
   }, { passive: false });
