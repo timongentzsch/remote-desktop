@@ -28,6 +28,7 @@ Beside the regression there are tools for looking at one thing closely. They sta
     decoder-check.mjs the page in a browser that does not decode what the host sends: it asks for less, once
     serve-screens.sh, serve-x11.sh            desktops to point page-check.mjs at
     delay-check.mjs   the delay from moving the pointer to seeing it moved, on a real connection
+    pointer-check.mjs whether the desktop's own pointer is in the picture, round after round, on a real connection
     hostloop.py       the host's own share of that delay, measured on the host
     bridge.py         reaches a host that listens on its own machine only, without opening it to the network
 
