@@ -6,6 +6,7 @@ use std::ops::RangeInclusive;
 use std::os::fd::{AsRawFd, RawFd};
 use std::time::Duration;
 
+use wayland_client::backend::WaylandError;
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_output::{self, WlOutput};
 use wayland_client::protocol::wl_registry::WlRegistry;
@@ -80,6 +81,15 @@ pub fn lost(error: impl Display) -> String {
     format!("lost the Wayland connection: {error}")
 }
 
+/// Whether the connection has ended, and of what. A socket that had nothing to read after all, or no room for
+/// more just then, as while the compositor is busy with its screens, has not: the next turn goes on.
+fn ended<T>(done: Result<T, WaylandError>) -> Result<(), String> {
+    match done {
+        Err(WaylandError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+        done => done.map(drop).map_err(lost),
+    }
+}
+
 /// One turn of talking to the compositor: sends what is pending, waits up to `limit` for it to say something
 /// or for `other` to become readable, and lets `state` handle what it said.
 pub fn turn<State>(
@@ -88,14 +98,14 @@ pub fn turn<State>(
     other: Option<RawFd>,
     limit: Duration,
 ) -> Result<(), String> {
-    events.flush().map_err(lost)?;
+    ended(events.flush())?;
     if let Some(guard) = events.prepare_read() {
         let [readable, _] = crate::platform::unix::fd::wait_readable(
             [guard.connection_fd().as_raw_fd(), other.unwrap_or(-1)],
             Some(limit),
         );
         if readable {
-            guard.read().map_err(lost)?;
+            ended(guard.read())?;
         }
     }
     events.dispatch_pending(state).map_err(lost)?;
