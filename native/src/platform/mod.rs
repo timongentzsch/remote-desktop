@@ -22,6 +22,9 @@ mod windows;
 #[cfg(windows)]
 use windows as os;
 
+#[cfg(not(target_os = "linux"))]
+mod inbox;
+
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 compile_error!("there is no platform module for this operating system yet: see platform/mod.rs");
 
@@ -93,6 +96,16 @@ pub fn login_screen(_address: &str) -> ! {
 }
 #[cfg(not(target_os = "linux"))]
 pub fn await_desktop() {}
+
+// What the host's first thread does for good (`run_main(serve)`): it serves, but on macOS, where it has to be
+// the one the system tells of displays that come and go, while another serves.
+#[cfg(target_os = "macos")]
+pub use os::run_main;
+#[cfg(not(target_os = "macos"))]
+pub fn run_main(serve: impl FnOnce() + Send + 'static) -> ! {
+    serve();
+    unreachable!("serving goes on for good")
+}
 
 // Where the password and certificate are kept, the machine's name, typing the password unseen, and a host that
 // runs without a terminal saying what it says somewhere it is kept (`serve_quietly()`).

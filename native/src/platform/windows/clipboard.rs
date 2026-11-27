@@ -2,10 +2,7 @@
 //! times a second; text the client copied is put there through a window of the host's own, which nobody sees,
 //! as only a window may own what it puts on the clipboard.
 
-use std::io;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
@@ -19,30 +16,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::w;
 
 use crate::capture::Shared;
+pub use crate::platform::inbox::{Copied, Inbox};
+use crate::platform::inbox::{LIMIT, LOOK};
 
 /// CF_UNICODETEXT: text as UTF-16, ending with a zero.
 const TEXT: u32 = 13;
-/// Longer clipboard contents are not passed on, and how often the clipboard is looked at.
-const LIMIT: usize = 1 << 20;
-const LOOK: Duration = Duration::from_millis(100);
-
-/// Receives each new text on the desktop's clipboard.
-pub type Copied = Box<dyn FnMut(String) + Send>;
-
-/// Where the session leaves text the client copied, for the clipboard thread to pick up.
-pub struct Inbox {
-    text: Mutex<Option<String>>,
-}
-
-impl Inbox {
-    pub fn new() -> io::Result<Arc<Self>> {
-        Ok(Arc::new(Self { text: Mutex::new(None) }))
-    }
-
-    pub fn put(&self, text: String) {
-        *self.text.lock().unwrap() = Some(text);
-    }
-}
 
 /// Shares the clipboard until `shared.stop` is set.
 pub fn run(inbox: &Inbox, shared: &Shared, mut copied: Copied) -> Result<(), String> {
@@ -65,7 +43,7 @@ pub fn run(inbox: &Inbox, shared: &Shared, mut copied: Copied) -> Result<(), Str
     .map_err(|error| format!("the clipboard cannot be shared: {error}"))?;
     let mut seen = unsafe { GetClipboardSequenceNumber() };
     while !shared.stop.load(Ordering::Relaxed) {
-        if let Some(text) = inbox.text.lock().unwrap().take() {
+        if let Some(text) = inbox.take() {
             put(window, &text);
             seen = unsafe { GetClipboardSequenceNumber() }; // not told back to the client it came from
         }

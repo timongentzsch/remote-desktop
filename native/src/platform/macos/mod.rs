@@ -2,6 +2,7 @@
 //! CGEvents (input.rs), the clipboard (clipboard.rs), a virtual display for a client's size
 //! (virtual_screen.rs), and a LaunchAgent (install.rs).
 
+use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
@@ -37,6 +38,25 @@ unsafe extern "C" {
     fn CGGetActiveDisplayList(most: u32, displays: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayBounds(display: u32) -> Rect;
     fn CGDisplayMirrorsDisplay(display: u32) -> u32;
+    fn CGDisplayRegisterReconfigurationCallback(told: extern "C" fn(u32, u32, *mut c_void), with: *mut c_void) -> i32;
+    fn CFRunLoopRun();
+}
+
+/// Serves for good, on another thread: this one, the program's first, runs its run loop. macOS tells a program
+/// through that loop which displays have come and gone, and without it the list of displays here stopped
+/// following them once a virtual display was made a second time (macOS 27): the list kept one that had gone,
+/// and no session found a display to capture until the host was started again. Asking to be told of such
+/// changes is what gives the loop something to wait for; nothing is done when told.
+pub fn run_main(serve: impl FnOnce() + Send + 'static) -> ! {
+    extern "C" fn told(_display: u32, _change: u32, _with: *mut c_void) {}
+    std::thread::spawn(serve);
+    unsafe {
+        CGDisplayRegisterReconfigurationCallback(told, std::ptr::null_mut());
+        CFRunLoopRun();
+    }
+    loop {
+        std::thread::park();
+    }
 }
 
 /// The displays that show a picture of their own: not those that mirror another.
@@ -68,10 +88,12 @@ pub fn screens() -> Result<Vec<Screen>, String> {
 /// The number of the display a session asked for by name, else the first. The virtual display's is 0 while it is
 /// being made; where there is none, the first stands in for it.
 fn display(wanted: Option<&str>) -> Result<u32, String> {
+    let made = virtual_screen::DISPLAY.load(Ordering::SeqCst);
     if wanted == Some(virtual_screen::NAME) && virtual_screen::in_use() {
-        return Ok(virtual_screen::DISPLAY.load(Ordering::SeqCst));
+        return Ok(made);
     }
     let screens = screens()?;
     let chosen = crate::screen::choose(&screens, wanted).ok_or("there is no display")?;
-    Ok(chosen.name.parse().unwrap_or_default())
+    // Every display is named by its number but the virtual one, which another session's may be the first.
+    Ok(chosen.name.parse().unwrap_or(made))
 }

@@ -28,8 +28,8 @@ static IN_USE: AtomicBool = AtomicBool::new(false);
 
 /// macOS draws one or two pixels to a point: two from this scale on.
 const HIDPI_FROM: f64 = 1.5;
-/// How long the display may take to appear, and to go, as when a session ends and the next one wants it.
-const APPEARING: Duration = Duration::from_secs(2);
+/// How long the display may take to appear, and to go, as when a session ends and the next one wants it. One
+/// made right after another went took up to 4.5 s to appear.
 const HANDOVER: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(50);
 /// Display changes that last as long as the user's session, not beyond.
@@ -97,7 +97,7 @@ fn make(size: [u32; 3], fps: u32) -> Result<(Child, u32), String> {
         let [width, height, scale] = size;
         return Err(format!("macOS made no virtual display of {width}x{height} points at {scale}x: {answer:?}"));
     };
-    if !wait_for(APPEARING, || super::displays().contains(&id)) {
+    if !wait_for(HANDOVER, || super::displays().contains(&id)) {
         end(helper, id);
         return Err("the virtual display did not appear".into());
     }
@@ -151,13 +151,22 @@ impl VirtualScreen {
 
     /// Makes the display anew where the client's window has changed size.
     pub fn resize(&mut self, window: Window) -> Result<(), String> {
-        if self.size == size(window) {
+        let wanted = size(window);
+        if self.size == wanted {
             return Ok(());
         }
         self.end();
-        self.size = size(window);
-        self.helper = Some(make(self.size, self.fps)?);
-        Ok(())
+        match make(wanted, self.fps) {
+            Ok(helper) => {
+                (self.helper, self.size) = (Some(helper), wanted);
+                Ok(())
+            }
+            // The session keeps a screen: the one it had, made again.
+            Err(error) => {
+                self.helper = make(self.size, self.fps).ok();
+                Err(error)
+            }
+        }
     }
 
     fn end(&mut self) {

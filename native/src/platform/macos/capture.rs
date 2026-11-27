@@ -50,7 +50,7 @@ pub fn run(stream: &mut Stream) -> Result<(), String> {
     let display = super::display(stream.settings.screen.as_deref())?;
     let size = pixels(display);
     // A display being made has no number or no size yet.
-    if size == (0, 0) {
+    if display == 0 || size == (0, 0) {
         std::thread::sleep(stream.frame_interval());
         return Ok(());
     }
@@ -60,7 +60,7 @@ pub fn run(stream: &mut Stream) -> Result<(), String> {
         unsafe { capture_start(display, size.0, size.1, fps, cursor, error.as_mut_ptr(), ERROR_SIZE as c_int) };
     if capture.is_null() {
         let reason = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
-        return Err(format!("the screen cannot be captured: {reason}"));
+        return Err(format!("display {display} cannot be captured: {reason}"));
     }
     let mut ended = Ok(());
     let unchanged =

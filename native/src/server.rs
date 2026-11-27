@@ -110,7 +110,8 @@ pub fn run(address: &str) -> ! {
             move || update::watch(host)
         });
     }
-    serve(listen(address), host)
+    let listening = listen(address);
+    platform::run_main(move || serve(listening, host))
 }
 
 /// Whether a connection comes from this machine or from a device on the tailnet: Tailscale's addresses, which
