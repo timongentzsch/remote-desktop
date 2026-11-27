@@ -1,6 +1,5 @@
 #!/bin/sh
 # Headless sway with two screens of different sizes, a terminal on the first, served to the container's network.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 printf 'output HEADLESS-1 resolution 1920x1080 position 0 0\nexec foot -F sh -c "ls -la /usr/bin; sleep 100000"\n' > /tmp/sway.conf
 WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c /tmp/sway.conf >/tmp/sway.log 2>&1 &
 sleep 3

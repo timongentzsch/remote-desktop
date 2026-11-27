@@ -1,7 +1,6 @@
 #!/bin/sh
 # Headless sway playing a video with sound, served to the container's network. Argument: full (the video fills
 # the screen at 60 frames a second) or window (a 720p window of it at 30 over a terminal).
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 clip=/test/video-$1.mkv
 if [ ! -s $clip ]; then  # made once: a zoom into a fractal, detailed and moving all over, with a tone
   [ "$1" = full ] && size=1920x1080:rate=60 || size=1280x720:rate=30

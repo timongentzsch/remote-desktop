@@ -1,6 +1,5 @@
 #!/bin/sh
 # Checks clipboard sharing in both directions on a headless compositor. Argument: sway or kwin.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 export KIND=$1
 exec dbus-run-session -- sh -c '
   pipewire >/tmp/pipewire.log 2>&1 & sleep 1; wireplumber >/tmp/wireplumber.log 2>&1 &

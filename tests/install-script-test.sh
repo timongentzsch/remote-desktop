@@ -3,7 +3,7 @@
 # it downloads anything, and that it gets the program run where the temporary folder runs nothing, which takes
 # --tmpfs /nx:noexec.
 # sudo, modprobe and udevadm are stand-ins as in install-test.sh, and curl is one that copies.
-mkdir -p $XDG_RUNTIME_DIR /fake /release /etc/udev/rules.d && chmod 700 $XDG_RUNTIME_DIR
+mkdir -p /fake /release /etc/udev/rules.d
 for tool in modprobe udevadm; do printf '#!/bin/sh\n' > /fake/$tool; done
 printf '#!/bin/sh\ncp "${4#file://}" "$3"\n' > /fake/curl # as it is called: -fsSL -o FILE ADDRESS
 cp ./remote-desktop /release/remote-desktop-$(uname -m)

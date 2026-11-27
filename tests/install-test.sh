@@ -1,7 +1,7 @@
 #!/bin/sh
 # install and uninstall on a system without systemd. The container runs as root and has no udev daemon, so
 # sudo, modprobe and udevadm are stand-ins that only say what they were asked to do.
-mkdir -p $XDG_RUNTIME_DIR /fake /etc/udev/rules.d && chmod 700 $XDG_RUNTIME_DIR
+mkdir -p /fake /etc/udev/rules.d
 printf '#!/bin/sh\nexec "$@"\n' > /fake/sudo
 for tool in modprobe udevadm; do printf '#!/bin/sh\necho "  ($(basename $0) $*)"\n' > /fake/$tool; done
 chmod +x /fake/*; export PATH=/fake:$PATH

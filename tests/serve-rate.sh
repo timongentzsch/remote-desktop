@@ -1,7 +1,6 @@
 #!/bin/sh
 # Headless sway, with fast-changing text ($1 = moving, or movingN to stop after N seconds) or a still screen,
 # served to the container's network.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 if [ "$1" = moving ]; then
   show='exec foot -F sh -c "while :; do head -c 3000 /dev/urandom | base64 -w 0; done"'
 elif [ "$1" = scroll ]; then

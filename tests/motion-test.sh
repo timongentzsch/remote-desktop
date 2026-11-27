@@ -2,7 +2,6 @@
 # Fills a headless sway output with fast-changing text and reports what the stream costs. With a pause between
 # the changes they come in bursts, so that refinement starts and stops all the time.
 # Arguments: bitrate in kbit/s, seconds to watch, extra login settings as JSON members, the pause in seconds.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 printf 'output * resolution 1920x1080\nexec foot -F sh -c "while :; do head -c 3000 /dev/urandom | base64 -w 0; %s done"\n' "${4:+sleep $4;}" > /tmp/sway.conf
 WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c /tmp/sway.conf >/tmp/sway.log 2>&1 &
 sleep 3

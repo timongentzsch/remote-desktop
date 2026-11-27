@@ -2,7 +2,6 @@
 # X11: a client that asks for a screen of its window's size gets the X screen at that size, and the screen is
 # as it was once the client has gone; a window larger than the server's screen can be is shown the screen as
 # it is. Argument: xorg (a dummy display) or xvfb.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 case "$1" in
 xorg) Xorg :1 -seat seat1 -config ./xorg-two.conf -noreset -logfile /tmp/xorg.log >/tmp/x.out 2>&1 & ;;
 xvfb) Xvfb :1 -screen 0 1920x1080x24 >/tmp/x.log 2>&1 & ;;

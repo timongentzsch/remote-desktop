@@ -1,6 +1,5 @@
 #!/bin/sh
 # Several clients at once and in turn. All get video; where the GPU encodes, one of them at a time has it.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 printf 'output * resolution 1920x1080\nexec foot -F sh -c "while :; do date; sleep 0.1; done"\n' > /tmp/sway.conf
 WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c /tmp/sway.conf >/tmp/sway.log 2>&1 &
 sleep 3

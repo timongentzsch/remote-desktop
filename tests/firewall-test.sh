@@ -2,7 +2,7 @@
 # install and uninstall with a real ufw and a real firewalld, which takes --cap-add NET_ADMIN: the rule opens the
 # host's port, for everyone or for the tailnet, follows a change of port, replaces what versions before 0.10
 # opened for port 8765, and goes with uninstall. sudo, modprobe and udevadm are stand-ins as in install-test.sh.
-mkdir -p $XDG_RUNTIME_DIR /fake /etc/udev/rules.d /run/dbus && chmod 700 $XDG_RUNTIME_DIR
+mkdir -p /fake /etc/udev/rules.d /run/dbus
 printf '#!/bin/sh\nexec "$@"\n' > /fake/sudo
 for tool in modprobe udevadm; do printf '#!/bin/sh\n' > /fake/$tool; done
 chmod +x /fake/*; export PATH=/fake:$PATH

@@ -3,4 +3,6 @@ FROM debian:13
 RUN apt-get update && apt-get install -y --no-install-recommends sway foot wl-clipboard pipewire pipewire-pulse \
     wireplumber pulseaudio-utils dbus dbus-user-session python3 iproute2 ufw firewalld sox ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
 ENV XDG_RUNTIME_DIR=/run/user/0 HOME=/root
+# The runtime folder a login would have made.
+RUN mkdir -p -m 700 /run/user/0
 WORKDIR /test

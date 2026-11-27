@@ -2,7 +2,7 @@
 # Runs the host on a headless compositor that casts its screen, GNOME's or KDE's, and records what a client
 # receives. Arguments: mutter or kwin, seconds to watch, extra login settings as JSON members, "motion" for
 # fast-changing text.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR; dbus-uuidgen --ensure; mkdir -p /run/dbus; dbus-daemon --system --fork
+dbus-uuidgen --ensure; mkdir -p /run/dbus; dbus-daemon --system --fork
 export KIND=$1 SECONDS_TO_WATCH=$2 EXTRA=$3 CONTENT=$4
 exec dbus-run-session -- sh -c '
   pipewire >/tmp/pipewire.log 2>&1 & sleep 1; wireplumber >/tmp/wireplumber.log 2>&1 &

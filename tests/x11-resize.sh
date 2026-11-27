@@ -1,6 +1,5 @@
 #!/bin/sh
 # X11: a screen that changes size mid-session keeps streaming at the new size.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 Xvfb :1 -screen 0 1920x1080x24 >/tmp/x.log 2>&1 &
 sleep 2
 xterm -geometry 100x30+50+50 -e sh -c 'while :; do date; sleep 0.2; done' 2>/dev/null &

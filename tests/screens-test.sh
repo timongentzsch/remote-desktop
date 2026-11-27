@@ -2,7 +2,6 @@
 # Two screens of different sizes (where the desktop can make them so) on one headless desktop: the host has to
 # list both, show the first by default, the second when asked by name, and the first for a name no screen has.
 # Argument: sway, mutter, kwin or x11.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 terminal='printf "\033[41m  red  \033[42m green \033[44m blue  \033[0m\n"; ls -la /usr/bin | head -30; sleep 1000'
 session() {  # the settings to log in with; prints what the host listed and the size of the picture it sent
   python3 wsclient.py "{\"password\":\"\",$1\"bitrate\":8000}" 3 /tmp/out.flv | grep "^screens"

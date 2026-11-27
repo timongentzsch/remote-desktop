@@ -1,6 +1,5 @@
 #!/bin/sh
 # A headless X server with a terminal on it, served to the container's network. The pointer starts on the desktop.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 Xvfb :1 -screen 0 1280x720x24 >/tmp/x.log 2>&1 &
 sleep 2
 xsetroot -solid "#203040" -cursor_name left_ptr

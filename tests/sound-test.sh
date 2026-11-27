@@ -1,6 +1,5 @@
 #!/bin/sh
 # Starts the desktop and audio server, plays a tone into a null sink and records what a client receives.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 exec dbus-run-session -- sh -c '
   pipewire >/tmp/pipewire.log 2>&1 & sleep 1; wireplumber >/tmp/wireplumber.log 2>&1 & pipewire-pulse >/tmp/pulse.log 2>&1 &
   sleep 3

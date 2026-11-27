@@ -1,6 +1,5 @@
 #!/bin/sh
 # Runs several sessions in a row against a headless sway and prints the host's memory after each.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 printf 'output * resolution 1920x1080\n' > /tmp/sway.conf
 WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c /tmp/sway.conf >/tmp/sway.log 2>&1 &
 sleep 3

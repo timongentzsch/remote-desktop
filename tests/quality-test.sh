@@ -1,7 +1,6 @@
 #!/bin/sh
 # Shows a detailed still picture on a headless sway output and measures how close the stream gets to it.
 # Arguments: bitrate in kbit/s, seconds to watch, extra login settings as JSON members (e.g. '"chroma":"444"').
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=1920x1080,noise=alls=12:allf=u" -frames:v 1 /tmp/picture.png
 printf 'output * resolution 1920x1080 bg /tmp/picture.png fill\n' > /tmp/sway.conf
 WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c /tmp/sway.conf >/tmp/sway.log 2>&1 &

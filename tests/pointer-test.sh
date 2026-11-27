@@ -1,7 +1,6 @@
 #!/bin/sh
 # The pointer's shape has to reach a client that draws the pointer itself, again when it changes, and not at
 # all when the host paints the pointer into the picture. Argument: x11 or mutter.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 watch() {  # login settings; prints the shapes the client is sent while the pointer is moved between two places
   python3 wsclient.py "{\"password\":\"\",$1\"bitrate\":8000}" 6 /tmp/out.flv > /tmp/client.txt &
   client=$!

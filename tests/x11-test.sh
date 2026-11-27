@@ -1,7 +1,6 @@
 #!/bin/sh
 # Runs the host on a headless X server and records what a client receives.
 # Arguments: seconds to watch, extra login settings as JSON members, "motion" for fast-changing text.
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 Xvfb :1 -screen 0 1920x1080x24 >/tmp/x.log 2>&1 &
 sleep 2
 xsetroot -solid "#203040"
