@@ -462,8 +462,10 @@ static int vaapi_gpu_buffer(struct encoder *base, int width, int height, struct 
     if (!va.vaExportSurfaceHandle)
         return -1;
     pthread_mutex_lock(&calls);
+    /* A configuration whose context could not be made is kept for the next try. */
     int ready = encoder->processor != VA_INVALID_ID
-        || (va.vaCreateConfig(display, VAProfileNone, VAEntrypointVideoProc, NULL, 0, &encoder->processor_config) == VA_STATUS_SUCCESS
+        || ((encoder->processor_config != VA_INVALID_ID
+             || va.vaCreateConfig(display, VAProfileNone, VAEntrypointVideoProc, NULL, 0, &encoder->processor_config) == VA_STATUS_SUCCESS)
             && va.vaCreateContext(display, encoder->processor_config, encoder->width, encoder->height, VA_PROGRESSIVE, NULL, 0, &encoder->processor) == VA_STATUS_SUCCESS);
     if (ready && encoder->screen != VA_INVALID_SURFACE && (encoder->screen_width != width || encoder->screen_height != height)) {
         va.vaDestroySurfaces(display, &encoder->screen, 1);
@@ -553,7 +555,12 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
 {
     pthread_once(&once, load);
     const struct vaapi_codec *kind = codec == CODEC_HEVC ? &vaapi_hevc : &vaapi_h264;
-    if (!loaded || setup->full_chroma || setup->width * setup->height > kind->most_samples || !encodes(display, kind))
+    if (!loaded || setup->full_chroma || setup->width * setup->height > kind->most_samples)
+        return NULL;
+    pthread_mutex_lock(&calls);
+    int able = encodes(display, kind);
+    pthread_mutex_unlock(&calls);
+    if (!able)
         return NULL;
     struct vaapi *encoder = calloc(1, sizeof *encoder);
     if (!encoder)
