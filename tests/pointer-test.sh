@@ -13,13 +13,11 @@ serve() {
   ./remote-desktop password --none >/dev/null
   ./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1 &
   sleep 2
-  export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
 }
 case $1 in
 x11)
   Xvfb :1 -screen 0 1280x720x24 >/tmp/x.log 2>&1 &
   sleep 2
-  export DISPLAY=:1
   xsetroot -solid "#203040" -cursor_name left_ptr
   xterm -geometry 80x24+100+100 -e sh -c "ls -la /usr/bin | head -20; sleep 1000" &
   sleep 1

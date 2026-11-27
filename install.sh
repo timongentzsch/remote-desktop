@@ -8,12 +8,16 @@
 #     --tailscale     a certificate from Tailscale, and only devices on the tailnet are answered
 #     --no-password   no login password (with --tailscale: anyone on the tailnet who may reach this machine)
 #     --port=PORT     another port than HTTPS's own, 443, where that one is taken
+#     --auto-update   newer versions install themselves
 #
 # REMOTE_DESKTOP_RELEASE names where the binaries are, for another version than the latest, such as
 # https://github.com/timongentzsch/remote-desktop/releases/download/v0.3.0.
 set -eu
 
 release=${REMOTE_DESKTOP_RELEASE:-https://github.com/timongentzsch/remote-desktop/releases/latest/download}
+windows="download
+    $release/remote-desktop-x86_64-windows.exe
+and run it in a terminal with: install"
 
 fail() { echo "remote-desktop: $1" >&2; exit 1; }
 
@@ -38,9 +42,7 @@ case $(uname -s) in
         ;;
     Linux)
         case $(uname -r) in
-            *[Mm]icrosoft*) fail "this is Linux inside Windows, which has no desktop of its own. In Windows, download
-    $release/remote-desktop-x86_64-windows.exe
-and run it in a terminal with: install" ;;
+            *[Mm]icrosoft*) fail "this is Linux inside Windows, which has no desktop of its own. In Windows, $windows" ;;
         esac
         [ ! -e /etc/NIXOS ] || fail "NixOS runs no binaries built for other distributions as they are"
         glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | cut -d' ' -f2) || glibc=
@@ -56,9 +58,7 @@ and run it in a terminal with: install" ;;
             echo "installs it: if it shows nothing, run this again in a terminal of that desktop."
         fi
         ;;
-    MINGW* | MSYS* | CYGWIN*) fail "on Windows, download
-    $release/remote-desktop-x86_64-windows.exe
-and run it in a terminal with: install" ;;
+    MINGW* | MSYS* | CYGWIN*) fail "on Windows, $windows" ;;
     *) fail "there is no build for $(uname -s), only Linux, macOS and Windows" ;;
 esac
 case " $* " in

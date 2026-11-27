@@ -187,6 +187,7 @@ The Windows binary is built on Linux too, with mingw-w64 and the target `x86_64-
 
     install.sh                 the one-line install: fetches the binary, runs `remote-desktop install`
     index.html                 the client: page, styles and script in one file
+    manifest.json, icon.*      what a phone's home screen shows of it
     fonts/                     its typeface, JetBrains Mono, which the host serves along
     native/src/                what is the same on every operating system:
       main.rs                  the command line, and the names the rest shares

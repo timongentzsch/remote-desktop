@@ -11,7 +11,6 @@ export WAYLAND_DISPLAY=wayland-1
 ./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1 &
 sleep 2
 grim /tmp/truth.png
-export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
 python3 wsclient.py "{\"password\":\"\",\"bitrate\":$1,$3\"fps\":\"60\"}" $2 /tmp/out.flv
 grep encoding /tmp/host.log
 # the last frame of the stream against the screenshot

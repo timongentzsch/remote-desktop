@@ -13,7 +13,6 @@ echo "before: $(state)"
 ./remote-desktop password --none >/dev/null
 ./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1 &
 sleep 2
-export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
 session() {  # the client's window; prints the screen during the session and after it, and the picture's size
   (sleep 3; echo "during: $(state)") &
   python3 wsclient.py "{\"password\":\"\",\"size\":\"client\",\"window\":$1,\"bitrate\":8000}" 5 /tmp/c.flv >/dev/null; wait $!

@@ -12,7 +12,6 @@ exec dbus-run-session -- sh -c '
   ./remote-desktop password --none >/dev/null
   (./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1; echo "host exited with status $?" >>/tmp/host.log) &
   sleep 2
-  export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
   # Applications reach the clipboard here through the X server Mutter runs: its Wayland seat has no keyboard,
   # which Wayland clipboard tools need.
   export DISPLAY=:0 XAUTHORITY=$(ls $XDG_RUNTIME_DIR/.mutter-Xwaylandauth.* | head -1)

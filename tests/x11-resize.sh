@@ -9,7 +9,6 @@ echo "modes: $(xrandr | grep -o "^ *[0-9]*x[0-9]*" | tr -s ' \n' ' ')"
 ./remote-desktop password --none >/dev/null
 (./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1; echo "host exited with status $?" >>/tmp/host.log) &
 sleep 2
-export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
 (sleep 2; xrandr --fb 1280x720 >/dev/null 2>&1; sleep 0.3; xdotool mousemove 5 5) &
 python3 wsclient.py '{"password":"","bitrate":8000}' 7 /tmp/c.flv >/dev/null; wait $!
 echo "sizes seen: $(ffprobe -v error -select_streams v -show_entries frame=width,height -of csv=p=0 /tmp/c.flv | uniq -c | tr '\n' ';')"

@@ -11,7 +11,6 @@ exec dbus-run-session -- sh -c '
   ./remote-desktop password --none >/dev/null
   ./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1 & sleep 2
   sox -n -r 48000 -c 2 /tmp/tone.wav synth 8 sine 440 sine 880 vol 0.5
-  export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
   # two seconds of silence, then the tone: left 440 Hz, right 880 Hz
   (sleep 2; paplay /tmp/tone.wav) &
   python3 wsclient.py "{\"password\":\"\",\"sound\":\"on\"}" 7 /tmp/out.flv

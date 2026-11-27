@@ -18,7 +18,7 @@ docker run --rm $gpu -v "$PWD/..":/src -v rd-test-target:/src/native/target -v r
     cargo build --release --quiet
     install -o '"$(id -u) -g $(id -g)"' target/release/remote-desktop /src/tests/remote-desktop' || exit 1
 
-echo "== sway: bursts";                 run rd-test-sway ./burst-test.sh 3000 10 "" | grep "$keep"
+echo "== sway: bursts";                 run rd-test-sway ./motion-test.sh 3000 10 "" 0.7 | grep "$keep"
 echo "== sway: motion, sharp colour";   run rd-test-sway ./motion-test.sh 3000 8 '"chroma":"444",' | grep "$keep"
 echo "== sway: sound";                  run rd-test-sway ./sound-test.sh | grep "$keep"
 echo "== sway: clipboard";              run rd-test-sway ./clipboard-test.sh sway | grep "$keep"
@@ -27,17 +27,17 @@ echo "== sway: two screens";            run rd-test-sway ./screens-test.sh sway 
 echo "== sway: sessions in a row";      run rd-test-sway ./sessions-test.sh 20 "" 0.6 | grep "host exited\|encoding" | sort | uniq -c
 echo "== sway: two viewers";            run rd-test-sway ./two-viewers.sh | grep "$keep"
 echo "== older sway: motion";           run rd-test-oldsway ./motion-test.sh 3000 8 "" | grep "$keep"
-echo "== older sway: bursts";           run rd-test-oldsway ./burst-test.sh 3000 8 '"cursor":"yes",' | grep "$keep"
+echo "== older sway: bursts";           run rd-test-oldsway ./motion-test.sh 3000 8 '"cursor":"yes",' 0.7 | grep "$keep"
 echo "== older sway: clipboard";        run rd-test-oldsway ./clipboard-test.sh sway | grep "$keep"
 echo "== older sway: two screens";      run rd-test-oldsway ./screens-test.sh sway | grep "$screens"
 echo "== install without systemd";      run rd-test-oldsway ./install-test.sh || exit 1
 echo "== the install script";           run --tmpfs /nx:noexec -v "$PWD/../install.sh":/install.sh rd-test-oldsway ./install-script-test.sh
 echo "== install with ufw and firewalld"; run --cap-add NET_ADMIN rd-test-oldsway ./firewall-test.sh || exit 1
-echo "== GNOME: motion";                run rd-test-gnome ./gnome-test.sh 8 "" motion | grep "$keep"
+echo "== GNOME: motion";                run rd-test-gnome ./cast-test.sh mutter 8 "" motion | grep "$keep"
 echo "== GNOME: clipboard";             run rd-test-gnome ./gnome-clipboard.sh | grep "$keep"
 echo "== GNOME: two screens";           run rd-test-gnome ./screens-test.sh mutter | grep "$screens"
 echo "== GNOME: pointer shapes";        run rd-test-gnome ./pointer-test.sh mutter | grep "pointer\|shapes"
-echo "== KDE: motion";                  run --device /dev/dri rd-test-kde ./kde-test.sh 8 "" motion | grep "$keep"
+echo "== KDE: motion";                  run --device /dev/dri rd-test-kde ./cast-test.sh kwin 8 "" motion | grep "$keep"
 echo "== KDE: clipboard";               run --device /dev/dri rd-test-kde ./clipboard-test.sh kwin | grep "$keep"
 echo "== KDE: two screens";             run --device /dev/dri rd-test-kde ./screens-test.sh kwin | grep "$screens"
 echo "== X11: motion";                  run rd-test-x11 ./x11-test.sh 8 "" motion | grep "$keep"
@@ -52,7 +52,7 @@ echo "== X11: pointer shapes";          run rd-test-x11 ./pointer-test.sh x11 | 
 echo "== browser: video over UDP, 2% of the packets lost";  ./loss-test.sh bbr 30 2 15
 echo "== browser: UDP cut off and back";                    ./udp-test.sh 6 12 | awk 'NR % 3 == 0' | cut -c1-110
 if [ -n "$gpu" ]; then
-  echo "== GPU, sway: bursts";               run $gpu rd-test-sway ./burst-test.sh 3000 10 "" | grep "$keep"
+  echo "== GPU, sway: bursts";               run $gpu rd-test-sway ./motion-test.sh 3000 10 "" 0.7 | grep "$keep"
   echo "== GPU, sway: motion, sharp colour"; run $gpu rd-test-sway ./motion-test.sh 3000 8 '"chroma":"444",' | grep "$keep"
   echo "== GPU, sway: still picture";        run $gpu rd-test-sway ./quality-test.sh 3000 10 "" | grep "PSNR\|frames,"
   echo "== GPU, X11: motion";                run $gpu rd-test-x11 ./x11-test.sh 8 "" motion | grep "$keep"

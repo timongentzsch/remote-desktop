@@ -8,7 +8,6 @@ export WAYLAND_DISPLAY=wayland-1
 ./remote-desktop password --none >/dev/null
 (./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1; echo "host exited with status $?" >>/tmp/host.log) &
 sleep 2
-export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
 viewer() { python3 wsclient.py '{"password":""}' $1 /tmp/$2.flv | grep -o "first video after [0-9.None]* s, [0-9]* ws messages" | sed "s/^/$2: /"; }
 viewer 7 first &
 first=$!

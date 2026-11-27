@@ -7,7 +7,7 @@ password, seconds, out = sys.argv[1], float(sys.argv[2]), sys.argv[3]
 messages = [json.loads(m) for m in sys.argv[4:]]
 
 host = os.environ.get("HOST", "127.0.0.1")
-tls = ssl.create_default_context(cafile=os.environ["CAFILE"]) if os.environ.get("CAFILE") else None
+tls = ssl.create_default_context(cafile=os.path.expanduser("~/.config/remote-desktop/certificate.pem"))
 ws = WebSocket(host, int(os.environ.get("PORT", "8765")), tls, os.environ.get("NAME", os.environ.get("HOST", "localhost")))
 print(ws.status)
 start = time.time()

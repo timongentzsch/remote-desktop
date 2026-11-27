@@ -16,7 +16,6 @@ exec dbus-run-session -- sh -c '
   ./remote-desktop password --none >/dev/null
   ./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1 &
   sleep 2
-  export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
   (sleep 3; printf "copied on the desktop: äöü" | wl-copy) &
   python3 wsclient.py "{\"password\":\"\"}" 6 /tmp/out.flv "[\"clipboard\", \"from the client: grüße 123\", 0]" | grep "clipboard\|first video"
   echo "desktop clipboard after the client copied (read before the desktop copy): see below"

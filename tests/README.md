@@ -12,8 +12,9 @@ GPU's encoder run where Docker has an NVIDIA card to give. KDE's compositor need
 
 Each step is a script that runs inside one of the images, with this directory mounted as `/test`:
 
-    *-test.sh, x11-*.sh, gnome-clipboard.sh   start a headless desktop and the host, connect a client, report
-    wsclient.py                               that client: logs in, records the stream, prints what it was told
+    *-test.sh, x11-*.sh, gnome-clipboard.sh,  start a headless desktop and the host, connect a client, report
+    two-viewers.sh
+    wsclient.py, websocket_client.py          that client: logs in, records the stream, prints what it was told
     opus2ogg.py, pitch.py, mutter-pointer.py  helpers of single tests
     xorg-two.conf                             an X server with room for two monitors
 
@@ -27,6 +28,7 @@ Beside the regression there are tools for looking at one thing closely. They sta
     fingers-check.mjs the page as a phone has it: each gesture on the picture and the trackpad, and what is sent
     decoder-check.mjs the page in a browser that does not decode what the host sends: it asks for less, once
     serve-screens.sh, serve-x11.sh            desktops to point page-check.mjs at
+    browser.mjs       the headless Chrome that the .mjs checks drive
     delay-check.mjs   the delay from moving the pointer to seeing it moved, on a real connection
     pointer-check.mjs whether the desktop's own pointer is in the picture, round after round, on a real connection
     hostloop.py       the host's own share of that delay, measured on the host

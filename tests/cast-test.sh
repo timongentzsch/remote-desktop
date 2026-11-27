@@ -1,12 +1,17 @@
 #!/bin/sh
-# Runs the host on a headless GNOME compositor and records what a client receives.
-# Arguments: seconds to watch, extra login settings as JSON members, "motion" for fast-changing text.
+# Runs the host on a headless compositor that casts its screen, GNOME's or KDE's, and records what a client
+# receives. Arguments: mutter or kwin, seconds to watch, extra login settings as JSON members, "motion" for
+# fast-changing text.
 mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR; dbus-uuidgen --ensure; mkdir -p /run/dbus; dbus-daemon --system --fork
-export SECONDS_TO_WATCH=$1 EXTRA=$2 CONTENT=$3 COMPOSITOR=${COMPOSITOR:-mutter}
+export KIND=$1 SECONDS_TO_WATCH=$2 EXTRA=$3 CONTENT=$4
 exec dbus-run-session -- sh -c '
   pipewire >/tmp/pipewire.log 2>&1 & sleep 1; wireplumber >/tmp/wireplumber.log 2>&1 &
   sleep 2
-  $COMPOSITOR --headless --wayland --virtual-monitor 1920x1080 >/tmp/compositor.log 2>&1 &
+  if [ "$KIND" = kwin ]; then
+    kwin_wayland --virtual --width 1920 --height 1080 --no-lockscreen --socket wayland-0 >/tmp/compositor.log 2>&1 &
+  else
+    mutter --headless --wayland --virtual-monitor 1920x1080 >/tmp/compositor.log 2>&1 &
+  fi
   sleep 5
   export WAYLAND_DISPLAY=wayland-0
   if [ "$CONTENT" = motion ]; then
@@ -18,7 +23,6 @@ exec dbus-run-session -- sh -c '
   ./remote-desktop password --none >/dev/null
   ./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1 &
   sleep 2
-  export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
   ticks() { awk "{ print \$14 + \$15 }" /proc/$(pidof remote-desktop)/stat; }
   before=$(ticks)
   python3 wsclient.py "{\"password\":\"\",$EXTRA\"bitrate\":8000}" $SECONDS_TO_WATCH /tmp/out.flv

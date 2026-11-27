@@ -8,7 +8,6 @@ sleep 1
 ./remote-desktop password --none >/dev/null
 (./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1; echo "host exited with status $?" >>/tmp/host.log) &
 sleep 2
-export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
 paste() { timeout 3 xclip -selection clipboard -o "$@" 2>&1 | tr '\n' ' '; }
 printf 'on the desktop before anyone connected' | xclip -selection clipboard -i
 (sleep 2; echo "pasted on the desktop after the client copied: $(paste)"; echo "forms offered to a pasting application: $(paste -t TARGETS)"; sleep 1; printf 'copied on the desktop: äöü' | xclip -selection clipboard -i) &

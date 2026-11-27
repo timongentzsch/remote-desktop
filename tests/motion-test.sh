@@ -1,15 +1,15 @@
 #!/bin/sh
-# Fills a headless sway output with fast-changing text and reports what the stream costs.
-# Arguments: bitrate in kbit/s, seconds to watch, extra login settings as JSON members.
+# Fills a headless sway output with fast-changing text and reports what the stream costs. With a pause between
+# the changes they come in bursts, so that refinement starts and stops all the time.
+# Arguments: bitrate in kbit/s, seconds to watch, extra login settings as JSON members, the pause in seconds.
 mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
-printf 'output * resolution 1920x1080\nexec foot -F sh -c "while :; do head -c 3000 /dev/urandom | base64 -w 0; done"\n' > /tmp/sway.conf
+printf 'output * resolution 1920x1080\nexec foot -F sh -c "while :; do head -c 3000 /dev/urandom | base64 -w 0; %s done"\n' "${4:+sleep $4;}" > /tmp/sway.conf
 WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c /tmp/sway.conf >/tmp/sway.log 2>&1 &
 sleep 3
 export WAYLAND_DISPLAY=wayland-1
 ./remote-desktop password --none >/dev/null
 ./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1 &
 sleep 2
-export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
 ticks() { awk '{ print $14 + $15 }' /proc/$(pidof remote-desktop)/stat; }
 before=$(ticks)
 python3 wsclient.py "{\"password\":\"\",\"bitrate\":$1,$3\"fps\":\"60\"}" $2 /tmp/out.flv | grep "encode ms\|gap"

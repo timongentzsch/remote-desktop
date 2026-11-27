@@ -15,7 +15,6 @@ xdotool mousemove 400 300
 ./remote-desktop password --none >/dev/null
 ./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1 &
 sleep 2
-export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
 ticks() { awk '{ print $14 + $15 }' /proc/$(pidof remote-desktop)/stat; }
 before=$(ticks)
 python3 wsclient.py "{\"password\":\"\",$2\"bitrate\":8000}" $1 /tmp/out.flv

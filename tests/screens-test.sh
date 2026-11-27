@@ -13,7 +13,6 @@ run() {
   ./remote-desktop password --none >/dev/null
   ./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1 &
   sleep 2
-  export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
   echo "no screen asked for:"; session "" | tee /tmp/first.txt
   second=$(sed -n "s/^screens: \(.*\), showing .*/\1/p" /tmp/first.txt | python3 -c "import json, sys; print(json.load(sys.stdin)[1])")
   echo "asked for the second, $second:"; session "\"screen\":\"$second\","
@@ -52,7 +51,6 @@ x11)
   # display itself stays listed as a monitor too, so there are three: all of it, the left part and the right.
   Xorg :1 -seat seat1 -config ./xorg-two.conf -noreset -logfile /tmp/xorg.log >/tmp/x.out 2>&1 &
   sleep 3
-  export DISPLAY=:1
   xrandr --setmonitor left 1920/508x1080/286+0+0 none && xrandr --setmonitor right 1280/339x720/190+1920+0 none
   xsetroot -solid "#203040" -cursor_name left_ptr
   xterm -geometry 120x40+100+100 -e sh -c "$terminal" &

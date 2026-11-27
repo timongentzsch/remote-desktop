@@ -9,7 +9,6 @@ sleep 1
 ./remote-desktop password --none >/dev/null
 (./remote-desktop --listen 127.0.0.1:8765 >/tmp/host.log 2>&1; echo "host exited with status $?" >>/tmp/host.log) &
 sleep 2
-export CAFILE=$HOME/.config/remote-desktop/certificate.pem NAME=localhost
 frames() { ffprobe -v error -select_streams v -show_entries packet=size -of csv=p=0 $1 | wc -l; }
 move() { for i in $(seq 1 60); do xdotool mousemove $((300 + i * 5)) $((300 + i * 2)); sleep 0.05; done; }
 (sleep 1; move) &
