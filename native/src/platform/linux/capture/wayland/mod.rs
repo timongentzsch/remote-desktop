@@ -194,7 +194,8 @@ impl Capture {
     }
 
     /// Provides a buffer anew, as the standard protocol's session last asked for one, and asks for a frame:
-    /// after the one there was belonged to an encoder that is gone, or the GPU's could not be used.
+    /// after the one there was belonged to an encoder that is gone, the GPU's could not be used, or one was
+    /// made that the session may no longer want.
     fn provide_again(&mut self, queue: &QueueHandle<Self>) {
         let Protocol::Standard(session) = &self.protocol else { return };
         let (size, format, on_gpu) =
@@ -339,7 +340,8 @@ impl Dispatch<ZwpLinuxBufferParamsV1, Asked> for Capture {
                 let Asked { opened, width, height, stride } = *asked;
                 warn!("the screen is copied on the GPU, at {width}x{height}");
                 state.pixels = Some(Pixels { buffer, store: Store::Gpu(opened), width, height, stride });
-                state.request_frame(queue);
+                // The screen may have changed its size again while this one was being made.
+                state.provide_again(queue);
             }
             _ => state.refuse_gpu(queue),
         }
