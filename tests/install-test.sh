@@ -5,6 +5,10 @@ mkdir -p $XDG_RUNTIME_DIR /fake /etc/udev/rules.d && chmod 700 $XDG_RUNTIME_DIR
 printf '#!/bin/sh\nexec "$@"\n' > /fake/sudo
 for tool in modprobe udevadm; do printf '#!/bin/sh\necho "  ($(basename $0) $*)"\n' > /fake/$tool; done
 chmod +x /fake/*; export PATH=/fake:$PATH
+# The installed host answers once there is a desktop for it to show.
+WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c /dev/null >/tmp/sway.log 2>&1 &
+sleep 3
+export WAYLAND_DISPLAY=wayland-1
 systemctl --user show-environment >/dev/null 2>&1 && echo "systemd runs user services here" || echo "no systemd for user services here"
 cp ./remote-desktop /tmp/remote-desktop
 python3 - <<'PY' || exit 1
