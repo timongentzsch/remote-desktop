@@ -31,6 +31,12 @@ pub fn restore_leftovers() {
     pointer::restore_leftover();
 }
 
+/// Sets again what the host has set in a desktop that has forgotten it (see hyprland.rs).
+fn set_again() {
+    virtual_screen::set_again();
+    pointer::hide_again();
+}
+
 /// The desktop's screens, as its compositor or X server tells them.
 pub fn screens() -> Result<Vec<Screen>, String> {
     if compositor::available() { compositor::screens() } else { xserver::screens() }

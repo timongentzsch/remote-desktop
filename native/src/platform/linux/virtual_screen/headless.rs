@@ -3,10 +3,11 @@
 //! the machine watches, and come back on when it goes. Only Hyprland makes one so far.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use super::wait_for;
-use crate::platform::linux::{hyprland, pointer};
+use crate::platform::linux::hyprland;
 use crate::screen::{self, Window};
 
 /// The output's name, which the capture finds it by.
@@ -14,19 +15,43 @@ pub const NAME: &str = crate::NAME;
 /// How long the compositor may take to announce the new output to the capture.
 const APPEARING: Duration = Duration::from_secs(2);
 
-/// The output while it is there. Dropping it brings the machine's own screens back.
-pub struct Output {
+/// What the compositor is told while the output is there, and told again when it has read its configuration
+/// anew and so forgotten it (`set_again`).
+static SET: Mutex<Option<Set>> = Mutex::new(None);
+
+struct Set {
+    /// The client's window, whose size the output has.
+    window: Window,
     fps: u32,
+    /// The machine's own screens, which are switched off.
+    off: Vec<String>,
 }
+
+impl Set {
+    fn apply(&self) -> Result<(), String> {
+        set_mode(self.window.pixels(), self.fps, self.window.scale())?;
+        self.off.iter().try_for_each(|own| switch_off(own))
+    }
+}
+
+/// The output while it is there. Dropping it brings the machine's own screens back.
+pub struct Output(());
 
 impl Output {
     /// Makes the output for `window` at `fps` frames a second and switches the machine's own screens off.
     pub fn create(window: Window, fps: u32) -> Result<Self, String> {
         // From here on, dropping it undoes what was done, also after a failure halfway.
-        let made = Self { fps };
+        let made = Self(());
         std::fs::write(marker(), NAME).map_err(|error| format!("cannot note the virtual screen: {error}"))?;
+        hyprland::keep_settings();
         create_output()?;
-        made.resize(window)?;
+        let set = |off| {
+            let set = Set { window, fps, off };
+            let done = set.apply();
+            *SET.lock().unwrap() = Some(set);
+            done
+        };
+        set(Vec::new())?;
         // The compositor makes the output at a size of its own and gives it the one asked for a moment later;
         // a capture that began before would start over at the new size.
         let size = window.size();
@@ -36,9 +61,7 @@ impl Output {
         if !appeared {
             return Err("the virtual screen did not appear".into());
         }
-        for own in screen::list().into_iter().filter(|screen| screen.name != NAME) {
-            switch_off(&own.name)?;
-        }
+        set(screen::list().into_iter().map(|screen| screen.name).filter(|name| name != NAME).collect())?;
         // The session places the pointer by the screens the desktop lists once this returns. Until the others
         // are gone, the list still has them, and this screen beside them rather than where it ends up alone.
         let alone = wait_for(APPEARING, || {
@@ -53,7 +76,19 @@ impl Output {
 
     /// Gives the screen the size of the client's window as it is now.
     pub fn resize(&self, window: Window) -> Result<(), String> {
-        set_mode(window.pixels(), self.fps, window.scale())
+        let mut set = SET.lock().unwrap();
+        let Some(set) = &mut *set else { return Ok(()) };
+        set.window = window;
+        set.apply()
+    }
+}
+
+/// Makes the output as it was made, in a compositor that has forgotten how.
+pub fn set_again() {
+    if let Some(set) = &*SET.lock().unwrap()
+        && let Err(error) = set.apply()
+    {
+        warn!("the screen made for the client is not as it was: {error}");
     }
 }
 
@@ -71,6 +106,7 @@ pub fn restore_leftover() {
 }
 
 fn restore() {
+    *SET.lock().unwrap() = None;
     if let Err(error) = restore_outputs() {
         warn!("could not bring the screens back: {error}");
     }
@@ -100,9 +136,8 @@ fn switch_off(name: &str) -> Result<(), String> {
 }
 
 /// Reading the configuration again brings its screens back as they were set up; then the headless one goes.
-/// It also undoes what other sessions have set, which is set again.
+/// It also undoes what other sessions have set, which is set again as after any such reading.
 fn restore_outputs() -> Result<(), String> {
     let reloaded = hyprland::hyprctl(&["reload"]);
-    pointer::hide_again();
     hyprland::hyprctl(&["output", "remove", NAME]).and(reloaded)
 }

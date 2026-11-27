@@ -85,6 +85,11 @@ impl VirtualScreen {
     }
 }
 
+/// Makes the screen that is up as it was made, in a desktop that has forgotten how (see hyprland.rs).
+pub fn set_again() {
+    headless::set_again();
+}
+
 /// Gives the machine its screens back if a host ended while a client had one made, as one that crashed would.
 pub fn restore_leftover() {
     headless::restore_leftover();

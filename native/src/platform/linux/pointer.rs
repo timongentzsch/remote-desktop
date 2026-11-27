@@ -21,6 +21,7 @@ pub fn hide() -> Option<HiddenPointer> {
     }
     let mut hiding = HIDING.lock().unwrap();
     if *hiding == 0 {
+        hyprland::keep_settings();
         let _ = std::fs::write(hyprland::marker(MARKER), "");
         if let Err(error) = set_invisible(true) {
             warn!("the desktop's pointer stays in the picture: {error}");
@@ -42,7 +43,8 @@ impl Drop for HiddenPointer {
 }
 
 /// Hyprland shows its pointer again when it reads its configuration anew, which the end of a virtual screen has
-/// it do (see virtual_screen.rs). It is hidden again for the sessions that still draw their own.
+/// it do (see virtual_screen.rs), as may anything else on the desktop. It is hidden again for the sessions that
+/// still draw their own.
 pub fn hide_again() {
     if *HIDING.lock().unwrap() > 0
         && let Err(error) = set_invisible(true)
