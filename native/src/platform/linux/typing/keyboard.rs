@@ -6,11 +6,9 @@ use std::io::Write;
 use std::os::fd::{AsFd, FromRawFd};
 use std::time::Instant;
 
-use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_keyboard::{KeyState, KeymapFormat};
-use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use wayland_client::{EventQueue, delegate_noop};
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1;
 
@@ -54,17 +52,7 @@ fn layout(characters: &[char]) -> String {
 /// Nothing the compositor says matters here.
 struct Deaf;
 
-impl Dispatch<WlRegistry, GlobalListContents> for Deaf {
-    fn event(
-        _: &mut Self,
-        _: &WlRegistry,
-        _: wl_registry::Event,
-        _: &GlobalListContents,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+compositor::ignore_registry!(Deaf);
 delegate_noop!(Deaf: ignore WlSeat);
 delegate_noop!(Deaf: ZwpVirtualKeyboardManagerV1);
 delegate_noop!(Deaf: ZwpVirtualKeyboardV1);

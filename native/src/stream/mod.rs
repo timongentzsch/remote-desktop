@@ -16,7 +16,7 @@ pub use flv::resume;
 
 use crate::capture::{self, HEIGHTS, Output, Settings, Shape, Shared, Sink};
 use convert::Shrinker;
-use encode::{Codec, EFFORTS, Encoder, LONGEST_BUFFER, MOVING_QUALITY, STILL_QUALITY, Setup, Want};
+use encode::{Codec, EFFORTS, Encoded, Encoder, LONGEST_BUFFER, MOVING_QUALITY, STILL_QUALITY, Setup, Want};
 use flv::Packet;
 
 /// How many times a second a still picture is encoded again to bring it up to the quality target. Far fewer
@@ -83,11 +83,11 @@ impl Still {
 /// they are coarse on any link. When frames take longer than that half, it goes a step back and does not try
 /// again; so a screen too large for the first effort is soon given the least.
 const EFFORT_FRAMES: u32 = 60;
+const STEP_COST: u32 = 2;
 
 /// More frames a second than this are kept only where they fit (see `keeps_pace`): the rate otherwise falls back
 /// to it.
 const STEADY_FPS: u32 = 60;
-const STEP_COST: u32 = 2;
 /// The effort a stream begins at: superfast, whose fewer bits are worth its little more time where that fits.
 const FIRST_EFFORT: u32 = 1;
 
@@ -365,8 +365,8 @@ impl Stream {
         }
     }
 
-    /// Counts a new frame and, every `EFFORT_FRAMES` of them, reconsiders the colour detail where it is the
-    /// stream's to choose, and else the software encoder's effort.
+    /// Counts a new frame and, every `EFFORT_FRAMES` of them, reconsiders the frame rate, the picture's height
+    /// and the colour detail where they are the stream's to choose, and else the software encoder's effort.
     fn weigh_effort(&mut self, gap: Option<Duration>, took: Duration, coarse: bool, poor: bool) {
         let now = Instant::now();
         let steady = Duration::from_secs(1) / STEADY_FPS;
@@ -513,7 +513,7 @@ impl Stream {
         Ok(())
     }
 
-    /// Encodes the picture currently in the encoder's planes, as one of `fps` frames a second, and sends it.
+    /// Encodes the picture currently in the encoder's planes, as `frame` says to, and sends it.
     /// Says how long that took since `started`, sending apart, and whether the frame came out coarse, and poor.
     fn encode(&mut self, started: Instant, frame: Frame) -> Option<(Duration, bool, bool)> {
         let confirmed = self.shared.confirmed.load(Ordering::Relaxed).checked_sub(1);
@@ -543,15 +543,8 @@ impl Stream {
         }
         let id = self.next_id;
         self.next_id += 1;
-        let encoded = encoder.encode(id, want, confirmed)?;
-        let (unit, keyframe, coarse, held_back, poor, recovered) = (
-            encoded.unit.to_vec(),
-            encoded.keyframe,
-            encoded.coarse,
-            encoded.held_back,
-            encoded.poor,
-            encoded.recovered,
-        );
+        let Encoded { unit, keyframe, coarse, held_back, poor, recovered } = encoder.encode(id, want, confirmed)?;
+        let unit = unit.to_vec();
         // A client that lost its place in the stream is told again how to decode, and begins anew with this frame,
         // unless the frame goes on from one it has.
         if want != Want::Next && !recovered {

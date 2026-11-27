@@ -3,7 +3,6 @@
 #include <string.h>
 #include "nal.h"
 
-#define START_CODE_LENGTH 4
 #define LENGTH_PREFIX 4
 /* nal_ref_idc of a NAL unit that is referred to, in the header byte's bits 5 and 6. */
 #define REFERENCED (3 << 5)

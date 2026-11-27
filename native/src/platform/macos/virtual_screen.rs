@@ -54,16 +54,12 @@ pub fn in_use() -> bool {
     IN_USE.load(Ordering::SeqCst)
 }
 
-/// The virtual screen while it is there: its helper, at the size it is now. Dropping it takes it away.
+/// The virtual screen while it is there: its helper, the display's number, and the size it made it at (points
+/// across and down, and pixels to a point). Dropping it takes it away.
 pub struct VirtualScreen {
-    made: Mutex<Made>,
-    fps: u32,
-}
-
-/// The helper, the display's number, and the size it made it at: points across and down, and pixels to a point.
-struct Made {
     helper: Option<(Child, u32)>,
     size: [u32; 3],
+    fps: u32,
 }
 
 fn wait_for(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
@@ -148,26 +144,22 @@ impl VirtualScreen {
             return Err("another client has the virtual screen".into());
         }
         // From here on, dropping it gives it back, also after a failure.
-        let made = Self { made: Mutex::new(Made { helper: None, size: size(window) }), fps };
-        let helper = make(size(window), fps)?;
-        made.made.lock().unwrap().helper = Some(helper);
+        let mut made = Self { helper: None, size: size(window), fps };
+        made.helper = Some(make(made.size, fps)?);
         Ok(made)
     }
 
     /// Makes the display anew where the client's window has changed size.
-    pub fn resize(&self, window: Window) -> Result<(), String> {
-        let mut made = self.made.lock().unwrap();
-        if made.size == size(window) {
+    pub fn resize(&mut self, window: Window) -> Result<(), String> {
+        if self.size == size(window) {
             return Ok(());
         }
-        made.end();
-        made.size = size(window);
-        made.helper = Some(make(made.size, self.fps)?);
+        self.end();
+        self.size = size(window);
+        self.helper = Some(make(self.size, self.fps)?);
         Ok(())
     }
-}
 
-impl Made {
     fn end(&mut self) {
         if let Some((helper, id)) = self.helper.take() {
             end(helper, id);
@@ -177,7 +169,7 @@ impl Made {
 
 impl Drop for VirtualScreen {
     fn drop(&mut self) {
-        self.made.get_mut().unwrap().end();
+        self.end();
         IN_USE.store(false, Ordering::SeqCst);
     }
 }

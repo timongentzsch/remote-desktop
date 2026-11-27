@@ -10,10 +10,8 @@ mod wlr;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
-use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_shm::{self, WlShm};
 use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop, event_created_child};
@@ -220,24 +218,21 @@ impl Capture {
         }
         // Hold the request back when the screen changes faster than the wanted frame rate.
         let due = self.requested + self.stream.frame_interval();
-        let requested = match (&mut self.protocol, &self.pixels) {
-            (Protocol::Standard(session), Some(pixels)) => {
-                std::thread::sleep(due.saturating_duration_since(Instant::now()));
-                session.request(pixels, queue);
-                true
-            }
+        let wait = || std::thread::sleep(due.saturating_duration_since(Instant::now()));
+        match (&mut self.protocol, &self.pixels) {
             // The standard protocol first says what buffer it wants; the request follows that.
-            (Protocol::Standard(_), None) => false,
-            (Protocol::Wlroots(screencopy), _) => {
-                std::thread::sleep(due.saturating_duration_since(Instant::now()));
-                screencopy.request(queue);
-                true
+            (Protocol::Standard(_), None) => return,
+            (Protocol::Standard(session), Some(pixels)) => {
+                wait();
+                session.request(pixels, queue);
             }
-        };
-        if requested {
-            self.requested = Instant::now();
-            self.frame_pending = true;
+            (Protocol::Wlroots(screencopy), _) => {
+                wait();
+                screencopy.request(queue);
+            }
         }
+        self.requested = Instant::now();
+        self.frame_pending = true;
     }
 
     /// The compositor has copied the screen into the buffer, with the rows from the bottom up if `upside_down`.
@@ -295,15 +290,11 @@ impl Dispatch<ZwlrOutputPowerV1, ()> for Capture {
         queue: &QueueHandle<Self>,
     ) {
         match event {
-            power::Event::Mode { mode: WEnum::Value(power::Mode::On) } => {
-                state.awake = true;
-                state.request_frame(queue);
-            }
-            power::Event::Mode { .. } => {
+            power::Event::Mode { mode } if mode != WEnum::Value(power::Mode::On) => {
                 state.awake = false;
                 output.set_mode(power::Mode::On);
             }
-            // The compositor will not report or change this output's power: carry on as if it were on.
+            // It is on, or the compositor will not report or change this output's power: carry on as if it were.
             _ => {
                 state.awake = true;
                 state.request_frame(queue);
@@ -312,17 +303,7 @@ impl Dispatch<ZwlrOutputPowerV1, ()> for Capture {
     }
 }
 
-impl Dispatch<WlRegistry, GlobalListContents> for Capture {
-    fn event(
-        _: &mut Self,
-        _: &WlRegistry,
-        _: wl_registry::Event,
-        _: &GlobalListContents,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+compositor::ignore_registry!(Capture);
 
 impl Dispatch<ZwpLinuxBufferParamsV1, Asked> for Capture {
     fn event(

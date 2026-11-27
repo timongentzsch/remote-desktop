@@ -13,8 +13,6 @@ use crate::capture::Shared;
 use crate::platform::linux::clipboard::{Copied, Inbox, TEXT_TYPES, read_text};
 use crate::platform::linux::compositor::{self, bind};
 use wayland_client::backend::ObjectId;
-use wayland_client::globals::GlobalListContents;
-use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop, event_created_child};
 
@@ -151,17 +149,7 @@ impl Dispatch<Source, ()> for Clipboard {
     }
 }
 
-impl Dispatch<WlRegistry, GlobalListContents> for Clipboard {
-    fn event(
-        _: &mut Self,
-        _: &WlRegistry,
-        _: wl_registry::Event,
-        _: &GlobalListContents,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+compositor::ignore_registry!(Clipboard);
 
 delegate_noop!(Clipboard: ignore WlSeat);
 delegate_noop!(Clipboard: Manager);

@@ -1,4 +1,4 @@
-//! Remote desktop host in one binary: serves the web client, streams the screen as H.264 and injects the
+//! Remote desktop host in one binary: serves the web client, streams the screen as H.264 or HEVC and injects the
 //! client's keyboard and pointer input.
 //!
 //!     remote-desktop install [--tailscale] [--no-password] [--port=PORT] [--auto-update]
@@ -68,11 +68,6 @@ fn listen_everywhere() -> String {
     format!("0.0.0.0:{}", port())
 }
 
-/// Whether an optional argument is absent or the one option these commands take.
-fn is_tailscale(option: &Option<String>) -> bool {
-    option.as_deref().is_none_or(|option| option == "--tailscale")
-}
-
 fn main() {
     let mut arguments = std::env::args().skip(1);
     match (arguments.next().as_deref(), arguments.next()) {
@@ -95,7 +90,8 @@ fn main() {
         (Some("update"), None) => update::update(),
         (Some("password"), None) => install::set_password(),
         (Some("password"), Some(option)) if option == "--none" => install::remove_password(),
-        (Some("certificate"), option) if is_tailscale(&option) => install::renew_certificate(option.is_some()),
+        (Some("certificate"), None) => install::renew_certificate(false),
+        (Some("certificate"), Some(option)) if option == "--tailscale" => install::renew_certificate(true),
         // Not for users: what makes the virtual display on macOS (see platform/macos/virtual_screen.rs).
         #[cfg(target_os = "macos")]
         (Some(platform::virtual_screen::HELPER), Some(width)) => {

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_output::{self, WlOutput};
-use wayland_client::protocol::wl_registry::{self, WlRegistry};
+use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
 use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_v1::{self, ZxdgOutputV1};
@@ -29,6 +29,30 @@ where
     let (globals, events) = registry_queue_init(&connection).map_err(|error| error.to_string())?;
     Ok((connection, globals, events))
 }
+
+/// A connection's state has to take word of protocols that come and go later (see `connect`), and none here
+/// does anything about it.
+macro_rules! ignore_registry {
+    ($state:ty) => {
+        impl
+            wayland_client::Dispatch<
+                wayland_client::protocol::wl_registry::WlRegistry,
+                wayland_client::globals::GlobalListContents,
+            > for $state
+        {
+            fn event(
+                _: &mut Self,
+                _: &wayland_client::protocol::wl_registry::WlRegistry,
+                _: wayland_client::protocol::wl_registry::Event,
+                _: &wayland_client::globals::GlobalListContents,
+                _: &wayland_client::Connection,
+                _: &wayland_client::QueueHandle<Self>,
+            ) {
+            }
+        }
+    };
+}
+pub(crate) use ignore_registry;
 
 /// Binds the object through which one of the compositor's protocols is used, in the protocol's first version.
 pub fn bind<Interface, State>(globals: &GlobalList, queue: &QueueHandle<State>) -> Result<Interface, String>
@@ -80,19 +104,7 @@ pub fn turn<State>(
 
 /// The names of the protocols the compositor offers.
 pub fn protocols() -> Result<Vec<String>, String> {
-    struct Asking;
-    impl Dispatch<WlRegistry, GlobalListContents> for Asking {
-        fn event(
-            _: &mut Self,
-            _: &WlRegistry,
-            _: wl_registry::Event,
-            _: &GlobalListContents,
-            _: &Connection,
-            _: &QueueHandle<Self>,
-        ) {
-        }
-    }
-    let (_, globals, _) = connect::<Asking>()?;
+    let (_, globals, _) = connect::<Listing>()?;
     Ok(globals.contents().with_list(|list| list.iter().map(|global| global.interface.clone()).collect()))
 }
 
@@ -155,17 +167,7 @@ impl Dispatch<ZxdgOutputV1, usize> for Listing {
     }
 }
 
-impl Dispatch<WlRegistry, GlobalListContents> for Listing {
-    fn event(
-        _: &mut Self,
-        _: &WlRegistry,
-        _: wl_registry::Event,
-        _: &GlobalListContents,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+ignore_registry!(Listing);
 
 delegate_noop!(Listing: ZxdgOutputManagerV1);
 

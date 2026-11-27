@@ -149,29 +149,6 @@ static int rows_of(const struct nvenc *encoder, int plane)
     return plane == 0 || encoder->full_chroma ? encoder->height : encoder->height / 2;
 }
 
-/* Takes an encoder apart and frees it. */
-static void destroy(struct nvenc *encoder)
-{
-    if (encoder->session) {
-        enter();
-        if (encoder->last >= 0) {
-            /* The driver must be told that the stream has ended before its encoder is taken apart. */
-            NV_ENC_PIC_PARAMS end = { .version = NV_ENC_PIC_PARAMS_VER, .encodePicFlags = NV_ENC_PIC_FLAG_EOS };
-            api.nvEncEncodePicture(encoder->session, &end);
-        }
-        if (encoder->output)
-            api.nvEncDestroyBitstreamBuffer(encoder->session, encoder->output);
-        if (encoder->input)
-            api.nvEncDestroyInputBuffer(encoder->session, encoder->input);
-        api.nvEncDestroyEncoder(encoder->session);
-        leave();
-    }
-    for (int plane = 0; plane < 3; plane++)
-        free(encoder->planes[plane]);
-    nal_units_free(&encoder->unit);
-    free(encoder);
-}
-
 /* The driver (seen with version 580) crashes, a moment later and on a thread of its own, when one of several
    encoders is destroyed while another is still in use. So this process has one encoder at a time. A second
    one is asked for when a client reconnects before its old session has wound down, and then the wait is
@@ -210,9 +187,28 @@ static void give_turn(void)
     pthread_mutex_unlock(&turn);
 }
 
+/* Takes an encoder apart, frees it and gives its turn to the next. */
 static void nvenc_close(struct encoder *base)
 {
-    destroy((struct nvenc *)base);
+    struct nvenc *encoder = (struct nvenc *)base;
+    if (encoder->session) {
+        enter();
+        if (encoder->last >= 0) {
+            /* The driver must be told that the stream has ended before its encoder is taken apart. */
+            NV_ENC_PIC_PARAMS end = { .version = NV_ENC_PIC_PARAMS_VER, .encodePicFlags = NV_ENC_PIC_FLAG_EOS };
+            api.nvEncEncodePicture(encoder->session, &end);
+        }
+        if (encoder->output)
+            api.nvEncDestroyBitstreamBuffer(encoder->session, encoder->output);
+        if (encoder->input)
+            api.nvEncDestroyInputBuffer(encoder->session, encoder->input);
+        api.nvEncDestroyEncoder(encoder->session);
+        leave();
+    }
+    for (int plane = 0; plane < 3; plane++)
+        free(encoder->planes[plane]);
+    nal_units_free(&encoder->unit);
+    free(encoder);
     give_turn();
 }
 

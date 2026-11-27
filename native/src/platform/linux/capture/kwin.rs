@@ -2,9 +2,7 @@
 //! own Wayland protocol. Plasma before 6.8 only lets programs use that protocol whose desktop file declares
 //! it, which is why `install` writes one.
 
-use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols_plasma::screencast::v1::client::zkde_screencast_stream_unstable_v1::{
     self as cast, ZkdeScreencastStreamUnstableV1,
@@ -67,17 +65,7 @@ impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for Cast {
     }
 }
 
-impl Dispatch<WlRegistry, GlobalListContents> for Cast {
-    fn event(
-        _: &mut Self,
-        _: &WlRegistry,
-        _: wl_registry::Event,
-        _: &GlobalListContents,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+compositor::ignore_registry!(Cast);
 
 delegate_noop!(Cast: ignore WlOutput);
 delegate_noop!(Cast: ZkdeScreencastUnstableV1);

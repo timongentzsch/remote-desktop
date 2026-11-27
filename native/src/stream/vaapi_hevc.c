@@ -166,19 +166,7 @@ static void write_sps(struct vaapi *encoder)
     bits_put(&sps, 0, 1);               /* long_term_ref_pics_present_flag */
     bits_put(&sps, 0, 1);               /* sps_temporal_mvp_enabled_flag */
     bits_put(&sps, 0, 1);               /* strong_intra_smoothing_enabled_flag */
-    bits_put(&sps, 1, 1);               /* vui_parameters_present_flag */
-    bits_put(&sps, 0, 1);               /* aspect_ratio_info_present_flag */
-    bits_put(&sps, 0, 1);               /* overscan_info_present_flag */
-    bits_put(&sps, 1, 1);               /* video_signal_type_present_flag */
-    bits_put(&sps, 5, 3);               /* video_format: unspecified */
-    bits_put(&sps, 1, 1);               /* video_full_range_flag */
-    bits_put(&sps, 1, 1);               /* colour_description_present_flag */
-    bits_put(&sps, BT709, 8);
-    bits_put(&sps, BT709, 8);
-    bits_put(&sps, BT709, 8);
-    bits_put(&sps, 1, 1); /* chroma_loc_info_present_flag */
-    bits_put_ue(&sps, CHROMA_AT_CENTRE);
-    bits_put_ue(&sps, CHROMA_AT_CENTRE);
+    vaapi_vui_colours(&sps);
     bits_put(&sps, 0, 1);                   /* neutral_chroma_indication_flag */
     bits_put(&sps, 0, 1);                   /* field_seq_flag */
     bits_put(&sps, 0, 1);                   /* frame_field_info_present_flag */

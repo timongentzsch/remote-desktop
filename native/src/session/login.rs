@@ -38,7 +38,7 @@ pub struct Login {
     pub ceiling: u32,
     pub patience: u32,
     pub sound: bool,
-    /// Its window, when it asked for a screen of that size (see platform/linux/virtual_screen.rs).
+    /// Its window, when it asked for a screen of that size (see each platform's virtual_screen.rs).
     pub device: Option<Window>,
 }
 

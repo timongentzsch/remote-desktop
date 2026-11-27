@@ -331,7 +331,7 @@ impl Drop for Watch {
 fn find() -> Option<Greeter> {
     let users = greeters();
     let of_greeter = |name: &str, value: &str| (name, value) == GREETER;
-    let mut found: Vec<Greeter> = fs::read_dir("/proc")
+    fs::read_dir("/proc")
         .ok()?
         .flatten()
         .filter_map(|entry| {
@@ -341,9 +341,7 @@ fn find() -> Option<Greeter> {
             let desktop = desktop_of(&environment, of_greeter, &DESKTOP)?;
             Some(Greeter { process, user: owner.uid(), group: owner.gid(), desktop })
         })
-        .collect();
-    found.sort_by_key(|greeter| !greeter.desktop.iter().any(|(name, _)| name == DISPLAYS[0]));
-    found.into_iter().next()
+        .min_by_key(|greeter| !greeter.desktop.iter().any(|(name, _)| name == DISPLAYS[0]))
 }
 
 /// Where a process's desktop is, from its environment as the kernel shows it: what it has of `kept`, if one

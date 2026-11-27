@@ -109,12 +109,13 @@ struct vaapi {
 unsigned vaapi_attribute(const struct vaapi *encoder, VAConfigAttribType type);
 /* Makes a parameter buffer of `type` with a copy of `data` and adds it to `buffers`. */
 int vaapi_add(struct vaapi *encoder, VABufferType type, const void *data, unsigned size, VABufferID *buffers, int *count);
-/* One of the encoder's settings, as libva takes them: a type and its value in one buffer. */
-int vaapi_add_misc(struct vaapi *encoder, VAEncMiscParameterType type, const void *value, unsigned size, VABufferID *buffers, int *count);
 /* A header the driver writes into the stream as it is, NAL units after start codes, heading the part of it
    `kind` (VAEncPackedHeader...) says. */
 int vaapi_add_packed(struct vaapi *encoder, unsigned kind, const uint8_t *nal, int bits, VABufferID *buffers, int *count);
 /* Adds `rbsp` to encoder->headers as a parameter set of `type`. */
 void vaapi_header(struct vaapi *encoder, int type, const struct bits *rbsp);
+/* Begins a sequence parameter set's VUI, which says the same of the colours in both codecs: the full range,
+   BT.709 and where the chroma samples lie. */
+void vaapi_vui_colours(struct bits *sps);
 
 #endif

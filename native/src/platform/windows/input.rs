@@ -51,11 +51,9 @@ const EXTENDED: [(u16, u16); 18] = [
     (126, 0x5C),
     (127, 0x5D),
 ];
-/// The modifiers that make a shortcut of a character, by evdev code: the Control, Alt and Windows keys.
-const SHORTCUT_MODIFIERS: [u16; 6] = [29, 97, 56, 100, 125, 126];
 
 pub struct Input {
-    /// The shortcut modifiers held, a bit each in the order of SHORTCUT_MODIFIERS.
+    /// The shortcut modifiers held, a bit each in the order of `typing::MODIFIERS`.
     held: Mutex<u8>,
 }
 
@@ -91,7 +89,7 @@ impl Input {
             return send(&[mouse(if down { pressed } else { released }, 0, 0, which)]);
         }
         let Some((scan, extended)) = scan_code(code) else { return };
-        if let Some(index) = SHORTCUT_MODIFIERS.iter().position(|&modifier| modifier == code) {
+        if let Some(index) = typing::MODIFIERS.iter().position(|&modifier| modifier == code) {
             let mut held = self.held.lock().unwrap();
             *held = if down { *held | 1 << index } else { *held & !(1 << index) };
         }

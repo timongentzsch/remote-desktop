@@ -46,7 +46,6 @@ struct encoder *vaapi_open(const struct encoder_setup *setup, int codec)
    frame's size at a finer quantiser depends on how much finer it is than what the picture has, which the last
    frame's size does not foresee; a large step would come out too large for the cap and be thrown away whole. */
 #define MOST_QP_FALL 2
-#define START_CODE_LENGTH 4
 #define MOST_BUFFERS 16
 /* Frames are kept for at most this many frames: HEVC's picture order counts in the decoder's buffer must lie
    within 2048 of each other. */
@@ -146,7 +145,8 @@ int vaapi_add(struct vaapi *encoder, VABufferType type, const void *data, unsign
     return 0;
 }
 
-int vaapi_add_misc(struct vaapi *encoder, VAEncMiscParameterType type, const void *value, unsigned size, VABufferID *buffers, int *count)
+/* One of the encoder's settings, as libva takes them: a type and its value in one buffer. */
+static int vaapi_add_misc(struct vaapi *encoder, VAEncMiscParameterType type, const void *value, unsigned size, VABufferID *buffers, int *count)
 {
     uint8_t misc[sizeof(VAEncMiscParameterBuffer) + 64] = { 0 };
     ((VAEncMiscParameterBuffer *)misc)->type = type;
@@ -158,6 +158,23 @@ void vaapi_header(struct vaapi *encoder, int type, const struct bits *rbsp)
 {
     int at = encoder->header_count++;
     encoder->header_sizes[at] = nal_write(encoder->headers[at], sizeof encoder->headers[at], encoder->codec->codec, type, rbsp);
+}
+
+void vaapi_vui_colours(struct bits *sps)
+{
+    bits_put(sps, 1, 1); /* vui_parameters_present_flag */
+    bits_put(sps, 0, 1); /* aspect_ratio_info_present_flag */
+    bits_put(sps, 0, 1); /* overscan_info_present_flag */
+    bits_put(sps, 1, 1); /* video_signal_type_present_flag */
+    bits_put(sps, 5, 3); /* video_format: unspecified */
+    bits_put(sps, 1, 1); /* video_full_range_flag */
+    bits_put(sps, 1, 1); /* colour_description_present_flag */
+    bits_put(sps, BT709, 8);
+    bits_put(sps, BT709, 8);
+    bits_put(sps, BT709, 8);
+    bits_put(sps, 1, 1); /* chroma_loc_info_present_flag */
+    bits_put_ue(sps, CHROMA_AT_CENTRE);
+    bits_put_ue(sps, CHROMA_AT_CENTRE);
 }
 
 int vaapi_add_packed(struct vaapi *encoder, unsigned kind, const uint8_t *nal, int bits, VABufferID *buffers, int *count)

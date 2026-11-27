@@ -3,7 +3,6 @@
    a display to go with it, whose picture, two pixels at a frame a second, is let go. */
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 
-#define WAIT_SECONDS 5
 #define RATE 48000
 #define CHANNELS 2
 
@@ -64,17 +63,8 @@ static int16_t to_integer(float sample)
 }
 @end
 
-static NSError *wait_for(void (^call)(void (^)(NSError *)))
-{
-    __block NSError *failed = [NSError errorWithDomain:@"remote-desktop" code:0 userInfo:@{ NSLocalizedDescriptionKey : @"no answer" }];
-    dispatch_semaphore_t done = dispatch_semaphore_create(0);
-    call(^(NSError *error) {
-        failed = error;
-        dispatch_semaphore_signal(done);
-    });
-    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, WAIT_SECONDS * NSEC_PER_SEC));
-    return failed;
-}
+/* In capture.m. */
+NSError *wait_for(void (^call)(void (^)(NSError *)));
 
 static void *start(char *error, int error_size) API_AVAILABLE(macos(13.0))
 {

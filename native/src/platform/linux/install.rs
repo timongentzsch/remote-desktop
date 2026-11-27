@@ -12,7 +12,7 @@ use crate::platform::linux::firewall;
 use crate::{NAME, fail, port, update};
 
 pub const BINARY: &str = "/usr/local/bin/remote-desktop";
-/// The user service that runs the host in the desktop session, and the system service at the login screen.
+/// The user service that runs the host in the desktop session.
 const USER_UNIT: &str = "remote-desktop.service";
 const UDEV_RULE_PATH: &str = "/etc/udev/rules.d/70-remote-desktop.rules";
 /// What lets the binary listen on a port that Linux keeps for root, as `setcap` is told it.
@@ -59,6 +59,7 @@ fn quoted_in_unit(path: &std::path::Path) -> String {
     in_unit(path).replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// The system service that runs the host at the login screen.
 const LOGIN_UNIT: &str = "remote-desktop-login.service";
 const SYSTEM_UNITS: &str = "/etc/systemd/system";
 
@@ -171,7 +172,7 @@ pub fn data_directory() -> PathBuf {
 
 /// Whether systemd runs the user's services. Where it does not, the desktop's autostart starts the host.
 fn has_systemd() -> bool {
-    Command::new("systemctl").args(["--user", "show-environment"]).output().is_ok_and(|output| output.status.success())
+    run_quietly("systemctl", &["--user", "show-environment"])
 }
 
 pub fn binary() -> PathBuf {

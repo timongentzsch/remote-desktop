@@ -73,18 +73,20 @@ impl Lit {
         Ok(Self { resources, output, info, crtc })
     }
 
-    /// The output's modes: each with its size and whether it was made here.
-    fn modes(&self) -> Vec<(randr::Mode, (u16, u16), bool)> {
+    /// The server's modes, each with its name: the names come in one piece, in the modes' order.
+    fn named(&self) -> impl Iterator<Item = (&ModeInfo, &[u8])> {
         let mut names = self.resources.names.as_slice();
-        let mut modes = Vec::new();
-        for mode in &self.resources.modes {
+        self.resources.modes.iter().map(move |mode| {
             let (name, rest) = names.split_at(usize::from(mode.name_len).min(names.len()));
             names = rest;
-            if self.info.modes.contains(&mode.id) {
-                modes.push((mode.id, (mode.width, mode.height), name.starts_with(OWN.as_bytes())));
-            }
-        }
-        modes
+            (mode, name)
+        })
+    }
+
+    /// The output's modes: each with its size and whether it was made here.
+    fn modes(&self) -> Vec<(randr::Mode, (u16, u16), bool)> {
+        let own = self.named().filter(|(mode, _)| self.info.modes.contains(&mode.id));
+        own.map(|(mode, name)| (mode.id, (mode.width, mode.height), name.starts_with(OWN.as_bytes()))).collect()
     }
 
     fn size_of(&self, mode: randr::Mode) -> Option<(u16, u16)> {
@@ -187,15 +189,7 @@ impl Fitted {
     /// Makes a mode of `size`, or finds the one a host before this made, and gives it to the output.
     fn set_made(&mut self, lit: &Lit, size: (u16, u16)) -> bool {
         let name = format!("{OWN} {}x{}@{}", size.0, size.1, self.fps);
-        let mut names = lit.resources.names.as_slice();
-        let mut known = None;
-        for mode in &lit.resources.modes {
-            let (called, rest) = names.split_at(usize::from(mode.name_len).min(names.len()));
-            names = rest;
-            if called == name.as_bytes() {
-                known = Some(mode.id);
-            }
-        }
+        let known = lit.named().filter(|&(_, called)| called == name.as_bytes()).map(|(mode, _)| mode.id).last();
         let made = || -> Outcome<randr::Mode> {
             let timing = ModeInfo { name_len: name.len() as u16, ..timing(size, self.fps) };
             Ok(self.x.randr_create_mode(self.root, timing, name.as_bytes())?.reply()?.mode)

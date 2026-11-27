@@ -17,13 +17,10 @@ mod typing;
 pub mod virtual_screen;
 mod xserver;
 
-pub use super::unix::{fd, hostname, without_echo, write_private};
+pub use super::unix::{fd, hostname, serve_quietly, without_echo, write_private};
 pub use install::data_directory;
 
 use crate::screen::Screen;
-
-/// The service manager keeps what the host says.
-pub fn serve_quietly() {}
 
 /// Undoes what a host that ended without undoing it, as one that crashed would, left changed in the desktop.
 pub fn restore_leftovers() {

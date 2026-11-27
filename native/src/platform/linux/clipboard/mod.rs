@@ -64,7 +64,11 @@ pub fn run(inbox: &Inbox, shared: &Shared, copied: Copied) -> Result<(), String>
         return x11::run(inbox, shared, copied);
     }
     let offered = compositor::protocols()?;
-    if wayland::offered(&offered) { wayland::run(inbox, shared, copied) } else { mutter::run(inbox, shared, copied) }
+    if wayland::offered(&offered) {
+        wayland::run(&offered, inbox, shared, copied)
+    } else {
+        mutter::run(inbox, shared, copied)
+    }
 }
 
 /// Reads the text an application writes into a pipe. One that stalls, or writes too much, is given up on.

@@ -48,8 +48,6 @@ const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 struct FromClient {
     /// The highest bitrate it wants, in kbit/s.
     ceiling: AtomicU32,
-    /// For how long it would rather have video fall behind than see the picture made coarser, in milliseconds.
-    patience: AtomicU32,
     /// The round trip it last measured, in milliseconds; 0 while it has none to report.
     round_trip: AtomicU32,
     /// How many bytes it said had arrived, and when it said so.
@@ -111,12 +109,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
     }
     let shared =
         Arc::new(Shared { patience: login.patience.into(), screens: host.screens.clone(), ..Shared::default() });
-    let told = Arc::new(FromClient {
-        ceiling: login.ceiling.into(),
-        patience: login.patience.into(),
-        round_trip: 0.into(),
-        received: None.into(),
-    });
+    let told = Arc::new(FromClient { ceiling: login.ceiling.into(), round_trip: 0.into(), received: None.into() });
     let inbox = clipboard::Inbox::new().ok();
     // The session lasts as long as its writer and its capture do. The clipboard and the sound may give up
     // without ending it.
@@ -220,9 +213,7 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
                 told.ceiling.store(login::ceiling(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed)
             }
             Some("patience") => {
-                let patience = login::patience(parts.get(1).unwrap_or(&Value::Null));
-                told.patience.store(patience, Ordering::Relaxed);
-                shared.patience.store(patience, Ordering::Relaxed);
+                shared.patience.store(login::patience(parts.get(1).unwrap_or(&Value::Null)), Ordering::Relaxed)
             }
             // A resize can change the bounds of the whole desktop for every connected pointer.
             Some("window") => {
@@ -246,9 +237,9 @@ pub fn run(connection: &Arc<Connection>, host: &Arc<Host>) {
                     inbox.put(text.to_string());
                 }
             }
+            Some("decode") => shared.decode_micros.store(number(1).clamp(0, u32::MAX.into()) as u32, Ordering::Relaxed),
             // Echoed, with the time the client put into it, so that it can tell the round trip. It also carries
             // the round trip measured last and how many bytes have arrived, which the bitrate is set by.
-            Some("decode") => shared.decode_micros.store(number(1).clamp(0, u32::MAX.into()) as u32, Ordering::Relaxed),
             Some("ping") => {
                 told.round_trip.store(number(2).clamp(0, LONGEST_ROUND_TRIP) as u32, Ordering::Relaxed);
                 if number(3) > 0 {
@@ -313,7 +304,7 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
         // has not taken what it was given: the capture skips frames meanwhile, as it does over TCP, and the
         // bitrate goes by that.
         let mut udp = datagrams.as_mut().filter(|_| by_udp); // the link, while video takes it
-        let patient = Duration::from_millis(told.patience.load(Ordering::Relaxed).into());
+        let patient = Duration::from_millis(shared.patience.load(Ordering::Relaxed).into());
         let room = udp.as_mut().is_none_or(|udp| udp.has_room(Instant::now(), kbps, patient));
         if !room {
             patience = patience.min(PROBE_LOOK);
@@ -365,13 +356,13 @@ fn send(outbox: &Outbox, connection: &Connection, shared: &Shared, told: &FromCl
         // Over UDP the connection itself says what arrived and how long the way is; over TCP the client does.
         let fared = udp.as_ref().and_then(|udp| Some((udp.written, udp.link.fared(now)?)));
         let (sent, received, round_trip) = match fared {
-            Some((sent, fared)) => (sent, Some(fared.arrived), Some(fared.round_trip)),
+            Some((sent, fared)) => (sent, Some(fared.arrived), fared.round_trip),
             None => {
                 let round_trip = Duration::from_millis(told.round_trip.load(Ordering::Relaxed).into());
-                (written, *told.received.lock().unwrap(), Some(round_trip))
+                (written, *told.received.lock().unwrap(), round_trip)
             }
         };
-        let round_trip = round_trip.filter(|round_trip| !round_trip.is_zero());
+        let round_trip = Some(round_trip).filter(|round_trip| !round_trip.is_zero());
         let lost = udp.as_ref().map(|udp| udp.lately);
         let reading = Reading {
             now,

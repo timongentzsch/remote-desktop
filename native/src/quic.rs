@@ -138,12 +138,6 @@ struct Counting {
 /// How long a stretch is of which the shortest round trip is remembered. The one before it counts as well.
 const MEMORY: Duration = Duration::from_secs(10);
 
-impl Counting {
-    fn new(counts: Arc<Counts>, started: Instant, now: Instant) -> Self {
-        Self { counts, started, recent: u32::MAX, earlier: u32::MAX, turned: now }
-    }
-}
-
 impl Controller for Counting {
     fn on_sent(&mut self, _: Instant, bytes: u64, _: u64) {
         self.counts.sent.fetch_add(bytes, Ordering::Relaxed);
@@ -196,7 +190,7 @@ impl ControllerFactory for Counters {
     fn build(self: Arc<Self>, now: Instant, _: u16) -> Box<dyn Controller> {
         let counts = Arc::new(Counts::default());
         *self.latest.lock().unwrap() = Some(counts.clone());
-        Box::new(Counting::new(counts, self.started, now))
+        Box::new(Counting { counts, started: self.started, recent: u32::MAX, earlier: u32::MAX, turned: now })
     }
 }
 
@@ -256,12 +250,6 @@ struct Shared {
     /// Woken when a link has something for the thread.
     waker: Waker,
     started: Instant,
-}
-
-impl Shared {
-    fn wake(&self) {
-        self.waker.wake();
-    }
 }
 
 /// The way from one session to its client, once the client has opened it.
@@ -335,14 +323,13 @@ impl Link {
         }
         self.queued.store(size as u64, Ordering::Relaxed);
         drop(waiting);
-        self.shared.wake();
+        self.shared.waker.wake();
     }
 
     /// How what was sent has fared. `None` while no client is bound.
     pub fn fared(&self, now: Instant) -> Option<Fared> {
         let counts = self.counts.lock().unwrap().clone()?;
         let (sent, acknowledged) = (counts.sent.load(Ordering::Relaxed), counts.acknowledged.load(Ordering::Relaxed));
-        // With nothing under way the count is as fresh as can be, however long ago the last word came.
         let lost = counts.lost.load(Ordering::Relaxed);
         let under_way = self.queued.load(Ordering::Relaxed) + counts.flight.load(Ordering::Relaxed);
         let at = self.shared.started + Duration::from_micros(counts.acknowledged_at.load(Ordering::Relaxed));
@@ -350,6 +337,7 @@ impl Link {
             under_way,
             sent,
             lost,
+            // With nothing under way the count is as fresh as can be, however long ago the last word came.
             arrived: (if under_way == 0 { now } else { at }, acknowledged),
             round_trip: Duration::from_micros(counts.round_trip_micros.load(Ordering::Relaxed).into()),
             shortest: Duration::from_micros(counts.shortest_micros.load(Ordering::Relaxed).into()),
@@ -364,7 +352,7 @@ impl Link {
         self.queued.fetch_add(datagram.len() as u64, Ordering::Relaxed);
         waiting.push_front(datagram);
         drop(waiting);
-        self.shared.wake();
+        self.shared.waker.wake();
     }
 
     /// Says what is to be done with the pointer's moves that the client sends this way.
@@ -381,7 +369,7 @@ impl Link {
     pub fn close(&self) {
         *self.moved.lock().unwrap() = None;
         self.over.store(true, Ordering::Relaxed);
-        self.shared.wake();
+        self.shared.waker.wake();
     }
 }
 

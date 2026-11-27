@@ -92,7 +92,7 @@ fn fetch_tailscale_certificate(name: &str) -> Result<(), String> {
 /// certificate, and a renewed one has to stay the user's, whose own host could not read a key that is root's.
 fn keep_owner() {
     #[cfg(unix)]
-    if let Some(owner) = path().parent().and_then(|directory| directory.metadata().ok()) {
+    if let Ok(owner) = data_directory().metadata() {
         use std::os::unix::fs::{MetadataExt, chown};
         for file in [path(), key_path()] {
             let _ = chown(file, Some(owner.uid()), Some(owner.gid()));

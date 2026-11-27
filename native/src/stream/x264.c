@@ -90,7 +90,7 @@ static int software_headers(struct encoder *base, uint8_t **sets, int *sizes)
     if (x264_encoder_headers(encoder->x264, &nal, &count) < 0)
         return -1;
     for (int i = 0; i < count; i++) {
-        /* After the four-byte start code; SPS first, then PPS. */
+        /* After the four-byte length; SPS first, then PPS. */
         int at = nal[i].i_type == NAL_SPS ? 0 : nal[i].i_type == NAL_PPS ? 1 : -1;
         if (at >= 0) {
             sets[at] = nal[i].p_payload + 4;

@@ -118,16 +118,12 @@ pub fn run(address: &str) -> ! {
 /// can pose as a device on the tailnet. A subnet router's forwarding arrives from the local network and is
 /// not on the tailnet in this sense.
 pub fn on_tailnet(address: IpAddr) -> bool {
-    match address.to_canonical() {
-        IpAddr::V4(address) => {
-            let (network, length) = TAILNET_V4;
-            address.is_loopback() || (address.to_bits() ^ network.to_bits()) >> (32 - length) == 0
+    let address = address.to_canonical();
+    address.is_loopback()
+        || match address {
+            IpAddr::V4(address) => (address.to_bits() ^ TAILNET_V4.0.to_bits()) >> (32 - TAILNET_V4.1) == 0,
+            IpAddr::V6(address) => (address.to_bits() ^ TAILNET_V6.0.to_bits()) >> (128 - TAILNET_V6.1) == 0,
         }
-        IpAddr::V6(address) => {
-            let (network, length) = TAILNET_V6;
-            address.is_loopback() || (address.to_bits() ^ network.to_bits()) >> (128 - length) == 0
-        }
-    }
 }
 
 /// Bind both transports before the login-screen service drops privileges. UDP is optional.

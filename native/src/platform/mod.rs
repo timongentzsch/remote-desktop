@@ -61,7 +61,7 @@ mod display {
         stream.ended.take().unwrap_or(Ok(()))
     }
 
-    // Linux needs compositor-specific hooks to wake displays and hide the pointer.
+    // Only Linux has displays to wake by a key and a desktop whose pointer has to be hidden.
     pub fn wake_displays(_input: &super::Input) {}
     pub fn hide_pointer() -> Option<()> {
         None
@@ -83,8 +83,16 @@ pub use os::clipboard;
 
 // Setting the host up: the `install`, `uninstall`, `password` and `certificate` commands, the host at the
 // login screen (`login_screen(address)`), and a user's host finding the desktop to serve (`await_desktop()`).
+// Only Linux has a login screen the host can show; elsewhere the host is started in the user's session.
+#[cfg(target_os = "linux")]
 pub use os::greeter::{await_desktop, run as login_screen};
 pub use os::install;
+#[cfg(not(target_os = "linux"))]
+pub fn login_screen(_address: &str) -> ! {
+    crate::fail("the host cannot show this system's login screen")
+}
+#[cfg(not(target_os = "linux"))]
+pub fn await_desktop() {}
 
 // Where the password and certificate are kept, the machine's name, typing the password unseen, and a host that
 // runs without a terminal saying what it says somewhere it is kept (`serve_quietly()`).

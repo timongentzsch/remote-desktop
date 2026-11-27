@@ -24,7 +24,7 @@ const VIDEO_HEAD: u32 = 5;
 /// What a video tag carries.
 #[derive(Clone, Copy)]
 pub enum Packet {
-    /// How to decode what follows (an avcC record); counts as a keyframe.
+    /// How to decode what follows (an avcC or hvcC record); counts as a keyframe.
     Configuration,
     /// One frame, and whether it is a keyframe.
     Frame { keyframe: bool },

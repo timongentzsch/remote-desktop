@@ -40,8 +40,8 @@
 }
 @end
 
-/* Waits for a block that takes a completion handler of one NSError, and returns that error. */
-static NSError *wait_for(void (^call)(void (^)(NSError *)))
+/* Waits for a block that takes a completion handler of one NSError, and returns that error. Also for sound.m. */
+NSError *wait_for(void (^call)(void (^)(NSError *)))
 {
     __block NSError *failed = [NSError errorWithDomain:@"remote-desktop" code:0 userInfo:@{ NSLocalizedDescriptionKey : @"no answer" }];
     dispatch_semaphore_t done = dispatch_semaphore_create(0);

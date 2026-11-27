@@ -51,8 +51,10 @@ void bits_put_se(struct bits *bits, int32_t value);
 /* Ends the RBSP: a one, then zeros to the end of the byte. */
 void bits_trailing(struct bits *bits);
 
-/* Writes `rbsp` into `out` as a NAL unit of `codec` and `type` that is referred to: a four-byte start code,
-   the header and the RBSP with emulation prevention. Returns the length, or -1 if `capacity` is too small. */
+/* Writes `rbsp` into `out` as a NAL unit of `codec` and `type` that is referred to: a start code of
+   START_CODE_LENGTH bytes, the header and the RBSP with emulation prevention. Returns the length, or -1 if
+   `capacity` is too small. */
+#define START_CODE_LENGTH 4
 int nal_write(uint8_t *out, int capacity, int codec, int type, const struct bits *rbsp);
 
 #endif

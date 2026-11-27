@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-pub use super::unix::{fd, hostname, without_echo, write_private};
+pub use super::unix::{fd, hostname, serve_quietly, without_echo, write_private};
 use crate::screen::Screen;
 
 /// Where the password and the certificate are kept: the user's Application Support.
@@ -50,17 +50,16 @@ fn displays() -> Vec<u32> {
 pub fn screens() -> Result<Vec<Screen>, String> {
     let screen = |id| {
         let bounds = unsafe { CGDisplayBounds(id) };
-        let point = |value: f64| value as i32;
         Screen {
             name: if id == virtual_screen::DISPLAY.load(Ordering::SeqCst) {
                 virtual_screen::NAME.to_owned()
             } else {
                 id.to_string()
             },
-            x: point(bounds.x),
-            y: point(bounds.y),
-            width: point(bounds.width),
-            height: point(bounds.height),
+            x: bounds.x as i32,
+            y: bounds.y as i32,
+            width: bounds.width as i32,
+            height: bounds.height as i32,
         }
     };
     Ok(displays().into_iter().map(screen).collect())
@@ -75,17 +74,4 @@ fn display(wanted: Option<&str>) -> Result<u32, String> {
     let screens = screens()?;
     let chosen = crate::screen::choose(&screens, wanted).ok_or("there is no display")?;
     Ok(chosen.name.parse().unwrap_or_default())
-}
-
-/// launchd keeps what the host says (see install.rs).
-pub fn serve_quietly() {}
-
-pub mod greeter {
-    /// macOS lets no program show its login window.
-    pub fn run(_address: &str) -> ! {
-        crate::fail("there is no login screen to show on macOS")
-    }
-
-    /// The host runs in the user's session, started by it.
-    pub fn await_desktop() {}
 }

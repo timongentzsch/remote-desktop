@@ -1,4 +1,4 @@
-//! H.264 encoding through the C interface in encoder.c: on the GPU where it has an encoder, with x264 otherwise.
+//! H.264 and HEVC encoding through the C interface in encoder.c: on the GPU where it has an encoder, with x264 otherwise.
 
 use std::ffi::{CStr, c_char, c_int};
 use std::process::Command;
@@ -63,10 +63,9 @@ pub struct Setup {
 
 impl Setup {
     pub fn new(width: usize, height: usize, fps: u32, kbps: u32, full_chroma: bool, effort: u32) -> Self {
-        let int = |value: usize| value as c_int;
         Self {
-            width: int(width),
-            height: int(height),
+            width: width as c_int,
+            height: height as c_int,
             fps: fps as c_int,
             kbps: kbps as c_int,
             quality: MOVING_QUALITY as c_int,
@@ -197,7 +196,7 @@ pub struct Encoder {
 
 impl Encoder {
     /// Opens the GPU's encoder where there is one that takes this picture, and x264 otherwise. Where the colour
-    /// detail `may_give_way`, the GPU's encoder at 4:2:0 is preferred to x264 at 4:4:4: it saves more time than
+    /// detail `colour_may_give_way`, the GPU's encoder at 4:2:0 is preferred to x264 at 4:4:4: it saves more time than
     /// full colour detail costs.
     pub fn open(setup: Setup, colour_may_give_way: bool) -> Option<Self> {
         let reduced = Setup { full_chroma: 0, ..setup };
@@ -225,17 +224,13 @@ impl Encoder {
     /// The Y, U and V planes to fill before calling `encode`.
     pub fn planes(&mut self) -> [Plane<'_>; 3] {
         let chroma_rows = if self.full_chroma { self.height } else { self.height / 2 };
-        [self.height, chroma_rows, chroma_rows].map({
-            let mut index = 0;
-            move |rows| {
-                let mut stride = 0;
-                // The wrapper owns the planes for the encoder's lifetime; each is at least stride * rows bytes.
-                let pointer = unsafe { encoder_plane(self.raw, index, &mut stride) };
-                index += 1;
-                Plane {
-                    bytes: unsafe { slice::from_raw_parts_mut(pointer, stride as usize * rows) },
-                    stride: stride as usize,
-                }
+        [(0, self.height), (1, chroma_rows), (2, chroma_rows)].map(|(index, rows)| {
+            let mut stride = 0;
+            // The wrapper owns the planes for the encoder's lifetime; each is at least stride * rows bytes.
+            let pointer = unsafe { encoder_plane(self.raw, index, &mut stride) };
+            Plane {
+                bytes: unsafe { slice::from_raw_parts_mut(pointer, stride as usize * rows) },
+                stride: stride as usize,
             }
         })
     }

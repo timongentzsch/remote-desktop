@@ -2,6 +2,8 @@
 
 use std::io::{self, Read};
 
+use ring::digest::{SHA1_FOR_LEGACY_USE_ONLY, digest};
+
 pub const TEXT: u8 = 1;
 pub const BINARY: u8 = 2;
 const CLOSE: u8 = 8;
@@ -18,10 +20,7 @@ const ACCEPT_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// The Sec-WebSocket-Accept value answering a client's Sec-WebSocket-Key.
 pub fn accept_key(key: &str) -> String {
-    let mut hash = sha1_smol::Sha1::new();
-    hash.update(key.as_bytes());
-    hash.update(ACCEPT_GUID);
-    base64(&hash.digest().bytes())
+    base64(digest(&SHA1_FOR_LEGACY_USE_ONLY, &[key.as_bytes(), ACCEPT_GUID].concat()).as_ref())
 }
 
 fn base64(bytes: &[u8]) -> String {

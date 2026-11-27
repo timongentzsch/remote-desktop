@@ -8,6 +8,9 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
+/// The service manager, systemd or launchd, keeps what the host says.
+pub fn serve_quietly() {}
+
 /// Writes a file only its owner can read, creating the directory it lives in.
 pub fn write_private(path: &Path, contents: &[u8]) -> Result<(), String> {
     fs::create_dir_all(path.parent().unwrap())

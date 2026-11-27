@@ -1,6 +1,7 @@
-//! Windows: the picture through Desktop Duplication (capture.rs), keys and the pointer through SendInput
-//! (input.rs), sound through WASAPI (audio.rs), the clipboard (clipboard.rs), and a host started at logon from
-//! the user's Run key (install.rs). The login screen is not built yet, and says so.
+//! Windows: the picture through Desktop Duplication or Windows Graphics Capture
+//! (capture.rs), keys and the pointer through SendInput (input.rs), sound through WASAPI (audio.rs), the
+//! clipboard (clipboard.rs), a display's mode and scale fitted to the client's window (virtual_screen.rs), and
+//! a host started at logon from the user's Run key (install.rs).
 
 use std::fs::File;
 use std::os::windows::io::IntoRawHandle;
@@ -27,8 +28,6 @@ pub mod fd;
 pub mod input;
 pub mod install;
 pub mod virtual_screen;
-
-const NOT_YET: &str = "this part of the host is not built for Windows yet";
 
 /// Where the password and the certificate are kept: the user's local application data, which only the user
 /// (and the system's administrators) can read.
@@ -125,14 +124,4 @@ fn display_mode(device: PCWSTR, index: ENUM_DISPLAY_SETTINGS_MODE) -> Option<DEV
 pub fn screens() -> Result<Vec<Screen>, String> {
     let outputs = outputs().map_err(|error| format!("the displays cannot be listed: {error}"))?;
     Ok(outputs.into_iter().map(|(screen, ..)| screen).collect())
-}
-
-pub mod greeter {
-    /// Showing the login screen needs a service of the system's, which is not built yet.
-    pub fn run(_address: &str) -> ! {
-        crate::fail(super::NOT_YET)
-    }
-
-    /// The host runs in the user's session, started by it.
-    pub fn await_desktop() {}
 }

@@ -203,10 +203,7 @@ impl Fastest {
     }
 
     fn get(&self) -> Option<Duration> {
-        match (self.recent, self.earlier) {
-            (Some(recent), Some(earlier)) => Some(recent.min(earlier)),
-            (recent, earlier) => recent.or(earlier),
-        }
+        [self.recent, self.earlier].into_iter().flatten().min()
     }
 }
 
@@ -299,7 +296,7 @@ impl Controller {
             return;
         }
         let window = std::mem::replace(&mut self.window, Window::new(reading));
-        let written = (reading.written - window.written) as f64 * 8.0 / 1000.0 / lasted.as_secs_f64();
+        let written = reading.written.saturating_sub(window.written) as f64 * 8.0 / 1000.0 / lasted.as_secs_f64();
         self.wanting = written >= USED * self.kbps as f64 || window.coarse * 2 > window.frames;
         // Without frames the round trip says nothing about what the video does to the link.
         let late = window.frames > 0 && rose(reading.round_trip, self.fastest.get(), LATE_LIMIT);
@@ -360,7 +357,7 @@ impl Controller {
         let elapsed = reading.now.duration_since(probe.since);
         let pace = probe.kbps as f64 * 125.0; // bytes a second
         let due = (pace * elapsed.min(probe.length).as_secs_f64()) as u64;
-        let sent = reading.written - probe.written;
+        let sent = reading.written.saturating_sub(probe.written);
         let arrived = reading.received.unwrap_or(probe.latest);
         // With a queue building up along the way, or more under way than the way explains, the link is full and
         // going on would only add delay. So would going on once the padding holds frames up.

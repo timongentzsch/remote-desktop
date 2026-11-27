@@ -1,4 +1,4 @@
-//! Screen capture on GNOME. Mutter is asked to cast the primary monitor and delivers the pictures as a
+//! Screen capture on GNOME. Mutter is asked to cast the chosen monitor and delivers the pictures as a
 //! PipeWire stream.
 
 use std::time::Duration;
@@ -6,10 +6,10 @@ use std::time::Duration;
 use super::pipewire;
 use crate::platform::linux::gnome::{self, Service};
 use crate::screen;
+use crate::stream::Stream;
 
 /// How long GNOME may take to start the screen cast it was asked for.
 const STARTING: Duration = Duration::from_secs(5);
-use crate::stream::Stream;
 
 const SERVICE: &str = "org.gnome.Mutter.ScreenCast";
 const SESSION: &str = "org.gnome.Mutter.ScreenCast.Session";

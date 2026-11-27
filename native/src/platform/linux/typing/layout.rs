@@ -6,9 +6,7 @@ use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::FileExt;
 
-use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_keyboard::{self, KeymapFormat, WlKeyboard};
-use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::{self, WlSeat};
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 
@@ -23,17 +21,7 @@ struct Hearing {
     layout: Option<(OwnedFd, u32)>,
 }
 
-impl Dispatch<WlRegistry, GlobalListContents> for Hearing {
-    fn event(
-        _: &mut Self,
-        _: &WlRegistry,
-        _: wl_registry::Event,
-        _: &GlobalListContents,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+compositor::ignore_registry!(Hearing);
 
 impl Dispatch<WlSeat, ()> for Hearing {
     fn event(state: &mut Self, _: &WlSeat, event: wl_seat::Event, (): &(), _: &Connection, _: &QueueHandle<Self>) {
