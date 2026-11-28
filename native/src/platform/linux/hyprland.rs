@@ -51,6 +51,16 @@ pub fn setting(lua: &str, legacy: [&str; 2]) -> Result<(), String> {
     hyprctl(&["eval", &format!("hl.config({lua})")]).or_else(|_| hyprctl(&["keyword", legacy[0], legacy[1]]))
 }
 
+/// Whether the setting `name` is on, as Hyprland says it now: "bool: true", or "int: 1" in older versions.
+pub fn is_on(name: &str) -> Option<bool> {
+    let said = Command::new("hyprctl").args(["getoption", name]).output().ok()?;
+    match String::from_utf8_lossy(&said.stdout).lines().next()?.rsplit(' ').next()? {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
 /// Runs `hyprctl`, which says "ok" when it did what it was told.
 pub fn hyprctl(arguments: &[&str]) -> Result<(), String> {
     let output =
